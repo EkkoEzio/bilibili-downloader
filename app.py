@@ -222,9 +222,9 @@ def history():
 
 @app.route("/api/follow-updates")
 def follow_updates():
-    """关注 UP 主最近投稿,合并按时间倒序。"""
+    """关注 UP 主最近投稿,合并按时间倒序。?force=true 跳过缓存强制刷新。"""
     try:
-        items = auth.fetch_follow_updates()
+        items = auth.fetch_follow_updates(force=request.args.get("force") == "true")
         return jsonify({"ok": True, "items": items})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

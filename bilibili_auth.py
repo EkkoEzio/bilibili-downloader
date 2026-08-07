@@ -389,10 +389,10 @@ _follow_cache = {"items": None, "ts": 0.0}
 
 
 def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -> list[dict]:
-    """并发拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 2 分钟缓存。"""
+    """并发拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 5 分钟缓存。"""
     import time as _time
     if (not force and _follow_cache["items"] is not None
-            and _time.time() - _follow_cache["ts"] < 120):
+            and _time.time() - _follow_cache["ts"] < 300):  # 5 分钟
         return _follow_cache["items"]
     from concurrent.futures import ThreadPoolExecutor
     follows = fetch_followings(1, max_ups)

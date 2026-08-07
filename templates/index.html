@@ -362,6 +362,11 @@
         <button class="small secondary" id="lib-view-btn" onclick="toggleLibView()">📋 列表</button>
         <span id="history-meta" style="color:#9499a0;font-size:12px;"></span>
       </div>
+      <!-- 关注 tab 专用: 强制刷新(跳过缓存) -->
+      <div class="btn-row" id="follow-force-row" style="display:none;margin-top:0;margin-bottom:10px;">
+        <span style="font-size:12px;color:#9499a0;">缓存可能过期,点这里</span>
+        <button class="small secondary" onclick="loadFollow(true)">⚡ 强制刷新(后台约需 10 秒)</button>
+      </div>
       <div id="history-list"><div class="empty">加载中...</div></div>
       <div id="history-actions" style="display:none;margin-top:10px;">
         <div class="btn-row">
@@ -797,17 +802,38 @@ document.querySelectorAll('.tab[data-lib]').forEach(t => {
     if (s) s.value = '';
     const metaEl = document.getElementById('history-meta');
     if (metaEl) delete metaEl.dataset.base;
+    // 关注 tab 专用: 显示「强制刷新」按钮
+    document.getElementById('follow-force-row').style.display =
+      _libMode === 'follow' ? '' : 'none';
     refreshLib();
   });
 });
 
-async function loadFollow() {
+// force=true 用于「刷新」按钮:跳缓存重抓
+async function loadFollow(force) {
   const list = document.getElementById('history-list');
   const meta = document.getElementById('history-meta');
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载关注 UP 的最新投稿...(约几秒)</div>';
+  // 用本地缓存即时显示上次结果,避免 9 秒 spinner 卡死
+  if (!force && _libItems.length > 0) {
+    // 已经有数据:立刻渲染(meta 显示「后台刷新中」轻提示),
+    // 后台异步拉新数据,拉到后覆盖
+    meta.innerHTML = '<span class="spinner"></span> 后台刷新中...';
+    fetch(API('/api/follow-updates' + (force ? '?force=true' : '')))
+      .then(r => r.json())
+      .then(r => {
+        if (r.ok) {
+          _libItems = r.items || [];
+          renderLibList(_libItems, list);
+          meta.textContent = `共 ${_libItems.length} 条(按时间倒序,后台刷新完成)`;
+        }
+      })
+      .catch(() => { meta.textContent = '后台刷新失败'; });
+    return;
+  }
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>正在加载关注 UP 的最新投稿(可能需要 5-15 秒)...</div>';
   meta.textContent = '';
   try {
-    const r = await (await fetch(API('/api/follow-updates'))).json();
+    const r = await (await fetch(API('/api/follow-updates' + (force ? '?force=true' : '')))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
     renderLibList(_libItems, list);
