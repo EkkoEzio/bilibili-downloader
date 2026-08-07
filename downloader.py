@@ -249,34 +249,72 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                     t["error"] = str(e)
             _persist()
             return
+
     fmt_str = best_video_audio_choice(formats, label)
     # 分 P:文件名带 P 序号,避免覆盖
     tmpl = "%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1 else "%(title).200B.%(ext)s"
     outtmpl = str(DOWNLOAD_DIR / tmpl)
-    opts = _ydl_opts({
+    base_opts = {
         "format": fmt_str,
         "outtmpl": outtmpl,
         "merge_output_format": "mp4",
         "progress_hooks": [_progress_hook(task_id)],
-    })
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            ydl.download([url])
+    }
+
+    max_retries = 2  # 失败后最多重试 2 次,共尝试 3 次
+    last_err = None
+    for attempt in range(max_retries + 1):
+        # 用户主动取消 → 立刻退出,不算失败也不重试
         with _tasks_lock:
             t = _tasks.get(task_id)
-            if t and t["status"] != "failed":
-                t["status"] = "cancelled" if t.get("cancel") else "done"
-        _persist()
-    except Exception as e:
-        with _tasks_lock:
-            t = _tasks.get(task_id)
-            if t:
-                if t.get("cancel"):
+            if not t or t.get("cancel"):
+                return
+        # 第二次起把进度回退一点,便于 UI 显示「正在重试」
+        if attempt > 0:
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t:
+                    t["status"] = "retrying"
+                    t["error"] = f"第 {attempt} 次重试..."
+                    t["progress"] = 0
+            _persist()
+            import time as _t; _t.sleep(2 + attempt * 2)  # 递增退避
+            # 退避后再次检查取消(用户在 sleep 期间点了取消)
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if not t or t.get("cancel"):
+                    return
+
+        # 每次重试都重建 YoutubeDL 实例(避免内部状态污染)
+        opts = _ydl_opts(base_opts)
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                ydl.download([url])
+            # 成功
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t and t["status"] != "failed":
+                    t["status"] = "cancelled" if t.get("cancel") else "done"
+                    t["error"] = ""
+            _persist()
+            return
+        except Exception as e:
+            last_err = e
+            # 取消标志置位 → 不再重试
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t and t.get("cancel"):
                     t["status"] = "cancelled"
-                else:
-                    t["status"] = "failed"
-                    t["error"] = str(e)
-        _persist()
+                    _persist()
+                    return
+
+    # 全部尝试失败
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+        if t and not t.get("cancel"):
+            t["status"] = "failed"
+            t["error"] = str(last_err)
+    _persist()
 
 
 def start_download(url: str, label: str, page: int = 1) -> str:

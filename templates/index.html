@@ -107,7 +107,7 @@
   .task-item .ti-actions { margin-top: 8px; display: flex; gap: 8px; }
   .status-tag { font-size: 12px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
   .status-tag.queued, .status-tag.interrupted { background: #e3e5e7; color: #61666d; }
-  .status-tag.downloading, .status-tag.merging, .status-tag.cancelling { background: #fff4e0; color: #b8860b; }
+  .status-tag.downloading, .status-tag.merging, .status-tag.cancelling, .status-tag.retrying { background: #fff4e0; color: #b8860b; }
   .status-tag.done { background: #e8f5e9; color: #2e7d32; }
   .status-tag.failed, .status-tag.cancelled { background: #fdecea; color: #c62828; }
 
@@ -964,7 +964,8 @@ function renderTask(t) {
   box.className = 'task-item ' + t.status;
   const statusCN = {
     queued: '排队中', downloading: '下载中', merging: '合并中',
-    cancelling: '取消中', done: '已完成', failed: '失败',
+    cancelling: '取消中', retrying: '重试中',
+    done: '已完成', failed: '失败',
     cancelled: '已取消', interrupted: '已中断'
   };
   const speedTxt = t.speed > 1024 ? (t.speed / 1024).toFixed(1) + ' MB/s' : (t.speed || 0).toFixed(0) + ' KB/s';
@@ -981,6 +982,10 @@ function renderTask(t) {
   } else if (t.status === 'merging') {
     // #5 合并阶段动画
     progInner = `<div class="merging-anim"><span class="spinner"></span>正在用 ffmpeg 合并音视频...</div>`;
+  } else if (t.status === 'retrying') {
+    // B1 重试中
+    progInner = `<div class="merging-anim"><span class="spinner"></span>${escapeHtml(t.error || '正在重试...')}</div>`;
+    actions = `<div class="ti-actions"><button class="small danger" onclick="cancelTask('${t.task_id}')">取消</button></div>`;
   } else if (t.status === 'cancelling') {
     progInner = `<div class="hint">正在取消...</div>`;
   } else if (t.status === 'done') {
