@@ -115,8 +115,8 @@ def download():
     page = int(body.get("page", 1))
     if not url:
         return jsonify({"ok": False, "error": "请输入 URL"}), 400
-    # 重复下载拦截:同 URL+清晰度 且仍在跑
-    existing = downloader.find_active_by_url(url, label)
+    # 重复下载拦截:同 URL+清晰度+分P 且仍在跑
+    existing = downloader.find_active_by_url(url, label, page)
     if existing:
         return jsonify({"ok": False, "error": "该视频相同清晰度正在下载中", "task_id": existing}), 409
     try:

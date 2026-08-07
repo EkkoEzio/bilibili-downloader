@@ -107,9 +107,13 @@ def parse_video(url: str) -> dict:
     if info.get("_type") == "playlist" and info.get("entries"):
         parts = []
         for idx, e in enumerate(info["entries"], 1):
+            # 真实标题优先;若无,fallback 用 playlist 标题 + 第N集,避免同名
+            et = (e.get("title") or "").strip()
+            if not et or et == info.get("title", ""):
+                et = f"{info.get('title','')} 第{idx}集"
             parts.append({
                 "page": idx,
-                "title": e.get("title", f"P{idx}"),
+                "title": et,
                 "duration": e.get("duration", 0),
             })
         summary = {
@@ -424,11 +428,12 @@ def list_tasks() -> list[dict]:
         return list(_tasks.values())
 
 
-def find_active_by_url(url: str, label: str) -> Optional[str]:
-    """查找同 URL+清晰度 且仍在进行中的任务,用于重复下载拦截。返回 task_id 或 None。"""
+def find_active_by_url(url: str, label: str, page: int = 1) -> Optional[str]:
+    """查找同 URL+清晰度+分P 且仍在进行中的任务,用于重复下载拦截。返回 task_id 或 None。"""
     with _tasks_lock:
         for tid, t in _tasks.items():
             if (t.get("url") == url and t.get("label") == label
+                    and t.get("page", 1) == page
                     and t["status"] in ("queued", "downloading", "merging", "cancelling")):
                 return tid
     return None

@@ -96,6 +96,10 @@ def load_session() -> Optional[dict]:
 def clear_session() -> None:
     if SESSION_COOKIE_FILE.exists():
         SESSION_COOKIE_FILE.unlink()
+    # 同时清掉 cookiejar 缓存,避免退出后还能访问接口(5 分钟缓存)
+    global _cj_cache, _follow_cache
+    _cj_cache = {"cj": None, "ts": 0.0}
+    _follow_cache = {"items": None, "ts": 0.0}
 
 
 def has_session() -> bool:
