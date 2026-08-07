@@ -126,6 +126,19 @@
   .video-card img { width: 160px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #e3e5e7; }
   .video-info { flex: 1; min-width: 240px; }
   .video-info .vt { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+
+  /* C2: 网格视图 */
+  #history-list.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  #history-list.lib-grid .video-item {
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 10px; background: var(--bg-soft); border-radius: 8px;
+    cursor: pointer; transition: background .15s;
+  }
+  #history-list.lib-grid .video-item:hover { background: var(--bg-muted); }
+  #history-list.lib-grid .video-item img { width: 100%; height: 124px; object-fit: cover; border-radius: 6px; background: var(--bg-muted); }
+  #history-list.lib-grid .vi-title { font-size: 13px; font-weight: 600; line-height: 1.35; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  #history-list.lib-grid .vi-meta { font-size: 11px; color: var(--text-mute); }
+  #history-list.lib-grid .vi-check { position: absolute; top: 6px; right: 6px; }
   .video-info .vm { font-size: 13px; color: #61666d; }
 
   .task-item { padding: 12px; background: var(--bg-soft); border-radius: 8px; margin-top: 10px; }
@@ -346,6 +359,7 @@
       <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
         <button onclick="refreshLib()">刷新</button>
         <input type="text" id="lib-search" placeholder="🔍 按标题/UP主过滤" oninput="applyLibFilter()" style="flex:1;max-width:280px;padding:6px 10px;">
+        <button class="small secondary" id="lib-view-btn" onclick="toggleLibView()">📋 列表</button>
         <span id="history-meta" style="color:#9499a0;font-size:12px;"></span>
       </div>
       <div id="history-list"><div class="empty">加载中...</div></div>
@@ -976,11 +990,12 @@ function renderLibList(items, container) {
     container.innerHTML = '<div class="empty">没有匹配结果</div>';
     return;
   }
+  const isGrid = _libView === 'grid';
+  container.className = isGrid ? 'lib-grid' : '';
   container.innerHTML = items.map((it) => {
     const origIdx = _libItems.indexOf(it);
     const checked = origIdx >= 0 && _libChecked.has(origIdx) ? 'checked' : '';
     const pct = it.watched_pct || 0;
-    const sec = it.watched_seconds || 0;
     const showProgress = it.duration && pct > 0 && pct < 100;
     const progressHtml = showProgress
       ? `<div style="margin-top:4px;display:flex;align-items:center;gap:6px;">
@@ -990,6 +1005,20 @@ function renderLibList(items, container) {
            <span style="font-size:11px;color:#00a1d6;font-weight:600;min-width:50px;text-align:right;">${pct}%</span>
          </div>`
       : '';
+    if (isGrid) {
+      // 网格:封面在上,标题/UP 叠在下方,复选框叠右上角
+      return `
+      <label class="video-item" style="position:relative;">
+        <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)" class="vi-check">
+        <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'">
+        <div class="vi-title">${escapeHtml(it.title)}</div>
+        <div class="vi-meta">
+          ${escapeHtml(it.uploader || '-')} ${it.duration ? '· ' + formatDuration(it.duration) : ''}
+        </div>
+        ${progressHtml}
+      </label>`;
+    }
+    // 列表(默认)
     return `
     <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
       <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)">
@@ -1006,6 +1035,23 @@ function renderLibList(items, container) {
   }).join('');
   updateLibCount();
 }
+
+/* ---------- C2: 列表/网格视图切换 ---------- */
+let _libView = localStorage.getItem('bd_lib_view') || 'list';
+
+function updateLibViewBtn() {
+  const btn = document.getElementById('lib-view-btn');
+  if (btn) btn.textContent = _libView === 'grid' ? '🟦 网格' : '📋 列表';
+}
+
+function toggleLibView() {
+  _libView = _libView === 'list' ? 'grid' : 'list';
+  localStorage.setItem('bd_lib_view', _libView);
+  updateLibViewBtn();
+  applyLibFilter();
+}
+
+updateLibViewBtn();
 
 /* ---------- B5: 搜索过滤 ---------- */
 const _libChecked = new Set();  // _libItems 原始索引的勾选集合(跨重渲染保持)
