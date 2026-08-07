@@ -243,10 +243,13 @@ async function pollLogin(key) {
   try {
     const r = await (await fetch(API('/api/login/qrcode/poll?key=' + key))).json();
     const statusBox = document.getElementById('qr-status');
+    const imgBox = document.getElementById('qrcode-img');
     if (r.status === 'success') {
       clearInterval(_qrPollTimer); _qrPollTimer = null;
-      statusBox.textContent = '✓ 登录成功!';
-      refreshLogin();
+      // 收起二维码,显示成功态
+      imgBox.innerHTML = '';
+      statusBox.innerHTML = '✓ 登录成功!';
+      await refreshLogin();
     } else if (r.status === 'scanned') {
       statusBox.textContent = '已扫码,请在手机上点击确认';
     } else if (r.status === 'expired') {

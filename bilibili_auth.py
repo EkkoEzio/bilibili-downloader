@@ -48,14 +48,34 @@ def qrcode_poll(qrcode_key: str) -> dict:
 
 
 def parse_poll_response(data: dict, set_cookie_header: str) -> dict:
-    """把 poll 响应解析成统一状态。SESSDATA 从 Set-Cookie 头提取。"""
+    """把 poll 响应解析成统一状态。
+
+    SESSDATA 优先从 data.url 的 query 参数解析(社区文档验证最可靠),
+    Set-Cookie 头作为兜底。同时提取 DedeUserID/bili_jct。
+    """
     code = str(data.get("data", {}).get("code", -1))
     status = POLL_CODES.get(code, "unknown")
     sessdata = ""
+    dede_userid = ""
+    bili_jct = ""
     if status == "success":
-        m = re.search(r"SESSDATA=([^;]+)", set_cookie_header or "")
-        sessdata = m.group(1) if m else ""
-    return {"status": status, "sessdata": sessdata, "message": POLL_MESSAGES.get(code, "未知状态")}
+        from urllib.parse import urlparse, parse_qs
+        url = data.get("data", {}).get("url", "")
+        qs = parse_qs(urlparse(url).query)
+        # 优先 url query
+        if qs.get("SESSDATA"):
+            sessdata = qs["SESSDATA"][0]
+        dede_userid = (qs.get("DedeUserID") or [""])[0]
+        bili_jct = (qs.get("bili_jct") or [""])[0]
+        # 兜底:Set-Cookie
+        if not sessdata:
+            m = re.search(r"SESSDATA=([^;]+)", set_cookie_header or "")
+            sessdata = m.group(1) if m else ""
+        if not bili_jct:
+            m = re.search(r"bili_jct=([^;]+)", set_cookie_header or "")
+            bili_jct = m.group(1) if m else ""
+    return {"status": status, "sessdata": sessdata, "dede_userid": dede_userid,
+            "bili_jct": bili_jct, "message": POLL_MESSAGES.get(code, "未知状态")}
 
 
 def save_session(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> None:

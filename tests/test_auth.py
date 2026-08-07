@@ -11,7 +11,9 @@ def test_poll_codes_constants():
 
 def test_parse_waiting():
     r = parse_poll_response({"data": {"code": 86101}}, "")
-    assert r == {"status": "waiting", "sessdata": "", "message": "未扫码"}
+    assert r["status"] == "waiting"
+    assert r["sessdata"] == ""
+    assert r["message"] == "未扫码"
 
 
 def test_parse_scanned():
@@ -24,12 +26,24 @@ def test_parse_expired():
     assert r["status"] == "expired"
 
 
-def test_parse_success_extracts_sessdata():
-    body = {"code": 0, "data": {"code": 0, "url": "https://x?SESSDATA=abc"}}
-    set_cookie = "SESSDATA=hello123; Path=/; HttpOnly"
+def test_parse_success_extracts_sessdata_from_url():
+    # 真实 B 站响应:SESSDATA 在 data.url 的 query 参数里(主来源,最可靠)
+    body = {"code": 0, "data": {
+        "code": 0,
+        "url": "https://passport.biligame.com/x/passport-login/web/crossDomain?DedeUserID=123&DedeUserID__ckMd5=abc&Expires=999&SESSDATA=url_sess&gourl=/"}}
+    r = parse_poll_response(body, "")
+    assert r["status"] == "success"
+    assert r["sessdata"] == "url_sess"
+    assert r["dede_userid"] == "123"
+
+
+def test_parse_success_extracts_sessdata_from_setcookie_fallback():
+    # 兜底:url 里没有时,从 Set-Cookie 头提取
+    body = {"code": 0, "data": {"code": 0, "url": "https://x?gourl=/"}}
+    set_cookie = "SESSDATA=cookie_sess; Path=/; HttpOnly"
     r = parse_poll_response(body, set_cookie)
     assert r["status"] == "success"
-    assert r["sessdata"] == "hello123"
+    assert r["sessdata"] == "cookie_sess"
 
 
 def test_save_load_clear_session(tmp_path, monkeypatch):

@@ -34,7 +34,7 @@ def login_qrcode_poll():
     key = request.args.get("key", "")
     r = auth.qrcode_poll(key)
     if r["status"] == "success" and r["sessdata"]:
-        auth.save_session(r["sessdata"])
+        auth.save_session(r["sessdata"], r.get("dede_userid", ""), r.get("bili_jct", ""))
     return jsonify(r)
 
 
