@@ -162,11 +162,28 @@
   <!-- 解析+下载区 -->
   <section>
     <h2>下载视频</h2>
-    <div class="url-row">
-      <input type="text" id="url-input" placeholder="粘贴 B 站视频地址,如 https://www.bilibili.com/video/BVxxxxx">
-      <button id="parse-btn" onclick="parseVideo()">解析</button>
+    <div class="tabs" style="margin-bottom:12px;">
+      <div class="tab active" data-dlmode="single">单个视频</div>
+      <div class="tab" data-dlmode="batch">批量下载</div>
     </div>
-    <div id="parse-result"></div>
+
+    <!-- 单视频 -->
+    <div id="dl-single">
+      <div class="url-row">
+        <input type="text" id="url-input" placeholder="粘贴 B 站视频地址,如 https://www.bilibili.com/video/BVxxxxx">
+        <button id="parse-btn" onclick="parseVideo()">解析</button>
+      </div>
+      <div id="parse-result"></div>
+    </div>
+
+    <!-- 批量 -->
+    <div id="dl-batch" style="display:none;">
+      <textarea id="batch-input" placeholder="支持三种批量:&#10;① 多个视频链接,每行一个&#10;② 一个收藏夹链接(space.bilibili.com/xxx/favlist?fid=xx 或 bilibili.com/medialist/detail/mlxx)&#10;③ 一个合集/分P视频链接&#10;&#10;粘贴后点'解析',勾选要下的,选清晰度,点'批量下载'"></textarea>
+      <div class="btn-row">
+        <button id="batch-parse-btn" onclick="batchParse()">解析</button>
+      </div>
+      <div id="batch-result"></div>
+    </div>
   </section>
 
   <!-- 任务队列区 -->
@@ -401,6 +418,129 @@ async function startDownload() {
       return;
     }
     subscribeProgress(r.task_id);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+/* ---------- 批量下载 ---------- */
+// 单/批量 切换
+document.querySelectorAll('.tab[data-dlmode]').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab[data-dlmode]').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    const isBatch = t.dataset.dlmode === 'batch';
+    document.getElementById('dl-single').style.display = isBatch ? 'none' : '';
+    document.getElementById('dl-batch').style.display = isBatch ? '' : 'none';
+  });
+});
+
+let _batchItems = [];  // 解析出的批量项
+
+async function batchParse() {
+  const text = document.getElementById('batch-input').value.trim();
+  if (!text) { alert('请粘贴链接'); return; }
+  const box = document.getElementById('batch-result');
+  const btn = document.getElementById('batch-parse-btn');
+  btn.disabled = true;
+  box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中...(收藏夹/合集可能需要一点时间)</div>';
+
+  // 判断:单行且是收藏夹/合集链接 → url 模式;否则多链接模式
+  const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+  const isSingleFav = lines.length === 1 && /favlist|medialist|watchlater|space\.bilibili/i.test(lines[0]);
+
+  try {
+    let r;
+    if (isSingleFav) {
+      r = await (await fetch(API('/api/batch/parse'), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ url: lines[0] })
+      })).json();
+    } else {
+      r = await (await fetch(API('/api/batch/parse'), {
+        method: 'POST', headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({ urls: lines })
+      })).json();
+    }
+    if (!r.ok) throw new Error(r.error || '解析失败');
+    _batchItems = r.items || [];
+    renderBatchList(r.title || (isSingleFav ? '收藏夹/合集' : '多链接'));
+  } catch (e) {
+    box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+function renderBatchList(title) {
+  const box = document.getElementById('batch-result');
+  if (_batchItems.length === 0) {
+    box.innerHTML = '<div class="empty">未解析出任何视频</div>';
+    return;
+  }
+  // 勾选列表 + 全选/全不选 + 清晰度选择 + 批量下载按钮
+  const itemRows = _batchItems.map((it, i) => `
+    <label style="display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
+      <input type="checkbox" data-bidx="${i}" checked>
+      <span style="flex:1;word-break:break-all;font-size:13px;">${escapeHtml(it.title)}</span>
+      ${it.duration ? `<span style="color:#9499a0;font-size:12px;">${formatDuration(it.duration)}</span>` : ''}
+      ${it.error ? `<span style="color:#e53935;font-size:12px;">${escapeHtml(it.error)}</span>` : ''}
+    </label>`).join('');
+  box.innerHTML = `
+    <div class="hint" style="margin-bottom:8px;">「${escapeHtml(title)}」共 ${_batchItems.length} 项</div>
+    <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+      <button class="small secondary" onclick="batchToggleAll(true)">全选</button>
+      <button class="small secondary" onclick="batchToggleAll(false)">全不选</button>
+      <span style="color:#9499a0;font-size:12px;">已选 <b id="batch-count">0</b> 项</span>
+    </div>
+    <div style="max-height:280px;overflow-y:auto;border:1px solid #e3e5e7;border-radius:6px;">
+      ${itemRows}
+    </div>
+    <div class="btn-row">
+      <select id="batch-quality">
+        <option value="">最高画质(自动)</option>
+        <option value="1080P">1080P</option>
+        <option value="720P">720P</option>
+        <option value="480P">480P</option>
+        <option value="360P">360P</option>
+      </select>
+      <button onclick="batchDownload()">批量下载</button>
+    </div>
+    <div class="hint">批量下载最多 2 个同时进行,其余排队。</div>`;
+  // 更新计数 + 监听勾选变化
+  document.querySelectorAll('input[data-bidx]').forEach(cb => cb.addEventListener('change', updateBatchCount));
+  updateBatchCount();
+}
+
+function batchToggleAll(checked) {
+  document.querySelectorAll('input[data-bidx]').forEach(cb => cb.checked = checked);
+  updateBatchCount();
+}
+
+function updateBatchCount() {
+  const n = document.querySelectorAll('input[data-bidx]:checked').length;
+  const el = document.getElementById('batch-count');
+  if (el) el.textContent = n;
+}
+
+async function batchDownload() {
+  const checked = [...document.querySelectorAll('input[data-bidx]:checked')];
+  if (checked.length === 0) { alert('请至少勾选一项'); return; }
+  const label = document.getElementById('batch-quality').value;
+  const items = checked.map(cb => {
+    const idx = parseInt(cb.dataset.bidx);
+    const it = _batchItems[idx];
+    return { url: it.url, title: it.title, page: it.url.includes('?p=') ? parseInt(it.url.split('?p=')[1]) : 1 };
+  });
+  try {
+    const r = await (await fetch(API('/api/batch/download'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ items, label })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    alert(`已加入 ${r.count} 个下载任务`);
+    // 订阅所有新任务进度
+    r.task_ids.forEach(subscribeProgress);
   } catch (e) {
     alert(e.message);
   }

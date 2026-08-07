@@ -135,6 +135,53 @@ def parse_part(url: str, page: int) -> dict:
     return summary
 
 
+def resolve_playlist(url: str) -> dict:
+    """解析收藏夹/合集/UP主页等多视频链接,返回待下载项列表。
+
+    用 yt-dlp flat 模式快速列出所有视频(不逐个拉清晰度),统一返回
+    {kind:'list', title, items:[{title,url,duration}]}。
+    单视频 URL 也能进,返回单项列表。
+    """
+    opts = _ydl_opts({"skip_download": True, "extract_flat": True})
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        raise RuntimeError(f"解析失败:{e}")
+
+    items = []
+    title = info.get("title", "")
+    if info.get("_type") == "playlist" and info.get("entries"):
+        for idx, e in enumerate(info["entries"], 1):
+            # flat 模式下 entry 的 url 才是可下载的完整链接
+            item_url = e.get("url") or e.get("id") or ""
+            # bilibili 的 entry.id 可能是裸 BV,补全
+            if item_url and not item_url.startswith("http"):
+                item_url = f"https://www.bilibili.com/video/{item_url}"
+            # flat 模式元数据稀疏:标题/时长大多拿不到,用兜底
+            item_title = e.get("title") or ""
+            if not item_title:
+                # 分P链接 ?p=N 用 P 序号兜底
+                if "?p=" in item_url:
+                    pnum = item_url.split("?p=")[-1].split("&")[0]
+                    item_title = f"第 {pnum} 集"
+                else:
+                    item_title = f"第 {idx} 项"
+            items.append({
+                "title": item_title,
+                "url": item_url,
+                "duration": e.get("duration") or 0,
+            })
+    else:
+        # 单视频
+        items.append({
+            "title": info.get("title", "(无标题)"),
+            "url": url,
+            "duration": info.get("duration") or 0,
+        })
+    return {"kind": "list", "title": title, "items": items}
+
+
 def _sanitize(name: str) -> str:
     for ch in '\\/:*?"<>|':
         name = name.replace(ch, "_")
@@ -181,6 +228,25 @@ def _is_cancelled(task_id: str) -> bool:
 
 
 def _run_download(task_id: str, url: str, label: str, formats: list[dict], page: int) -> None:
+    # formats 为空时(批量任务未预解析),自己解析补上
+    if not formats:
+        try:
+            summary = parse_part(url, page) if page > 1 else parse_video(url)
+            if not summary.get("formats"):
+                summary = parse_part(url, 1)
+            formats = summary["formats"]
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t and not t.get("title"):
+                    t["title"] = summary["title"]
+        except Exception as e:
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t:
+                    t["status"] = "failed"
+                    t["error"] = str(e)
+            _persist()
+            return
     fmt_str = best_video_audio_choice(formats, label)
     # 分 P:文件名带 P 序号,避免覆盖
     tmpl = "%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1 else "%(title).200B.%(ext)s"
@@ -240,6 +306,48 @@ def start_download(url: str, label: str, page: int = 1) -> str:
     th.start()
     _persist()
     return task_id
+
+
+def start_batch(items: list[dict], label: str, max_concurrent: int = 2) -> list[str]:
+    """批量启动下载。items: [{url, title?, page?}]。返回 task_id 列表。
+
+    限制并发数避免被风控/带宽爆。用信号量控制。
+    """
+    import collections
+    sem = threading.Semaphore(max(1, max_concurrent))
+    task_ids = []
+
+    def _batch_run(task_id, url, label, page, title):
+        sem.acquire()
+        try:
+            _run_download(task_id, url, label, [], page)
+        finally:
+            sem.release()
+
+    for item in items:
+        url = item.get("url", "")
+        page = int(item.get("page", 1))
+        title = item.get("title", "") or "(解析中)"
+        # 跳过重复(同 url+page 在跑)
+        if find_active_by_url(url, label) and page == 1:
+            continue
+        task_id = uuid.uuid4().hex[:12]
+        with _tasks_lock:
+            _tasks[task_id] = {
+                "task_id": task_id,
+                "status": "queued",
+                "progress": 0, "speed": 0, "eta": 0,
+                "title": title, "url": url, "label": label,
+                "page": page, "error": "", "cancel": False,
+            }
+        th = threading.Thread(target=_batch_run,
+                              args=(task_id, url, label, page, title), daemon=True)
+        with _tasks_lock:
+            _threads[task_id] = th
+        th.start()
+        task_ids.append(task_id)
+    _persist()
+    return task_ids
 
 
 def cancel_download(task_id: str) -> bool:

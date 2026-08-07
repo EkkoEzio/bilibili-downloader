@@ -131,6 +131,60 @@ def cancel(task_id):
     return jsonify({"ok": ok})
 
 
+# ---------- 批量 ----------
+@app.route("/api/batch/parse", methods=["POST"])
+def batch_parse():
+    """批量解析。接受:
+    - urls: [多个视频链接]  → 逐个返回标题/时长
+    - url: 单个收藏夹/合集/UP主页链接 → 返回里面所有视频
+    返回统一的 {items:[{title,url,duration}]}
+    """
+    body = request.get_json(silent=True) or {}
+    urls = body.get("urls")  # 多链接模式
+    url = body.get("url", "").strip()  # 收藏夹/合集模式
+
+    items = []
+    if urls and isinstance(urls, list):
+        # 多链接模式:逐个 flat 解析
+        for u in urls:
+            u = (u or "").strip()
+            if not u:
+                continue
+            try:
+                r = downloader.resolve_playlist(u)
+                items.extend(r["items"])
+            except Exception as e:
+                items.append({"title": f"(解析失败: {str(e)[:40]})",
+                              "url": u, "duration": 0, "error": str(e)[:80]})
+    elif url:
+        try:
+            r = downloader.resolve_playlist(url)
+            items = r["items"]
+            title = r.get("title", "")
+            return jsonify({"ok": True, "items": items, "title": title})
+        except Exception as e:
+            return jsonify({"ok": False, "error": str(e)}), 500
+    else:
+        return jsonify({"ok": False, "error": "请提供 url 或 urls"}), 400
+
+    return jsonify({"ok": True, "items": items})
+
+
+@app.route("/api/batch/download", methods=["POST"])
+def batch_download():
+    """批量启动下载。{items:[{url,title,page}], label}"""
+    body = request.get_json(silent=True) or {}
+    items = body.get("items") or []
+    label = body.get("label", "")
+    if not items:
+        return jsonify({"ok": False, "error": "没有待下载项"}), 400
+    try:
+        tids = downloader.start_batch(items, label)
+        return jsonify({"ok": True, "task_ids": tids, "count": len(tids)})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
     """SSE 推送单个任务进度,完成/失败后关闭。"""
