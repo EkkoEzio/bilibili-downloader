@@ -77,9 +77,10 @@
   要 `import config; config.DOWNLOAD_DIR`。
 
 ### B4 历史卡片显示观看进度
-- 状态: pending
-- 说明: 观看历史里标注「看到 xx%」,方便续看/决定要不要下。
-- 技术备注: 历史项顶层有 `progress`(秒)和 `duration`,相除即百分比。
+- 状态: done(2026-08-08)
+- 实现: fetch_history 归一化返回 watched_seconds + watched_pct;
+  前端 renderLibList 在标题下方加蓝色细进度条 + 百分比(0<x<100% 才显示)。
+- 验证: API 返回 3.7%/22.1% 真实进度,16 测试不破。
 
 ### B5 列表搜索过滤
 - 状态: done(2026-08-08)
