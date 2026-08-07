@@ -137,10 +137,33 @@
     <div class="btn-row" style="margin-top:0;align-items:center;">
       <span style="font-size:13px;color:#18191c;min-width:80px;">下载目录</span>
       <input type="text" id="config-dir-input" style="flex:1;">
-      <button onclick="saveConfig()">保存</button>
       <button class="small secondary" onclick="resetConfigDir()">恢复默认</button>
     </div>
-    <div class="hint">路径含 ~ 自动展开。目录不存在会自动创建。</div>
+    <div class="hint" style="margin-bottom:12px;">路径含 ~ 自动展开。目录不存在会自动创建。</div>
+
+    <div class="btn-row" style="margin-top:0;align-items:center;margin-bottom:6px;">
+      <span style="font-size:13px;color:#18191c;min-width:80px;">同时下载数</span>
+      <select id="config-concurrent">
+        <option value="1">1</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+      <span style="margin-left:24px;font-size:13px;color:#18191c;min-width:80px;">单任务限速</span>
+      <select id="config-ratelimit" style="margin-left:8px;">
+        <option value="0">不限速</option>
+        <option value="1">1 MB/s</option>
+        <option value="2">2 MB/s</option>
+        <option value="5">5 MB/s</option>
+        <option value="10">10 MB/s</option>
+        <option value="20">20 MB/s</option>
+      </select>
+    </div>
+    <div class="hint" style="margin-bottom:12px;">并发和限速只影响后续启动的任务。</div>
+
+    <div class="btn-row" style="margin-top:0;">
+      <button onclick="saveAllConfig()">保存设置</button>
+    </div>
   </section>
 
   <!-- 登录区(登录成功后隐藏) -->
@@ -1161,29 +1184,40 @@ function escapeAttr(s) { return escapeHtml(s); }
 function toggleSettings() {
   const sec = document.getElementById('settings-section');
   sec.style.display = sec.style.display === 'none' ? '' : 'none';
-  if (sec.style.display !== 'none') {
-    document.getElementById('config-dir-input').value = DL_DIR;
-  }
+  if (sec.style.display !== 'none') loadConfigIntoUI();
 }
 
-async function saveConfig() {
+function loadConfigIntoUI() {
+  // 从当前内存中的 DL_DIR + 后端 GET 获取全部配置
+  fetch(API('/api/config')).then(r => r.json()).then(r => {
+    if (!r.ok) return;
+    document.getElementById('config-dir-input').value = r.download_dir || DL_DIR;
+    document.getElementById('config-concurrent').value = String(r.max_concurrent || 2);
+    document.getElementById('config-ratelimit').value = String(r.ratelimit_mbps || 0);
+  });
+}
+
+async function saveAllConfig() {
   const v = document.getElementById('config-dir-input').value.trim();
+  const mc = document.getElementById('config-concurrent').value;
+  const rl = document.getElementById('config-ratelimit').value;
   if (!v) { alert('请填写下载目录'); return; }
   try {
     const r = await (await fetch(API('/api/config'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ download_dir: v })
+      body: JSON.stringify({ download_dir: v, max_concurrent: mc, ratelimit_mbps: rl })
     })).json();
     if (!r.ok) throw new Error(r.error || '保存失败');
     DL_DIR = r.download_dir;
-    alert('已保存。后续下载会保存到:\n' + r.download_dir);
+    alert('已保存:\n目录: ' + r.download_dir +
+          '\n并发: ' + r.max_concurrent + '\n限速: ' + (r.ratelimit_mbps ? r.ratelimit_mbps + ' MB/s' : '不限'));
   } catch (e) { alert(e.message); }
 }
 
 async function resetConfigDir() {
   if (!confirm('恢复默认下载目录 ~/Downloads/bilibili ?')) return;
   document.getElementById('config-dir-input').value = '~/Downloads/bilibili';
-  saveConfig();
+  saveAllConfig();
 }
 
 /* ---------- 初始化 ---------- */

@@ -53,6 +53,10 @@ _load_persisted()
 def _ydl_opts(extra: Optional[dict] = None) -> dict:
     opts = {"quiet": True, "no_warnings": True, "noprogress": True}
     opts.update(get_ytdlp_cookie_arg())
+    # B2: 限速(字节/秒),config 关闭时 None 表示不限
+    rl = config.get_ratelimit_bytes()
+    if rl is not None:
+        opts["ratelimit"] = rl
     if extra:
         opts.update(extra)
     return opts
@@ -349,13 +353,13 @@ def start_download(url: str, label: str, page: int = 1) -> str:
     return task_id
 
 
-def start_batch(items: list[dict], label: str, max_concurrent: int = 2) -> list[str]:
+def start_batch(items: list[dict], label: str, max_concurrent: int = None) -> list[str]:
     """批量启动下载。items: [{url, title?, page?}]。返回 task_id 列表。
 
-    限制并发数避免被风控/带宽爆。用信号量控制。
+    max_concurrent 不传则用 config.MAX_CONCURRENT(默认 2)。
     """
-    import collections
-    sem = threading.Semaphore(max(1, max_concurrent))
+    mc = max_concurrent if max_concurrent is not None else config.MAX_CONCURRENT
+    sem = threading.Semaphore(max(1, int(mc)))
     task_ids = []
 
     def _batch_run(task_id, url, label, page, title):

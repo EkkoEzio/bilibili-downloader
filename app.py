@@ -381,20 +381,21 @@ def tasks():
 
 @app.route("/api/config")
 def get_config():
-    return jsonify({"ok": True, "download_dir": str(config.DOWNLOAD_DIR)})
+    return jsonify({"ok": True, **config.get_config()})
 
 
 @app.route("/api/config", methods=["POST"])
 def set_config():
-    """设置下载目录。{download_dir: '/path/...'}"""
+    """部分更新配置。body 可含 download_dir / max_concurrent / ratelimit_mbps 任意字段。"""
     body = request.get_json(silent=True) or {}
-    new_dir = body.get("download_dir", "").strip()
-    if not new_dir:
-        return jsonify({"ok": False, "error": "请填写下载目录"}), 400
-    r = config.set_download_dir(new_dir)
+    if not body:
+        return jsonify({"ok": False, "error": "无更新字段"}), 400
+    r = config.set_config(body)
     if not r.get("ok"):
         return jsonify(r), 400
-    return jsonify({"ok": True, "download_dir": r["path"]})
+    return jsonify({"ok": True, "download_dir": r["download_dir"],
+                   "max_concurrent": r["max_concurrent"],
+                   "ratelimit_mbps": r["ratelimit_mbps"]})
 
 
 @app.route("/api/open-folder", methods=["POST"])
