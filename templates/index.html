@@ -272,6 +272,7 @@
     <div id="lib-history">
       <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
         <button onclick="refreshLib()">刷新</button>
+        <input type="text" id="lib-search" placeholder="🔍 按标题/UP主过滤" oninput="applyLibFilter()" style="flex:1;max-width:280px;padding:6px 10px;">
         <span id="history-meta" style="color:#9499a0;font-size:12px;"></span>
       </div>
       <div id="history-list"><div class="empty">加载中...</div></div>
@@ -704,6 +705,11 @@ document.querySelectorAll('.tab[data-lib]').forEach(t => {
     document.getElementById('lib-up').style.display = _libMode === 'up' ? '' : 'none';
     document.getElementById('lib-fav').style.display = _libMode === 'fav' ? '' : 'none';
     document.getElementById('lib-later').style.display = _libMode === 'later' ? '' : 'none';
+    // 切 tab 时清空搜索框和过滤态
+    const s = document.getElementById('lib-search');
+    if (s) s.value = '';
+    const metaEl = document.getElementById('history-meta');
+    if (metaEl) delete metaEl.dataset.base;
     refreshLib();
   });
 });
@@ -892,14 +898,17 @@ async function loadWatchlater() {
 }
 
 function renderLibList(items, container) {
+  // items 是已过滤后的列表;但勾选状态按 _libItems 的原始索引跟踪
   if (items.length === 0) {
-    container.innerHTML = '<div class="empty">没有内容</div>';
+    container.innerHTML = '<div class="empty">没有匹配结果</div>';
     return;
   }
-  // 视频卡片列表(带封面、标题、UP主、时长、勾选)
-  container.innerHTML = items.map((it, i) => `
+  container.innerHTML = items.map((it) => {
+    const origIdx = _libItems.indexOf(it);
+    const checked = origIdx >= 0 && _libChecked.has(origIdx) ? 'checked' : '';
+    return `
     <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
-      <input type="checkbox" data-libidx="${i}">
+      <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)">
       <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" style="width:100px;height:62px;object-fit:cover;border-radius:4px;flex-shrink:0;background:#e3e5e7;">
       <div style="flex:1;min-width:0;">
         <div style="font-size:13px;font-weight:600;word-break:break-all;">${escapeHtml(it.title)}</div>
@@ -908,13 +917,53 @@ function renderLibList(items, container) {
           ${it.view_at ? '· ' + formatTime(it.view_at) : ''}
         </div>
       </div>
-    </label>`).join('');
-  document.querySelectorAll('input[data-libidx]').forEach(cb => cb.addEventListener('change', updateLibCount));
+    </label>`;
+  }).join('');
   updateLibCount();
 }
 
+/* ---------- B5: 搜索过滤 ---------- */
+const _libChecked = new Set();  // _libItems 原始索引的勾选集合(跨重渲染保持)
+
+function toggleLibCheck(origIdx, checked) {
+  if (checked) _libChecked.add(origIdx); else _libChecked.delete(origIdx);
+  updateLibCount();
+}
+
+function getLibSearchQuery() {
+  const el = document.getElementById('lib-search');
+  return el ? el.value.trim().toLowerCase() : '';
+}
+
+function applyLibFilter() {
+  const q = getLibSearchQuery();
+  const list = document.getElementById('history-list');
+  let filtered = _libItems;
+  if (q) {
+    filtered = _libItems.filter(it => {
+      const t = (it.title || '').toLowerCase();
+      const u = (it.uploader || '-').toLowerCase();
+      return t.includes(q) || u.includes(q);
+    });
+  }
+  renderLibList(filtered, list);
+  // 更新过滤计数(保存原始 meta,过滤后追加显示)
+  const metaEl = document.getElementById('history-meta');
+  if (metaEl) {
+    if (!metaEl.dataset.base) metaEl.dataset.base = metaEl.textContent || '';
+    const base = metaEl.dataset.base;
+    metaEl.textContent = q ? `${base} · 过滤 ${filtered.length}/${_libItems.length}` : base;
+  }
+}
+
 function libToggleAll(checked) {
-  document.querySelectorAll('input[data-libidx]').forEach(cb => cb.checked = checked);
+  // 只对当前可见(过滤后)的项生效
+  const boxes = document.querySelectorAll('#history-list input[data-libidx]');
+  boxes.forEach(cb => {
+    const idx = parseInt(cb.dataset.libidx);
+    cb.checked = checked;
+    if (checked) _libChecked.add(idx); else _libChecked.delete(idx);
+  });
   updateLibCount();
 }
 function updateLibCount() {
