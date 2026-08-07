@@ -195,15 +195,16 @@
     <h2>我的B站</h2>
     <div class="tabs" style="margin-bottom:12px;">
       <div class="tab active" data-lib="history">观看历史</div>
+      <div class="tab" data-lib="follow">关注更新</div>
     </div>
 
-    <!-- 观看历史 -->
+    <!-- 历史 / 关注更新 共用列表 -->
     <div id="lib-history">
       <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-        <button onclick="loadHistory()">刷新历史</button>
+        <button onclick="refreshLib()">刷新</button>
         <span id="history-meta" style="color:#9499a0;font-size:12px;"></span>
       </div>
-      <div id="history-list"><div class="empty">点「刷新历史」加载你的观看记录</div></div>
+      <div id="history-list"><div class="empty">加载中...</div></div>
       <div id="history-actions" style="display:none;margin-top:10px;">
         <div class="btn-row">
           <button class="small secondary" onclick="libToggleAll(true)">全选</button>
@@ -613,6 +614,40 @@ async function loadHistory() {
     _libItems = r.items || [];
     renderLibList(_libItems, list);
     meta.textContent = `共 ${_libItems.length} 条`;
+    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+  } catch (e) {
+    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+/* ---------- 我的B站:关注更新 (A2) ---------- */
+let _libMode = 'history';
+
+// 历史/关注 标签切换
+document.querySelectorAll('.tab[data-lib]').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab[data-lib]').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    _libMode = t.dataset.lib;
+    refreshLib();
+  });
+});
+
+function refreshLib() {
+  if (_libMode === 'follow') loadFollow(); else loadHistory();
+}
+
+async function loadFollow() {
+  const list = document.getElementById('history-list');
+  const meta = document.getElementById('history-meta');
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载关注 UP 的最新投稿...(约几秒)</div>';
+  meta.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/follow-updates'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderLibList(_libItems, list);
+    meta.textContent = `共 ${_libItems.length} 条(按时间倒序)`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
     list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';

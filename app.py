@@ -219,6 +219,16 @@ def history():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/follow-updates")
+def follow_updates():
+    """关注 UP 主最近投稿,合并按时间倒序。"""
+    try:
+        items = auth.fetch_follow_updates()
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
     """SSE 推送单个任务进度,完成/失败后关闭。"""

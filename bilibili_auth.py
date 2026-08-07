@@ -217,3 +217,101 @@ def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
             "url": f"https://www.bilibili.com/video/{it.get('bvid','')}",
         })
     return items
+
+
+def _my_mid(cj) -> Optional[int]:
+    try:
+        resp = requests.get(NAV_API, cookies=cj, headers=BROWSER_HEADERS, timeout=10)
+        return resp.json().get("data", {}).get("mid")
+    except Exception:
+        return None
+
+
+def fetch_followings(page: int = 1, size: int = 50) -> list[dict]:
+    """拉取我关注的 UP 主列表。"""
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取关注列表")
+    mid = _my_mid(cj)
+    if not mid:
+        raise RuntimeError("无法获取用户 ID")
+    resp = requests.get("https://api.bilibili.com/x/relation/followings",
+                        cookies=cj, headers=BROWSER_HEADERS,
+                        params={"vmid": mid, "pn": page, "ps": min(size, 50), "order": "desc"},
+                        timeout=12)
+    data = _safe_json(resp)
+    if not data or data.get("code") != 0:
+        raise RuntimeError((data or {}).get("message", "获取失败(可能被风控,稍后再试)"))
+    return [{"mid": f.get("mid"), "uname": f.get("uname", ""), "face": f.get("face", "")}
+            for f in (data.get("data", {}) or {}).get("list", []) or []]
+
+
+_wbi_ie = None
+
+
+def _get_wbi_ie():
+    """复用 yt-dlp 的 WBI 签名器(它内部处理 key 缓存)。"""
+    global _wbi_ie
+    if _wbi_ie is not None:
+        return _wbi_ie
+    import yt_dlp
+    from yt_dlp.extractor.bilibili import BiliBiliIE
+    ydl = yt_dlp.YoutubeDL({"quiet": True, **get_ytdlp_cookie_arg()})
+    _wbi_ie = BiliBiliIE(ydl)
+    return _wbi_ie
+
+
+def _safe_json(resp):
+    try:
+        return resp.json()
+    except Exception:
+        return None
+
+
+def fetch_up_videos(mid: int, ps: int = 10) -> list[dict]:
+    """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。单个失败不影响整体。"""
+    try:
+        import random as _rnd, time as _t
+        _t.sleep(_rnd.uniform(0, 0.5))  # 错峰,降低被限流概率
+        ie = _get_wbi_ie()
+        signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": "1", "order": "pubdate"}, str(mid))
+        resp = requests.get("https://api.bilibili.com/x/space/wbi/arc/search",
+                            params=signed, cookies=get_cookiejar(),
+                            headers={**BROWSER_HEADERS, "Referer": f"https://space.bilibili.com/{mid}"},
+                            timeout=12)
+        data = _safe_json(resp)
+        if not data or data.get("code") != 0:
+            return []
+    except Exception:
+        return []
+    items = []
+    for v in (data.get("data", {}) or {}).get("list", {}).get("vlist", []) or []:
+        items.append({
+            "bvid": v.get("bvid", ""),
+            "title": v.get("title", ""),
+            "uploader": v.get("author", ""),
+            "thumbnail": (v.get("pic") or "").replace("http:", "https:"),
+            "view_at": v.get("created", 0),
+            "url": f"https://www.bilibili.com/video/{v.get('bvid','')}",
+        })
+    return items
+
+
+_follow_cache = {"items": None, "ts": 0.0}
+
+
+def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -> list[dict]:
+    """并发拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 2 分钟缓存。"""
+    import time as _time
+    if (not force and _follow_cache["items"] is not None
+            and _time.time() - _follow_cache["ts"] < 120):
+        return _follow_cache["items"]
+    from concurrent.futures import ThreadPoolExecutor
+    follows = fetch_followings(1, max_ups)
+    results = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for items in ex.map(lambda f: fetch_up_videos(f["mid"], ps), follows):
+            results.extend(items)
+    results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
+    _follow_cache.update(items=results, ts=_time.time())
+    return results
