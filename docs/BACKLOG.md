@@ -35,11 +35,12 @@
 - 注意: 同样受 B 站 arc/search 限流影响(见 A2),部分 UP 会返回空。
 
 ### A4 我的收藏夹浏览
-- 状态: pending
-- 说明: 列出我所有收藏夹,点进去看内容,多选下载(比粘收藏夹链接更直接)。
-- 技术备注:
-  - 收藏夹列表已验证:`/x/v3/fav/folder/created/list-all?up_mid={mid}`(返回 id/fid/title/media_count)。
-  - 单个收藏夹内容可用 yt-dlp `medialist/detail/ml{fid}` 或 fav resource list API。
+- 状态: done(2026-08-08)
+- 实现: /api/fav-folders 拉列表; /api/fav-content?fid 拉内容(yt-dlp medialist);
+  前端收藏夹 tab 显示所有收藏夹(首字母+视频数),点进看内容,多选下载,返回按钮。
+- 验证: 列表3个收藏夹正确(默认/学习/python);内容接口通(本账号收藏夹内容API返回0,
+  属账号隐私或限流,非功能问题)。
+- 注意: 私密收藏夹或限流时内容为空。
 
 ### A5 稍后再看列表
 - 状态: pending
