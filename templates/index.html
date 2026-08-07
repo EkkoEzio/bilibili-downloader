@@ -188,6 +188,38 @@
     </div>
   </section>
 
+  <!-- 我的B站 内容浏览 -->
+  <section id="library-section">
+    <h2>我的B站</h2>
+    <div class="tabs" style="margin-bottom:12px;">
+      <div class="tab active" data-lib="history">观看历史</div>
+    </div>
+
+    <!-- 观看历史 -->
+    <div id="lib-history">
+      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+        <button onclick="loadHistory()">刷新历史</button>
+        <span id="history-meta" style="color:#9499a0;font-size:12px;"></span>
+      </div>
+      <div id="history-list"><div class="empty">点「刷新历史」加载你的观看记录</div></div>
+      <div id="history-actions" style="display:none;margin-top:10px;">
+        <div class="btn-row">
+          <button class="small secondary" onclick="libToggleAll(true)">全选</button>
+          <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
+          <span style="color:#9499a0;font-size:12px;">已选 <b id="lib-count">0</b> 项</span>
+          <select id="lib-quality" style="margin-left:auto;max-width:160px;">
+            <option value="">最高画质(自动)</option>
+            <option value="1080P">1080P</option>
+            <option value="720P">720P</option>
+            <option value="480P">480P</option>
+            <option value="360P">360P</option>
+          </select>
+          <button onclick="libDownload()">下载选中</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
   <!-- 任务队列区 -->
   <section>
     <h2>下载队列</h2>
@@ -546,6 +578,88 @@ async function batchDownload() {
   } catch (e) {
     alert(e.message);
   }
+}
+
+/* ---------- 我的B站:观看历史 ---------- */
+let _libItems = [];  // 当前列表项(历史/收藏夹通用)
+
+async function loadHistory() {
+  const list = document.getElementById('history-list');
+  const meta = document.getElementById('history-meta');
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载观看历史...</div>';
+  meta.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/history?size=50'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderLibList(_libItems, list);
+    meta.textContent = `共 ${_libItems.length} 条`;
+    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+  } catch (e) {
+    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+function renderLibList(items, container) {
+  if (items.length === 0) {
+    container.innerHTML = '<div class="empty">没有内容</div>';
+    return;
+  }
+  // 视频卡片列表(带封面、标题、UP主、时长、勾选)
+  container.innerHTML = items.map((it, i) => `
+    <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
+      <input type="checkbox" data-libidx="${i}">
+      <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" style="width:100px;height:62px;object-fit:cover;border-radius:4px;flex-shrink:0;background:#e3e5e7;">
+      <div style="flex:1;min-width:0;">
+        <div style="font-size:13px;font-weight:600;word-break:break-all;">${escapeHtml(it.title)}</div>
+        <div style="font-size:12px;color:#61666d;margin-top:2px;">
+          UP:${escapeHtml(it.uploader || '-')} ${it.duration ? '· ' + formatDuration(it.duration) : ''}
+          ${it.view_at ? '· ' + formatTime(it.view_at) : ''}
+        </div>
+      </div>
+    </label>`).join('');
+  document.querySelectorAll('input[data-libidx]').forEach(cb => cb.addEventListener('change', updateLibCount));
+  updateLibCount();
+}
+
+function libToggleAll(checked) {
+  document.querySelectorAll('input[data-libidx]').forEach(cb => cb.checked = checked);
+  updateLibCount();
+}
+function updateLibCount() {
+  const n = document.querySelectorAll('input[data-libidx]:checked').length;
+  const el = document.getElementById('lib-count');
+  if (el) el.textContent = n;
+}
+
+async function libDownload() {
+  const checked = [...document.querySelectorAll('input[data-libidx]:checked')];
+  if (checked.length === 0) { alert('请至少勾选一项'); return; }
+  const label = document.getElementById('lib-quality').value;
+  const items = checked.map(cb => {
+    const it = _libItems[parseInt(cb.dataset.libidx)];
+    return { url: it.url, title: it.title, page: 1 };
+  });
+  try {
+    const r = await (await fetch(API('/api/batch/download'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ items, label })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '启动失败');
+    alert(`已加入 ${r.count} 个下载任务`);
+    r.task_ids.forEach(subscribeProgress);
+  } catch (e) { alert(e.message); }
+}
+
+function formatTime(ts) {
+  if (!ts) return '';
+  const d = new Date(ts * 1000);
+  const now = new Date();
+  const diff = (now - d) / 1000;
+  if (diff < 3600) return Math.floor(diff/60) + '分钟前';
+  if (diff < 86400) return Math.floor(diff/3600) + '小时前';
+  if (diff < 604800) return Math.floor(diff/86400) + '天前';
+  return (d.getMonth()+1) + '/' + d.getDate();
 }
 
 function subscribeProgress(taskId) {

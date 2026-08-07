@@ -185,6 +185,19 @@ def batch_download():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ---------- 内容浏览 ----------
+@app.route("/api/history")
+def history():
+    """观看历史。?page=1&size=50"""
+    page = int(request.args.get("page", 1))
+    size = int(request.args.get("size", 50))
+    try:
+        items = auth.fetch_history(page, size)
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
     """SSE 推送单个任务进度,完成/失败后关闭。"""

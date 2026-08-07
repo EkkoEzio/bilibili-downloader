@@ -128,30 +128,41 @@ def get_ytdlp_cookie_arg() -> dict:
     return {"cookiesfrombrowser": (BROWSER_COOKIE_SOURCE,)}
 
 
-def get_login_status() -> dict:
-    """用当前生效的 cookie(扫码 > cookies.txt > Edge)调 nav 接口,返回登录信息。
+_cj_cache = {"cj": None, "ts": 0.0}
 
-    复用 get_ytdlp_cookie_arg 的同一套 cookie 来源,保证「能下载就能识别登录态」。
+
+def get_cookiejar():
+    """返回当前生效的 cookiejar(扫码 > cookies.txt > Edge)。失败返回 None。
+
+    缓存 5 分钟:Edge 读 cookie 较耗时,避免每次请求重建。
     """
+    import time as _time
+    if _cj_cache["cj"] is not None and _time.time() - _cj_cache["ts"] < 300:
+        return _cj_cache["cj"]
     cookie_arg = get_ytdlp_cookie_arg()
-    cookies = None
     if "cookiefile" in cookie_arg:
-        # 扫码或 cookies.txt:从文件读 SESSDATA
         try:
             import http.cookiejar
             cj = http.cookiejar.MozillaCookieJar(cookie_arg["cookiefile"])
             cj.load(ignore_discard=True, ignore_expires=True)
-            cookies = cj
+            _cj_cache.update(cj=cj, ts=_time.time())
+            return cj
         except Exception:
             pass
-    if cookies is None and "cookiesfrombrowser" in cookie_arg:
-        # Edge:借 yt-dlp 读浏览器 cookie
+    if "cookiesfrombrowser" in cookie_arg:
         try:
             import yt_dlp
             with yt_dlp.YoutubeDL({"quiet": True, **cookie_arg}) as ydl:
-                cookies = ydl.cookiejar
+                _cj_cache.update(cj=ydl.cookiejar, ts=_time.time())
+                return ydl.cookiejar
         except Exception:
             pass
+    return None
+
+
+def get_login_status() -> dict:
+    """用当前生效的 cookie(扫码 > cookies.txt > Edge)调 nav 接口,返回登录信息。"""
+    cookies = get_cookiejar()
     if cookies is None:
         return {"logged_in": False}
     try:
@@ -166,3 +177,43 @@ def get_login_status() -> dict:
         }
     except Exception as e:
         return {"logged_in": False, "error": str(e)}
+
+
+def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
+    """拉取观看历史。返回归一化的视频列表(最新在前)。
+
+    需要 cookiejar(扫码/Edge/cookies.txt)。size 上限 100/页。
+    """
+    import time as _time
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取观看历史")
+    # B 站接口偶发 SSL 断连,自动重试
+    last = None
+    for attempt in range(3):
+        try:
+            resp = requests.get("https://api.bilibili.com/x/v2/history",
+                                cookies=cj, headers=BROWSER_HEADERS,
+                                params={"pn": page, "ps": min(size, 100)}, timeout=12)
+            data = resp.json()
+            break
+        except requests.RequestException as e:
+            last = e
+            _time.sleep(1 + attempt)
+    else:
+        raise RuntimeError(f"网络错误(已重试 3 次):{last}")
+    if data.get("code") != 0:
+        raise RuntimeError(data.get("message", "获取失败"))
+    items = []
+    for it in data.get("data", []) or []:
+        owner = it.get("owner") or {}
+        items.append({
+            "bvid": it.get("bvid", ""),
+            "title": it.get("title", ""),
+            "uploader": owner.get("name", ""),
+            "duration": it.get("duration", 0),
+            "thumbnail": it.get("pic", ""),
+            "view_at": it.get("view_at", 0),
+            "url": f"https://www.bilibili.com/video/{it.get('bvid','')}",
+        })
+    return items
