@@ -129,12 +129,34 @@ def get_ytdlp_cookie_arg() -> dict:
 
 
 def get_login_status() -> dict:
-    """用当前 cookie 调 nav 接口,返回登录信息。"""
-    sess = load_session()
-    if not sess or not sess.get("SESSDATA"):
+    """用当前生效的 cookie(扫码 > cookies.txt > Edge)调 nav 接口,返回登录信息。
+
+    复用 get_ytdlp_cookie_arg 的同一套 cookie 来源,保证「能下载就能识别登录态」。
+    """
+    cookie_arg = get_ytdlp_cookie_arg()
+    cookies = None
+    if "cookiefile" in cookie_arg:
+        # 扫码或 cookies.txt:从文件读 SESSDATA
+        try:
+            import http.cookiejar
+            cj = http.cookiejar.MozillaCookieJar(cookie_arg["cookiefile"])
+            cj.load(ignore_discard=True, ignore_expires=True)
+            cookies = cj
+        except Exception:
+            pass
+    if cookies is None and "cookiesfrombrowser" in cookie_arg:
+        # Edge:借 yt-dlp 读浏览器 cookie
+        try:
+            import yt_dlp
+            with yt_dlp.YoutubeDL({"quiet": True, **cookie_arg}) as ydl:
+                cookies = ydl.cookiejar
+        except Exception:
+            pass
+    if cookies is None:
         return {"logged_in": False}
     try:
-        resp = requests.get(NAV_API, cookies={"SESSDATA": sess["SESSDATA"]}, timeout=10)
+        resp = requests.get(NAV_API, cookies=cookies,
+                            headers={"User-Agent": BROWSER_HEADERS["User-Agent"]}, timeout=10)
         d = resp.json().get("data", {})
         return {
             "logged_in": d.get("isLogin", False),

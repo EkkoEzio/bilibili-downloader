@@ -124,8 +124,8 @@
     <div id="login-badge">未登录</div>
   </header>
 
-  <!-- 登录区 -->
-  <section>
+  <!-- 登录区(登录成功后隐藏) -->
+  <section id="login-section">
     <h2>登录</h2>
     <div class="tabs">
       <div class="tab active" data-tab="qrcode">扫码登录</div>
@@ -197,15 +197,29 @@ async function refreshLogin() {
   try {
     const r = await (await fetch(API('/api/login/status'))).json();
     const badge = document.getElementById('login-badge');
+    const loginSection = document.getElementById('login-section');
     if (r.logged_in) {
       const vip = r.vip ? ' [大会员]' : '';
-      badge.textContent = '✓ 已登录 ' + r.uname + vip;
+      badge.innerHTML = '✓ 已登录 ' + escapeHtml(r.uname) + vip
+        + ' <a href="#" onclick="logout();return false;" style="color:inherit;text-decoration:underline;font-size:12px;margin-left:6px;">退出</a>';
       badge.className = 'login-badge ok' + (r.vip ? ' vip' : '');
+      // 登录成功 → 隐藏登录区,直接展示下载区
+      loginSection.style.display = 'none';
     } else {
       badge.textContent = '未登录';
       badge.className = 'login-badge';
+      loginSection.style.display = '';
     }
   } catch (e) { /* ignore */ }
+}
+
+async function logout() {
+  if (!confirm('确定退出登录?')) return;
+  await fetch(API('/api/login/logout'), { method: 'POST' });
+  await refreshLogin();
+  // 清空已显示的二维码
+  document.getElementById('qrcode-img').innerHTML = '';
+  document.getElementById('qr-status').textContent = '';
 }
 
 /* ---------- 扫码登录 ---------- */
