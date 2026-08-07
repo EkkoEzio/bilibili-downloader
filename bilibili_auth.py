@@ -207,11 +207,16 @@ def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
     items = []
     for it in data.get("data", []) or []:
         owner = it.get("owner") or {}
+        dur = it.get("duration", 0)
+        watched = max(0, int(it.get("progress") or 0))
+        pct = round(watched / dur * 100, 1) if dur else 0
         items.append({
             "bvid": it.get("bvid", ""),
             "title": it.get("title", ""),
             "uploader": owner.get("name", ""),
-            "duration": it.get("duration", 0),
+            "duration": dur,
+            "watched_seconds": watched,
+            "watched_pct": pct,
             "thumbnail": it.get("pic", ""),
             "view_at": it.get("view_at", 0),
             "url": f"https://www.bilibili.com/video/{it.get('bvid','')}",

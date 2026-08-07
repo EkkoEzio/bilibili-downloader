@@ -906,6 +906,17 @@ function renderLibList(items, container) {
   container.innerHTML = items.map((it) => {
     const origIdx = _libItems.indexOf(it);
     const checked = origIdx >= 0 && _libChecked.has(origIdx) ? 'checked' : '';
+    const pct = it.watched_pct || 0;
+    const sec = it.watched_seconds || 0;
+    const showProgress = it.duration && pct > 0 && pct < 100;
+    const progressHtml = showProgress
+      ? `<div style="margin-top:4px;display:flex;align-items:center;gap:6px;">
+           <div style="flex:1;background:#e3e5e7;height:5px;border-radius:3px;overflow:hidden;">
+             <div style="background:#00a1d6;height:100%;width:${Math.min(pct, 100)}%;transition:width .3s;"></div>
+           </div>
+           <span style="font-size:11px;color:#00a1d6;font-weight:600;min-width:50px;text-align:right;">${pct}%</span>
+         </div>`
+      : '';
     return `
     <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
       <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)">
@@ -916,6 +927,7 @@ function renderLibList(items, container) {
           UP:${escapeHtml(it.uploader || '-')} ${it.duration ? '· ' + formatDuration(it.duration) : ''}
           ${it.view_at ? '· ' + formatTime(it.view_at) : ''}
         </div>
+        ${progressHtml}
       </div>
     </label>`;
   }).join('');
