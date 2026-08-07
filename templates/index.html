@@ -196,6 +196,23 @@
     <div class="tabs" style="margin-bottom:12px;">
       <div class="tab active" data-lib="history">观看历史</div>
       <div class="tab" data-lib="follow">关注更新</div>
+      <div class="tab" data-lib="up">UP 清单</div>
+    </div>
+
+    <!-- A3: UP 清单管理 -->
+    <div id="lib-up" style="display:none;">
+      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+        <input type="text" id="up-add-input" placeholder="粘贴 B 站主页链接或 mid,如 space.bilibili.com/12345" style="flex:1;">
+        <button onclick="upAdd()">添加</button>
+        <button class="small secondary" onclick="upListRender()">管理清单</button>
+      </div>
+      <div id="up-list-panel" style="display:none;margin-bottom:10px;padding:10px;background:#f7f9fa;border-radius:8px;"></div>
+      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+        <button onclick="upRefresh()">刷新看新增</button>
+        <button class="small secondary" onclick="upShowAll()">查看全部(含已见)</button>
+        <span id="up-meta" style="color:#9499a0;font-size:12px;"></span>
+      </div>
+      <div id="history-list"><div class="empty">添加 UP 主后点「刷新看新增」</div></div>
     </div>
 
     <!-- 历史 / 关注更新 共用列表 -->
@@ -620,15 +637,17 @@ async function loadHistory() {
   }
 }
 
-/* ---------- 我的B站:关注更新 (A2) ---------- */
+/* ---------- 我的B站:关注更新 (A2) + UP清单 (A3) ---------- */
 let _libMode = 'history';
 
-// 历史/关注 标签切换
+// 标签切换
 document.querySelectorAll('.tab[data-lib]').forEach(t => {
   t.addEventListener('click', () => {
     document.querySelectorAll('.tab[data-lib]').forEach(x => x.classList.remove('active'));
     t.classList.add('active');
     _libMode = t.dataset.lib;
+    document.getElementById('lib-history').style.display = _libMode === 'up' ? 'none' : '';
+    document.getElementById('lib-up').style.display = _libMode === 'up' ? '' : 'none';
     refreshLib();
   });
 });
@@ -648,6 +667,83 @@ async function loadFollow() {
     _libItems = r.items || [];
     renderLibList(_libItems, list);
     meta.textContent = `共 ${_libItems.length} 条(按时间倒序)`;
+    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+  } catch (e) {
+    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+/* ---------- A3: UP 清单 ---------- */
+async function upAdd() {
+  const input = document.getElementById('up-add-input');
+  const v = input.value.trim();
+  if (!v) { alert('请粘贴 UP 主页链接或 mid'); return; }
+  try {
+    const r = await (await fetch(API('/api/up-list/add'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ input: v })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '添加失败');
+    input.value = '';
+    alert(`已添加 UP (mid: ${r.up.mid}${r.up.uname ? ', ' + r.up.uname : ''})`);
+    upListRender();
+  } catch (e) { alert(e.message); }
+}
+
+async function upListRender() {
+  const panel = document.getElementById('up-list-panel');
+  const r = await (await fetch(API('/api/up-list'))).json();
+  if (!r.ok || r.ups.length === 0) {
+    panel.style.display = 'none';
+    if (r.ups.length === 0) { panel.style.display = ''; panel.innerHTML = '<div style="color:#9499a0;">清单为空。粘贴主页链接或 mid 加 UP。</div>'; }
+    return;
+  }
+  panel.style.display = '';
+  panel.innerHTML = `<div style="font-size:13px;font-weight:600;margin-bottom:8px;">已管理 UP(${r.ups.length})</div>` + r.ups.map(u => `
+    <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
+      <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'" style="width:24px;height:24px;border-radius:50%;background:#e3e5e7;">
+      <span style="flex:1;">${escapeHtml(u.uname || ('UP ' + u.mid))} <span style="color:#9499a0;">mid:${u.mid}</span></span>
+      <button class="small danger" onclick="upRemove(${u.mid})">移除</button>
+    </div>`).join('');
+}
+
+async function upRemove(mid) {
+  if (!confirm('从清单移除 UP ' + mid + '?')) return;
+  const r = await (await fetch(API('/api/up-list/remove'), {
+    method: 'POST', headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ mid })
+  })).json();
+  if (r.ok) upListRender();
+}
+
+async function upRefresh() {
+  const list = document.getElementById('history-list');
+  const meta = document.getElementById('up-meta');
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>拉取清单 UP 的最新视频...(约几秒)</div>';
+  meta.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/up-updates'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderLibList(_libItems, list);
+    meta.textContent = r.ups.length === 0 ? '清单为空,先添加 UP'
+      : `共 ${_libItems.length} 条新增(对比上次刷新)`;
+    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+  } catch (e) {
+    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+async function upShowAll() {
+  const list = document.getElementById('history-list');
+  const meta = document.getElementById('up-meta');
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>拉取清单 UP 的全部近期视频...</div>';
+  try {
+    const r = await (await fetch(API('/api/up-updates?include_seen=true'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderLibList(_libItems, list);
+    meta.textContent = `共 ${_libItems.length} 条(含已见)`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
     list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';

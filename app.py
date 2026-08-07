@@ -229,6 +229,102 @@ def follow_updates():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+# ---------- A3: 自定义 UP 清单 ----------
+import re as _re
+import up_list
+
+
+def _parse_mid_from_input(s: str) -> Optional[int]:
+    """从主页 URL 或纯 mid 数字中提取 mid。支持:
+       - https://space.bilibili.com/12345
+       - 12345
+    """
+    s = (s or "").strip()
+    m = _re.search(r"space\.bilibili\.com/(\d+)", s)
+    if m:
+        return int(m.group(1))
+    if s.isdigit():
+        return int(s)
+    return None
+
+
+@app.route("/api/up-list")
+def up_list_get():
+    return jsonify({"ok": True, "ups": up_list.list_ups()})
+
+
+@app.route("/api/up-list/add", methods=["POST"])
+def up_list_add():
+    """添加 UP。{input: 'https://space.bilibili.com/12345' 或 '12345'}"""
+    body = request.get_json(silent=True) or {}
+    mid = _parse_mid_from_input(body.get("input", ""))
+    if not mid:
+        return jsonify({"ok": False, "error": "请输入 B 站主页链接或 UP 的 mid"}), 400
+    # 尝试从 arc/search 拿 uname/face 显示更友好
+    items = auth.fetch_up_videos(mid, ps=1)
+    uname = items[0]["uploader"] if items else ""
+    face = items[0]["thumbnail"] if items else ""
+    u = up_list.add_up(mid, uname, face)
+    return jsonify({"ok": True, "up": u})
+
+
+@app.route("/api/up-list/remove", methods=["POST"])
+def up_list_remove():
+    body = request.get_json(silent=True) or {}
+    mid = body.get("mid")
+    if mid is None:
+        return jsonify({"ok": False, "error": "缺少 mid"}), 400
+    ok = up_list.remove_up(int(mid))
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/up-list/reset-seen", methods=["POST"])
+def up_list_reset_seen():
+    body = request.get_json(silent=True) or {}
+    mid = body.get("mid")
+    if mid is None:
+        return jsonify({"ok": False, "error": "缺少 mid"}), 400
+    up_list.reset_seen(int(mid))
+    return jsonify({"ok": True})
+
+
+@app.route("/api/up-updates")
+def up_updates():
+    """拉清单中所有 UP 的新增视频。?include_seen=true 把已见的一起返回(否则只返回增量)。"""
+    from concurrent.futures import ThreadPoolExecutor
+    include_seen = request.args.get("include_seen") == "true"
+    ups = up_list.list_ups()
+    if not ups:
+        return jsonify({"ok": True, "items": [], "ups": []})
+
+    def fetch_one(up):
+        return up, auth.fetch_up_videos(int(up["mid"]), ps=20)
+
+    results_by_up = []
+    with ThreadPoolExecutor(max_workers=6) as ex:
+        for up, videos in ex.map(fetch_one, ups):
+            last = up_list.get_last_seen(int(up["mid"]))
+            if not include_seen and last:
+                # 只保留比 last_seen 时间更新的
+                seen_ts = last.get("ts", 0)
+                videos = [v for v in videos if v.get("view_at", 0) > seen_ts]
+                # 也排除 bvid 相同的(防御)
+                seen_bvid = last.get("bvid", "")
+                videos = [v for v in videos if v.get("bvid") != seen_bvid]
+            for v in videos:
+                v["uploader_mid"] = up["mid"]
+            results_by_up.extend(videos)
+
+    results_by_up.sort(key=lambda x: x.get("view_at", 0), reverse=True)
+    # 自动更新 last_seen 为每个 UP 的最新视频
+    for up in ups:
+        vs = auth.fetch_up_videos(int(up["mid"]), ps=1)
+        if vs:
+            v = vs[0]
+            up_list.mark_seen(int(up["mid"]), v["bvid"], v.get("view_at", 0), v.get("title", ""))
+    return jsonify({"ok": True, "items": results_by_up, "ups": ups})
+
+
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
     """SSE 推送单个任务进度,完成/失败后关闭。"""
