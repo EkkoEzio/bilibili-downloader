@@ -1,0 +1,435 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bilibili download</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body {
+    font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+    background: #f4f5f7;
+    color: #18191c;
+    line-height: 1.6;
+    padding: 20px;
+    max-width: 880px;
+    margin: 0 auto;
+  }
+  header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 24px;
+    padding-bottom: 16px;
+    border-bottom: 2px solid #00a1d6;
+  }
+  header h1 { font-size: 22px; color: #00a1d6; }
+  #login-badge {
+    font-size: 14px;
+    padding: 4px 12px;
+    border-radius: 14px;
+    background: #e3e5e7;
+    color: #61666d;
+  }
+  #login-badge.ok { background: #e8f5e9; color: #2e7d32; }
+  #login-badge.vip { background: #fff4e0; color: #b8860b; }
+
+  section {
+    background: #fff;
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 16px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+  }
+  section h2 { font-size: 16px; margin-bottom: 14px; color: #18191c; }
+
+  /* tabs */
+  .tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid #e3e5e7; }
+  .tab {
+    padding: 8px 16px;
+    cursor: pointer;
+    border-bottom: 2px solid transparent;
+    font-size: 14px;
+    color: #61666d;
+    transition: all 0.15s;
+  }
+  .tab.active { color: #00a1d6; border-bottom-color: #00a1d6; }
+  .tab:hover { color: #00a1d6; }
+  .tab-panel { display: none; }
+  .tab-panel.active { display: block; }
+
+  /* form elements */
+  input[type="text"], textarea {
+    width: 100%;
+    padding: 10px 12px;
+    border: 1px solid #c9ccd0;
+    border-radius: 6px;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    transition: border 0.15s;
+  }
+  input[type="text"]:focus, textarea:focus { border-color: #00a1d6; }
+  textarea { min-height: 80px; resize: vertical; font-family: monospace; font-size: 12px; }
+  select {
+    padding: 8px 10px;
+    border: 1px solid #c9ccd0;
+    border-radius: 6px;
+    font-size: 14px;
+    background: #fff;
+    cursor: pointer;
+  }
+  button {
+    padding: 9px 20px;
+    border: none;
+    border-radius: 6px;
+    background: #00a1d6;
+    color: #fff;
+    font-size: 14px;
+    cursor: pointer;
+    transition: background 0.15s;
+    font-family: inherit;
+  }
+  button:hover { background: #0091c2; }
+  button:disabled { background: #c9ccd0; cursor: not-allowed; }
+  button.secondary { background: #fff; color: #00a1d6; border: 1px solid #00a1d6; }
+  button.secondary:hover { background: #e3f4fb; }
+  .btn-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
+
+  .hint { font-size: 12px; color: #9499a0; margin-top: 6px; }
+  .url-row { display: flex; gap: 10px; }
+  .url-row input { flex: 1; }
+
+  /* parse result */
+  #parse-result { margin-top: 16px; }
+  .video-card { display: flex; gap: 14px; padding: 12px; background: #f7f9fa; border-radius: 8px; }
+  .video-card img { width: 160px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #e3e5e7; }
+  .video-info { flex: 1; min-width: 0; }
+  .video-info .vt { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+  .video-info .vm { font-size: 13px; color: #61666d; }
+
+  /* progress */
+  .task-item { padding: 12px; background: #f7f9fa; border-radius: 8px; margin-top: 10px; }
+  .task-item .ti-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; }
+  .task-item .ti-head .label { font-weight: 600; }
+  .progress-wrap { background: #e3e5e7; border-radius: 4px; height: 18px; overflow: hidden; position: relative; }
+  .progress-bar { background: #00a1d6; height: 100%; transition: width 0.3s; }
+  .progress-text { position: absolute; top: 0; left: 0; right: 0; text-align: center; font-size: 11px; color: #18191c; line-height: 18px; }
+  .task-item.done { border-left: 3px solid #2e7d32; }
+  .task-item.failed { border-left: 3px solid #e53935; }
+  .task-item .ti-err { color: #e53935; font-size: 13px; margin-top: 4px; }
+  .status-tag { font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+  .status-tag.queued { background: #e3e5e7; color: #61666d; }
+  .status-tag.downloading, .status-tag.merging { background: #fff4e0; color: #b8860b; }
+  .status-tag.done { background: #e8f5e9; color: #2e7d32; }
+  .status-tag.failed { background: #fdecea; color: #c62828; }
+
+  #qrcode-img { text-align: center; margin: 12px 0; }
+  #qrcode-img img { border: 1px solid #e3e5e7; border-radius: 6px; }
+  #qr-status { text-align: center; font-size: 13px; color: #61666d; min-height: 20px; }
+  .empty { color: #9499a0; font-size: 14px; padding: 20px 0; text-align: center; }
+</style>
+</head>
+<body>
+  <header>
+    <h1>bilibili download</h1>
+    <div id="login-badge">未登录</div>
+  </header>
+
+  <!-- 登录区 -->
+  <section>
+    <h2>登录</h2>
+    <div class="tabs">
+      <div class="tab active" data-tab="qrcode">扫码登录</div>
+      <div class="tab" data-tab="browser">使用 Edge</div>
+      <div class="tab" data-tab="cookie">cookies.txt</div>
+    </div>
+
+    <div class="tab-panel active" id="panel-qrcode">
+      <div id="qrcode-img"></div>
+      <div id="qr-status"></div>
+      <div class="btn-row">
+        <button onclick="showQrcode()">显示二维码</button>
+      </div>
+      <div class="hint">用手机 B 站 App 扫码确认即可。一次登录长期有效。</div>
+    </div>
+
+    <div class="tab-panel" id="panel-browser">
+      <p style="font-size:14px;margin-bottom:10px;">直接读取你 Edge 浏览器中已有的 B 站登录态,无需再次登录。</p>
+      <div class="btn-row">
+        <button onclick="useBrowser()">使用 Edge 登录态</button>
+      </div>
+      <div class="hint">前提:你已在 Edge 里登录过 bilibili.com。</div>
+    </div>
+
+    <div class="tab-panel" id="panel-cookie">
+      <textarea id="cookie-txt-input" placeholder="粘贴 cookies.txt 内容(Netscape 格式,需含 SESSDATA)..."></textarea>
+      <div class="btn-row">
+        <button onclick="uploadCookieTxt()">导入 cookies.txt</button>
+      </div>
+      <div class="hint">用浏览器扩展 "Get cookies.txt" 导出后粘贴到这里。</div>
+    </div>
+  </section>
+
+  <!-- 解析+下载区 -->
+  <section>
+    <h2>下载视频</h2>
+    <div class="url-row">
+      <input type="text" id="url-input" placeholder="粘贴 B 站视频地址,如 https://www.bilibili.com/video/BVxxxxx">
+      <button onclick="parseVideo()">解析</button>
+    </div>
+    <div id="parse-result"></div>
+  </section>
+
+  <!-- 任务队列区 -->
+  <section>
+    <h2>下载队列</h2>
+    <div id="queue-list"></div>
+  </section>
+
+<script>
+const API = (p) => p;  // 同源
+let _qrPollTimer = null;
+let _activeSSE = {};
+
+/* ---------- tab 切换 ---------- */
+document.querySelectorAll('.tab').forEach(t => {
+  t.addEventListener('click', () => {
+    document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
+    document.querySelectorAll('.tab-panel').forEach(x => x.classList.remove('active'));
+    t.classList.add('active');
+    document.getElementById('panel-' + t.dataset.tab).classList.add('active');
+    if (t.dataset.tab !== 'qrcode' && _qrPollTimer) { clearInterval(_qrPollTimer); _qrPollTimer = null; }
+  });
+});
+
+/* ---------- 登录状态 ---------- */
+async function refreshLogin() {
+  try {
+    const r = await (await fetch(API('/api/login/status'))).json();
+    const badge = document.getElementById('login-badge');
+    if (r.logged_in) {
+      const vip = r.vip ? ' [大会员]' : '';
+      badge.textContent = '✓ 已登录 ' + r.uname + vip;
+      badge.className = 'login-badge ok' + (r.vip ? ' vip' : '');
+    } else {
+      badge.textContent = '未登录';
+      badge.className = 'login-badge';
+    }
+  } catch (e) { /* ignore */ }
+}
+
+/* ---------- 扫码登录 ---------- */
+async function showQrcode() {
+  const imgBox = document.getElementById('qrcode-img');
+  const statusBox = document.getElementById('qr-status');
+  imgBox.innerHTML = '<div class="empty">生成中...</div>';
+  statusBox.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/login/qrcode'))).json();
+    if (!r.ok) throw new Error(r.error || '生成失败');
+    const qrUrl = 'https://api.qrserver.com/v1/create-qr-code/?size=240x240&data=' + encodeURIComponent(r.url);
+    imgBox.innerHTML = `<img src="${qrUrl}" width="240" height="240" alt="二维码">`;
+    statusBox.textContent = '请用手机 B 站 App 扫码';
+    if (_qrPollTimer) clearInterval(_qrPollTimer);
+    _qrPollTimer = setInterval(() => pollLogin(r.qrcode_key), 2000);
+  } catch (e) {
+    imgBox.innerHTML = '';
+    statusBox.textContent = '✗ ' + e.message;
+  }
+}
+
+async function pollLogin(key) {
+  try {
+    const r = await (await fetch(API('/api/login/qrcode/poll?key=' + key))).json();
+    const statusBox = document.getElementById('qr-status');
+    if (r.status === 'success') {
+      clearInterval(_qrPollTimer); _qrPollTimer = null;
+      statusBox.textContent = '✓ 登录成功!';
+      refreshLogin();
+    } else if (r.status === 'scanned') {
+      statusBox.textContent = '已扫码,请在手机上点击确认';
+    } else if (r.status === 'expired') {
+      clearInterval(_qrPollTimer); _qrPollTimer = null;
+      statusBox.textContent = '✗ 二维码已失效,请重新生成';
+    } else {
+      statusBox.textContent = '等待扫码...';
+    }
+  } catch (e) { /* ignore, 下次轮询重试 */ }
+}
+
+/* ---------- Edge 模式 ---------- */
+async function useBrowser() {
+  try {
+    await fetch(API('/api/login/use-browser'), { method: 'POST' });
+    document.getElementById('qr-status').textContent = '已切换为 Edge 登录态模式';
+    refreshLogin();
+  } catch (e) { alert('切换失败: ' + e.message); }
+}
+
+/* ---------- cookies.txt ---------- */
+async function uploadCookieTxt() {
+  const text = document.getElementById('cookie-txt-input').value.trim();
+  if (!text) { alert('请粘贴 cookies.txt 内容'); return; }
+  try {
+    const r = await (await fetch(API('/api/login/cookie-txt'), {
+      method: 'POST', body: text
+    })).json();
+    if (r.ok) { alert('导入成功'); refreshLogin(); }
+    else { alert('导入失败: ' + (r.error || '未知错误')); }
+  } catch (e) { alert('导入失败: ' + e.message); }
+}
+
+/* ---------- 解析 ---------- */
+async function parseVideo() {
+  const url = document.getElementById('url-input').value.trim();
+  if (!url) { alert('请输入视频地址'); return; }
+  const box = document.getElementById('parse-result');
+  box.innerHTML = '<div class="empty">解析中...</div>';
+  try {
+    const r = await (await fetch(API('/api/parse'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ url })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '解析失败');
+    renderParseResult(r.info);
+  } catch (e) {
+    box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+function renderParseResult(info) {
+  const box = document.getElementById('parse-result');
+  const videoOnly = info.formats.filter(f => f.kind === 'video' || f.kind === 'av');
+  // 清晰度下拉:高→低,默认选 best_label
+  const options = videoOnly.map(f => {
+    const sel = (f.label === info.best_label) ? 'selected' : '';
+    return `<option value="${f.label}" ${sel}>${f.label}</option>`;
+  }).join('');
+  const dur = info.duration ? formatDuration(info.duration) : '';
+  box.innerHTML = `
+    <div class="video-card">
+      <img src="${info.thumbnail || ''}" onerror="this.style.visibility='hidden'">
+      <div class="video-info">
+        <div class="vt">${escapeHtml(info.title)}</div>
+        <div class="vm">UP主:${escapeHtml(info.uploader || '-')} ${dur ? '· 时长:' + dur : ''}</div>
+        <div class="btn-row">
+          <select id="quality-select">${options}</select>
+          <button onclick="startDownload('${escapeAttr(info.title)}')">开始下载</button>
+        </div>
+      </div>
+    </div>`;
+}
+
+/* ---------- 下载 ---------- */
+async function startDownload() {
+  const url = document.getElementById('url-input').value.trim();
+  const label = document.getElementById('quality-select').value;
+  if (!url) return;
+  try {
+    const r = await (await fetch(API('/api/download'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ url, label })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '启动下载失败');
+    subscribeProgress(r.task_id);
+  } catch (e) {
+    alert(e.message);
+  }
+}
+
+function subscribeProgress(taskId) {
+  if (_activeSSE[taskId]) return;
+  const es = new EventSource(API('/api/progress/' + taskId));
+  _activeSSE[taskId] = es;
+  es.onmessage = (ev) => {
+    const t = JSON.parse(ev.data);
+    renderTask(t);
+    if (t.status === 'done' || t.status === 'failed') {
+      es.close();
+      delete _activeSSE[taskId];
+    }
+  };
+  es.onerror = () => { es.close(); delete _activeSSE[taskId]; };
+}
+
+function renderTask(t) {
+  let box = document.getElementById('task-' + t.task_id);
+  const queueList = document.getElementById('queue-list');
+  if (!box) {
+    box = document.createElement('div');
+    box.id = 'task-' + t.task_id;
+    box.className = 'task-item';
+    queueList.prepend(box);
+  }
+  box.className = 'task-item ' + t.status;
+  const statusCN = { queued: '排队中', downloading: '下载中', merging: '合并中', done: '已完成', failed: '失败' };
+  const speedTxt = t.speed > 1024 ? (t.speed / 1024).toFixed(1) + ' MB/s' : (t.speed || 0).toFixed(0) + ' KB/s';
+  let progInner = '';
+  if (t.status === 'downloading') {
+    progInner = `
+      <div class="progress-wrap">
+        <div class="progress-bar" style="width:${t.progress}%"></div>
+        <div class="progress-text">${t.progress}% · ${speedTxt}${t.eta ? ' · 剩余 ' + t.eta + '秒' : ''}</div>
+      </div>`;
+  } else if (t.status === 'merging') {
+    progInner = `<div class="hint">正在用 ffmpeg 合并音视频...</div>`;
+  } else if (t.status === 'done') {
+    progInner = `<div class="hint">✓ 已保存到 ${DL_DIR}</div>`;
+  } else if (t.status === 'failed') {
+    progInner = `<div class="ti-err">${escapeHtml(t.error || '下载失败')}</div>`;
+  } else {
+    progInner = `<div class="hint">排队中...</div>`;
+  }
+  box.innerHTML = `
+    <div class="ti-head">
+      <span class="label">${escapeHtml(t.title || '(解析中)')} <span style="color:#9499a0;font-weight:normal;font-size:12px;">[${t.label}]</span></span>
+      <span class="status-tag ${t.status}">${statusCN[t.status] || t.status}</span>
+    </div>
+    ${progInner}`;
+  document.getElementById('queue-list-empty')?.remove();
+}
+
+/* ---------- 工具函数 ---------- */
+function formatDuration(sec) {
+  sec = Math.floor(sec);
+  const m = Math.floor(sec / 60), s = sec % 60;
+  return m + ':' + String(s).padStart(2, '0');
+}
+function escapeHtml(s) {
+  return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function escapeAttr(s) { return escapeHtml(s); }
+
+/* ---------- 队列初始化 ---------- */
+let DL_DIR = '~/Downloads/bilibili';
+async function loadConfig() {
+  try {
+    const r = await (await fetch(API('/api/config'))).json();
+    if (r.ok) DL_DIR = r.download_dir;
+  } catch (e) {}
+}
+async function loadTasks() {
+  try {
+    const r = await (await fetch(API('/api/tasks'))).json();
+    const list = document.getElementById('queue-list');
+    if (!r.tasks || r.tasks.length === 0) {
+      list.innerHTML = '<div class="empty" id="queue-list-empty">暂无下载任务</div>';
+      return;
+    }
+    list.innerHTML = '';
+    r.tasks.slice().reverse().forEach(renderTask);
+    // 恢复进行中任务的进度订阅
+    r.tasks.filter(t => !['done','failed'].includes(t.status)).forEach(t => subscribeProgress(t.task_id));
+  } catch (e) {}
+}
+
+/* ---------- 启动 ---------- */
+(async function init() {
+  await loadConfig();
+  await refreshLogin();
+  await loadTasks();
+})();
+</script>
+</body>
+</html>
