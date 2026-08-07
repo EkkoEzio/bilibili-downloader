@@ -313,7 +313,6 @@
           <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
           <span id="fav-meta" style="color:#9499a0;font-size:12px;margin-left:auto;"></span>
         </div>
-        <div id="history-list"><div class="empty">加载中...</div></div>
       </div>
     </div>
 
@@ -323,19 +322,7 @@
         <button onclick="loadWatchlater()">刷新</button>
         <span id="later-meta" style="color:#9499a0;font-size:12px;"></span>
       </div>
-      <div id="history-list"><div class="empty">点「刷新」加载稍后再看</div></div>
-    </div>
-      <div id="fav-folder-list">
-        <div class="empty">加载中...</div>
-      </div>
-      <div id="fav-content-panel" style="display:none;margin-top:10px;">
-        <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-          <button class="small secondary" onclick="favBack()">← 返回收藏夹</button>
-          <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
-          <span id="fav-meta" style="color:#9499a0;font-size:12px;margin-left:auto;"></span>
-        </div>
-        <div id="history-list"><div class="empty">加载中...</div></div>
-      </div>
+      <div id="later-list" style="display:none;"></div>
     </div>
 
     <!-- A3: UP 清单管理 -->
@@ -351,7 +338,7 @@
         <button class="small secondary" onclick="upShowAll()">查看全部(含已见)</button>
         <span id="up-meta" style="color:#9499a0;font-size:12px;"></span>
       </div>
-      <div id="history-list"><div class="empty">添加 UP 主后点「刷新看新增」</div></div>
+      <div id="up-list" style="display:none;"></div>
     </div>
 
     <!-- 历史 / 关注更新 共用列表 -->
@@ -367,7 +354,7 @@
         <span style="font-size:12px;color:#9499a0;">缓存可能过期,点这里</span>
         <button class="small secondary" onclick="loadFollow(true)">⚡ 强制刷新(后台约需 10 秒)</button>
       </div>
-      <div id="history-list"><div class="empty">加载中...</div></div>
+      <div id="history-list" style="display:none;"></div>
       <div id="history-actions" style="display:none;margin-top:10px;">
         <div class="btn-row">
           <button class="small secondary" onclick="libToggleAll(true)">全选</button>
@@ -769,7 +756,8 @@ let _libItems = [];  // 当前列表项(历史/收藏夹通用)
 async function loadHistory() {
   const list = document.getElementById('history-list');
   const meta = document.getElementById('history-meta');
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载观看历史...</div>';
+  list.style.display = '';
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
   meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/history?size=50'))).json();
@@ -887,8 +875,9 @@ async function favEnter(fid) {
   panel.style.display = '';
   document.getElementById('fav-current-title').textContent = folder.title;
   document.getElementById('fav-meta').textContent = '';
-  const list = document.getElementById('history-list');
+  const list = document.getElementById('fav-content-list');
   list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
+  list.style.display = '';
   try {
     const r = await (await fetch(API(`/api/fav-content?fid=${fid}`))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
@@ -951,9 +940,10 @@ async function upRemove(mid) {
 }
 
 async function upRefresh() {
-  const list = document.getElementById('history-list');
+  const list = document.getElementById('up-list');
   const meta = document.getElementById('up-meta');
   list.innerHTML = '<div class="empty"><span class="spinner"></span>拉取清单 UP 的最新视频...(约几秒)</div>';
+  list.style.display = '';
   meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/up-updates'))).json();
@@ -969,9 +959,10 @@ async function upRefresh() {
 }
 
 async function upShowAll() {
-  const list = document.getElementById('history-list');
+  const list = document.getElementById('up-list');
   const meta = document.getElementById('up-meta');
   list.innerHTML = '<div class="empty"><span class="spinner"></span>拉取清单 UP 的全部近期视频...</div>';
+  list.style.display = '';
   try {
     const r = await (await fetch(API('/api/up-updates?include_seen=true'))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
@@ -994,9 +985,10 @@ function refreshLib() {
 }
 
 async function loadWatchlater() {
-  const list = document.getElementById('history-list');
+  const list = document.getElementById('later-list');
   const meta = document.getElementById('later-meta');
   list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
+  list.style.display = '';
   meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/watchlater'))).json();
