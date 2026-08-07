@@ -167,6 +167,14 @@
     </div>
   </header>
 
+  <!-- C3: 统计面板 -->
+  <div id="stats-bar" style="display:flex;gap:16px;flex-wrap:wrap;padding:12px 20px;background:var(--bg-soft);border-radius:10px;margin-bottom:16px;font-size:13px;color:var(--text-soft);">
+    <span>📦 总下载 <b id="stat-total-count" style="color:var(--text-main);">-</b> 条</span>
+    <span>💾 总大小 <b id="stat-total-bytes" style="color:var(--text-main);">-</b></span>
+    <span>📅 本月 <b id="stat-month-count" style="color:var(--text-main);">-</b></span>
+    <span>📆 今日 <b id="stat-day-count" style="color:var(--text-main);">-</b></span>
+  </div>
+
   <!-- 设置区(默认折叠) -->
   <section id="settings-section" style="display:none;">
     <h2>设置</h2>
@@ -1086,6 +1094,7 @@ function subscribeProgress(taskId) {
   es.onmessage = (ev) => {
     const t = JSON.parse(ev.data);
     renderTask(t);
+    if (t.status === 'done') loadStats();  // C3: 完成后刷新统计
     if (['done', 'failed', 'cancelled'].includes(t.status)) {
       es.close(); delete _activeSSE[taskId];
     }
@@ -1305,6 +1314,26 @@ async function loadConfig() {
     if (r.ok) DL_DIR = r.download_dir;
   } catch (e) {}
 }
+
+/* ---------- C3: 统计面板 ---------- */
+function formatBytes(n) {
+  if (!n) return '0 B';
+  const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+  let i = 0;
+  while (n >= 1024 && i < units.length - 1) { n /= 1024; i++; }
+  return n.toFixed(1) + ' ' + units[i];
+}
+
+async function loadStats() {
+  try {
+    const r = await (await fetch(API('/api/stats'))).json();
+    if (!r.ok) return;
+    document.getElementById('stat-total-count').textContent = r.total_count;
+    document.getElementById('stat-total-bytes').textContent = formatBytes(r.total_bytes);
+    document.getElementById('stat-month-count').textContent = r.month_count;
+    document.getElementById('stat-day-count').textContent = r.day_count;
+  } catch (e) {}
+}
 async function loadTasks() {
   try {
     const r = await (await fetch(API('/api/tasks'))).json();
@@ -1329,6 +1358,7 @@ async function loadTasks() {
   applyTheme(theme);
   await refreshLogin();
   await loadTasks();
+  await loadStats();
   // 打开页面自动刷新观看历史(已登录才加载)
   try {
     const st = await (await fetch(API('/api/login/status'))).json();

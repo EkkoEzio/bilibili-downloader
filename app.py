@@ -379,6 +379,50 @@ def tasks():
     return jsonify({"ok": True, "tasks": downloader.list_tasks()})
 
 
+@app.route("/api/stats")
+def stats():
+    """统计面板: 总下载数、总字节数、本月/今日 数。"""
+    import time as _t
+    now = int(_t.time())
+    month_start = now - 86400 * 30  # 30 天内近似「本月」
+    day_start = now - 86400
+
+    total_count = 0
+    total_bytes = 0
+    month_count = 0
+    day_count = 0
+    for t in downloader.list_tasks():
+        if t.get("status") != "done":
+            continue
+        total_count += 1
+        total_bytes += t.get("downloaded_bytes") or 0
+        done_at = t.get("view_at") or t.get("added_at")  # 兜底用 added_at(view_at 是历史项的时间戳)
+        # 完成时间没有显式字段,用任务首次出现在 tasks.json 的时间近似 = 文件 mtime 或 added_at
+        # 简化: 如果没 finish_at,就不计入 day/month
+        finished = t.get("finished_at")
+        if finished:
+            if finished >= day_start:
+                day_count += 1
+            if finished >= month_start:
+                month_count += 1
+
+    # 也扫一下磁盘真实文件大小兜底(历史任务没有 downloaded_bytes 字段时)
+    try:
+        from config import DOWNLOAD_DIR
+        disk_bytes = sum(f.stat().st_size for f in DOWNLOAD_DIR.iterdir() if f.is_file())
+    except Exception:
+        disk_bytes = 0
+
+    return jsonify({
+        "ok": True,
+        "total_count": total_count,
+        "total_bytes": total_bytes if total_bytes else disk_bytes,  # 用磁盘实测值兜底
+        "month_count": month_count,
+        "day_count": day_count,
+        "disk_bytes": disk_bytes,
+    })
+
+
 @app.route("/api/config")
 def get_config():
     return jsonify({"ok": True, **config.get_config()})

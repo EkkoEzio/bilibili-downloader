@@ -295,12 +295,19 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
-            # 成功
+            # 成功: 统计实际下载文件大小,用于 C3 统计面板
+            import time as _t
             with _tasks_lock:
                 t = _tasks.get(task_id)
                 if t and t["status"] != "failed":
                     t["status"] = "cancelled" if t.get("cancel") else "done"
                     t["error"] = ""
+                    t["finished_at"] = int(_t.time())
+                    try:
+                        total = sum(f.stat().st_size for f in _task_files(t) if f.is_file())
+                        t["downloaded_bytes"] = total
+                    except Exception:
+                        t["downloaded_bytes"] = 0
             _persist()
             return
         except Exception as e:
