@@ -103,9 +103,11 @@
 ## 待办:视觉类(C)
 
 ### C1 深色模式
-- 状态: pending
-- 说明: 夜间护眼。
-- 技术备注: 前端 CSS 变量 + `prefers-color-scheme`,或加个手动切换开关存 localStorage。
+- 状态: done(2026-08-08)
+- 实现: CSS 变量重构(--bg-page/--bg-card/--text-main 等),body.dark 覆盖;
+  切换: header 🌙/☀ 按钮(light<->dark),设置区下拉(浅/深/跟随系统);
+  持久化: 前端 localStorage 即时,后端 config.json 防丢;POST /api/config 支持 theme。
+- 验证: GET 返回 theme=auto;POST dark 成功;POST rainbow 报错;16 测试不破。
 
 ### C2 视频卡片网格布局
 - 状态: pending
