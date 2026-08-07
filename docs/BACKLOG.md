@@ -67,9 +67,14 @@
   把它做成可配置存 `data/config.json`。
 
 ### B3 下载目录界面可选
-- 状态: pending
-- 说明: 界面上改下载目录,不用改 config.py。
-- 技术备注: DOWNLOAD_DIR 现在是 config 常量,改成运行时可变+持久化到 `data/config.json`。
+- 状态: done(2026-08-08)
+- 实现: config.DOWNLOAD_DIR 运行时可变,启动从 data/config.json 读;
+  set_download_dir 自动展开~+创建目录+持久化。
+  downloader/app 不再快照,改用 config.DOWNLOAD_DIR 实时读。
+  POST /api/config 设目录;前端 ⚙ 设置区输入路径保存。
+- 验证: 默认/POST/无效路径/重启持久化全过;16 测试不破。
+- 注意: 其他模块**不要** `from config import DOWNLOAD_DIR`(拿快照,改不到)。
+  要 `import config; config.DOWNLOAD_DIR`。
 
 ### B4 历史卡片显示观看进度
 - 状态: pending
