@@ -131,6 +131,27 @@ def cancel(task_id):
     return jsonify({"ok": ok})
 
 
+@app.route("/api/task/delete", methods=["POST"])
+def task_delete():
+    """删除任务。{ids:[...], delete_file:bool}"""
+    body = request.get_json(silent=True) or {}
+    ids = body.get("ids") or []
+    delete_file = bool(body.get("delete_file"))
+    if not ids:
+        return jsonify({"ok": False, "error": "未选择任务"}), 400
+    n = downloader.delete_tasks(ids, delete_file)
+    return jsonify({"ok": True, "count": n})
+
+
+@app.route("/api/tasks/clear", methods=["POST"])
+def tasks_clear():
+    """清除所有已完成/失败记录。{delete_file:bool}"""
+    body = request.get_json(silent=True) or {}
+    delete_file = bool(body.get("delete_file"))
+    n = downloader.clear_tasks(delete_file)
+    return jsonify({"ok": True, "count": n})
+
+
 # ---------- 批量 ----------
 @app.route("/api/batch/parse", methods=["POST"])
 def batch_parse():

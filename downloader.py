@@ -382,3 +382,50 @@ def find_active_by_url(url: str, label: str) -> Optional[str]:
                     and t["status"] in ("queued", "downloading", "merging", "cancelling")):
                 return tid
     return None
+
+
+_ACTIVE = ("queued", "downloading", "merging", "cancelling")
+
+
+def _task_files(t: dict) -> list:
+    """根据任务标题在下载目录找对应文件(yt-dlp 文件名以标题开头)。"""
+    from pathlib import Path
+    title = (t.get("title") or "").strip()
+    if not title:
+        return []
+    prefix = title[:30]  # CJK 标题原样保留,30字符(~90B)在截断范围内,足够唯一
+    try:
+        return [f for f in DOWNLOAD_DIR.iterdir()
+                if f.is_file() and f.name.startswith(prefix)]
+    except Exception:
+        return []
+
+
+def delete_tasks(task_ids: list, delete_file: bool) -> int:
+    """删除任务记录。delete_file=True 时连已下载文件一起删。进行中任务先取消。"""
+    removed = []
+    with _tasks_lock:
+        for tid in task_ids:
+            t = _tasks.get(tid)
+            if not t:
+                continue
+            if t["status"] in _ACTIVE:
+                t["cancel"] = True  # 进行中的先标记取消
+            removed.append(t)
+            del _tasks[tid]
+    if delete_file:
+        for t in removed:
+            for f in _task_files(t):
+                try:
+                    f.unlink(missing_ok=True)
+                except Exception:
+                    pass
+    _persist()
+    return len(removed)
+
+
+def clear_tasks(delete_file: bool) -> int:
+    """清除所有非活跃任务的记录(可选连文件删除)。"""
+    with _tasks_lock:
+        ids = [tid for tid, t in _tasks.items() if t["status"] not in _ACTIVE]
+    return delete_tasks(ids, delete_file)
