@@ -7,6 +7,7 @@ DATA_DIR.mkdir(exist_ok=True)
 
 COOKIE_FILE = DATA_DIR / "cookies.txt"          # 供 cookies.txt 上传 & Edge 导出写入
 SESSION_COOKIE_FILE = DATA_DIR / "sess.json"     # 扫码登录拿到的 SESSDATA 缓存
+TASKS_FILE = DATA_DIR / "tasks.json"             # 下载任务历史持久化
 
 # 默认下载目录,可在运行时改(本工具不改写用户家目录其他位置)
 DOWNLOAD_DIR = Path.home() / "Downloads" / "bilibili"
