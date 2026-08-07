@@ -197,6 +197,22 @@
       <div class="tab active" data-lib="history">观看历史</div>
       <div class="tab" data-lib="follow">关注更新</div>
       <div class="tab" data-lib="up">UP 清单</div>
+      <div class="tab" data-lib="fav">收藏夹</div>
+    </div>
+
+    <!-- A4: 收藏夹浏览 -->
+    <div id="lib-fav" style="display:none;">
+      <div id="fav-folder-list">
+        <div class="empty">加载中...</div>
+      </div>
+      <div id="fav-content-panel" style="display:none;margin-top:10px;">
+        <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+          <button class="small secondary" onclick="favBack()">← 返回收藏夹</button>
+          <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
+          <span id="fav-meta" style="color:#9499a0;font-size:12px;margin-left:auto;"></span>
+        </div>
+        <div id="history-list"><div class="empty">加载中...</div></div>
+      </div>
     </div>
 
     <!-- A3: UP 清单管理 -->
@@ -646,15 +662,12 @@ document.querySelectorAll('.tab[data-lib]').forEach(t => {
     document.querySelectorAll('.tab[data-lib]').forEach(x => x.classList.remove('active'));
     t.classList.add('active');
     _libMode = t.dataset.lib;
-    document.getElementById('lib-history').style.display = _libMode === 'up' ? 'none' : '';
+    document.getElementById('lib-history').style.display = (_libMode === 'up' || _libMode === 'fav') ? 'none' : '';
     document.getElementById('lib-up').style.display = _libMode === 'up' ? '' : 'none';
+    document.getElementById('lib-fav').style.display = _libMode === 'fav' ? '' : 'none';
     refreshLib();
   });
 });
-
-function refreshLib() {
-  if (_libMode === 'follow') loadFollow(); else loadHistory();
-}
 
 async function loadFollow() {
   const list = document.getElementById('history-list');
@@ -673,7 +686,77 @@ async function loadFollow() {
   }
 }
 
-/* ---------- A3: UP 清单 ---------- */
+/* ---------- A4: 收藏夹 ---------- */
+let _favFolders = [];
+let _favCurrent = null;  // 当前进入的收藏夹 fid
+
+function refreshLib() {
+  if (_libMode === 'follow') loadFollow();
+  else if (_libMode === 'up') upRefresh();
+  else if (_libMode === 'fav') favLoadFolders();
+  else loadHistory();
+}
+
+async function favLoadFolders() {
+  const box = document.getElementById('fav-folder-list');
+  box.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹列表...</div>';
+  document.getElementById('fav-content-panel').style.display = 'none';
+  try {
+    const r = await (await fetch(API('/api/fav-folders'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _favFolders = r.folders || [];
+    if (_favFolders.length === 0) {
+      box.innerHTML = '<div class="empty">暂无收藏夹</div>';
+      return;
+    }
+    box.innerHTML = `<div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+      <span style="color:#9499a0;font-size:12px;">共 ${_favFolders.length} 个收藏夹</span>
+    </div>
+    <div style="border:1px solid #e3e5e7;border-radius:6px;overflow:hidden;">` +
+      _favFolders.map(f => `
+        <div onclick="favEnter(${f.fid})" style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid #f0f1f3;cursor:pointer;transition:background .1s;" onmouseover="this.style.background='#f0f7fb'" onmouseout="this.style.background=''">
+          <div style="width:32px;height:32px;background:#00a1d6;color:#fff;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;">${escapeHtml((f.title || '?').slice(0,1))}</div>
+          <div style="flex:1;">
+            <div style="font-weight:600;font-size:14px;">${escapeHtml(f.title)}</div>
+            <div style="font-size:12px;color:#9499a0;">${f.media_count || 0} 个视频</div>
+          </div>
+          <span style="color:#9499a0;">›</span>
+        </div>`).join('') + '</div>';
+  } catch (e) {
+    box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+async function favEnter(fid) {
+  const folder = _favFolders.find(f => f.fid === fid);
+  if (!folder) return;
+  _favCurrent = fid;
+  document.getElementById('fav-folder-list').style.display = 'none';
+  const panel = document.getElementById('fav-content-panel');
+  panel.style.display = '';
+  document.getElementById('fav-current-title').textContent = folder.title;
+  document.getElementById('fav-meta').textContent = '';
+  const list = document.getElementById('history-list');
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
+  try {
+    const r = await (await fetch(API(`/api/fav-content?fid=${fid}`))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderLibList(_libItems, list);
+    document.getElementById('fav-meta').textContent = `共 ${_libItems.length} 条`;
+    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+  } catch (e) {
+    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+function favBack() {
+  _favCurrent = null;
+  document.getElementById('fav-content-panel').style.display = 'none';
+  document.getElementById('fav-folder-list').style.display = '';
+  // 重新加载列表以确保计数最新
+  favLoadFolders();
+}
 async function upAdd() {
   const input = document.getElementById('up-add-input');
   const v = input.value.trim();

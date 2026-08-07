@@ -227,6 +227,56 @@ def _my_mid(cj) -> Optional[int]:
         return None
 
 
+def fetch_fav_folders() -> list[dict]:
+    """列出我的收藏夹列表。"""
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取收藏夹")
+    mid = _my_mid(cj)
+    if not mid:
+        raise RuntimeError("无法获取用户 ID")
+    resp = requests.get("https://api.bilibili.com/x/v3/fav/folder/created/list-all",
+                        cookies=cj, headers=BROWSER_HEADERS,
+                        params={"up_mid": mid}, timeout=12)
+    data = _safe_json(resp)
+    if not data or data.get("code") != 0:
+        raise RuntimeError((data or {}).get("message", "获取收藏夹失败"))
+    out = []
+    for f in (data.get("data", {}) or {}).get("list", []) or []:
+        out.append({
+            "id": f.get("id"),
+            "fid": f.get("fid"),
+            "title": f.get("title", ""),
+            "media_count": f.get("media_count", 0),
+            "cover": (f.get("cover") or "").replace("http:", "https:"),
+        })
+    return out
+
+
+def fetch_fav_content(fid: int, ps: int = 30) -> list[dict]:
+    """拉取某个收藏夹内的视频。用 yt-dlp 的 medialist URL,它内部带 WBI+翻页。
+
+    如果收藏夹私密或没视频,返回 []。
+    """
+    try:
+        opts = {"quiet": True, "skip_download": True, "extract_flat": True}
+        opts.update(get_ytdlp_cookie_arg())
+        info = yt_dlp.YoutubeDL(opts).extract_info(
+            f"https://www.bilibili.com/medialist/detail/ml{fid}", download=False)
+        items = []
+        for e in (info.get("entries") or []):
+            eid = e.get("id") or ""
+            url = e.get("url") or (f"https://www.bilibili.com/video/{eid}" if eid else "")
+            items.append({
+                "bvid": eid,
+                "title": e.get("title", ""),
+                "url": url,
+            })
+        return items
+    except Exception:
+        return []
+
+
 def fetch_followings(page: int = 1, size: int = 50) -> list[dict]:
     """拉取我关注的 UP 主列表。"""
     cj = get_cookiejar()

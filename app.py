@@ -325,6 +325,28 @@ def up_updates():
     return jsonify({"ok": True, "items": results_by_up, "ups": ups})
 
 
+# ---------- A4: 收藏夹浏览 ----------
+@app.route("/api/fav-folders")
+def fav_folders():
+    try:
+        folders = auth.fetch_fav_folders()
+        return jsonify({"ok": True, "folders": folders})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/fav-content")
+def fav_content():
+    fid = int(request.args.get("fid", 0))
+    if not fid:
+        return jsonify({"ok": False, "error": "缺少 fid"}), 400
+    try:
+        items = auth.fetch_fav_content(fid)
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
     """SSE 推送单个任务进度,完成/失败后关闭。"""
