@@ -94,9 +94,11 @@
   .task-item { padding: 12px; background: #f7f9fa; border-radius: 8px; margin-top: 10px; }
   .task-item .ti-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; gap: 8px; }
   .task-item .ti-head .label { font-weight: 600; word-break: break-all; }
-  .progress-wrap { background: #e3e5e7; border-radius: 4px; height: 18px; overflow: hidden; position: relative; }
-  .progress-bar { background: #00a1d6; height: 100%; transition: width 0.3s; }
-  .progress-text { position: absolute; top: 0; left: 0; right: 0; text-align: center; font-size: 11px; color: #18191c; line-height: 18px; }
+  .progress-wrap { background: #e3e5e7; border-radius: 6px; height: 22px; overflow: hidden; position: relative; }
+  .progress-bar { background: linear-gradient(90deg, #00a1d6, #23b8e8); height: 100%; transition: width 0.3s; background-size: 24px 24px; }
+  .progress-bar.active { background-image: linear-gradient(45deg, rgba(255,255,255,.25) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.25) 50%, rgba(255,255,255,.25) 75%, transparent 75%, transparent); background-size: 24px 24px; animation: progstripes 0.8s linear infinite; }
+  @keyframes progstripes { from { background-position: 0 0; } to { background-position: 24px 0; } }
+  .progress-text { position: absolute; top: 0; left: 0; right: 0; text-align: center; font-size: 12px; color: #fff; line-height: 22px; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,.3); }
   .task-item.done { border-left: 3px solid #2e7d32; }
   .task-item.failed, .task-item.cancelled, .task-item.interrupted { border-left: 3px solid #e53935; }
   .task-item .ti-err { color: #e53935; font-size: 13px; margin-top: 4px; }
@@ -582,7 +584,7 @@ function renderTask(t) {
   if (t.status === 'downloading') {
     progInner = `
       <div class="progress-wrap">
-        <div class="progress-bar" style="width:${t.progress}%"></div>
+        <div class="progress-bar active" style="width:${t.progress}%"></div>
         <div class="progress-text">${t.progress}% · ${speedTxt}${t.eta ? ' · 剩余 ' + t.eta + '秒' : ''}</div>
       </div>
       <div class="ti-actions"><button class="small danger" onclick="cancelTask('${t.task_id}')">取消</button></div>`;

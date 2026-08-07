@@ -198,6 +198,8 @@ def _progress_hook(task_id: str):
             if not t:
                 return
             if d["status"] == "downloading":
+                # 进入下载态(yt-dlp hook 第一次回调就把 queued→downloading)
+                t["status"] = "downloading"
                 # yt-dlp 这些字段可能为 None,统一兜底为 0
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 downloaded = d.get("downloaded_bytes") or 0
