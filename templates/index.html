@@ -923,7 +923,7 @@ async function loadFollow(force) {
     meta.textContent = `共 ${_libItems.length} 条(按时间倒序)`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadFollow()">重试</button></div>`;
   }
 }
 
@@ -933,6 +933,7 @@ let _favCurrent = null;  // 当前进入的收藏夹 fid
 
 async function favLoadFolders() {
   const box = document.getElementById('fav-folder-list');
+  box.style.display = '';
   box.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹列表...</div>';
   document.getElementById('fav-content-panel').style.display = 'none';
   try {
@@ -945,6 +946,7 @@ async function favLoadFolders() {
     }
     box.innerHTML = `<div class="btn-row" style="margin-top:0;margin-bottom:10px;">
       <span style="color:#9499a0;font-size:12px;">共 ${_favFolders.length} 个收藏夹</span>
+      <button class="small secondary" onclick="favLoadFolders()">↻ 刷新</button>
     </div>
     <div style="border:1px solid #e3e5e7;border-radius:6px;overflow:hidden;">` +
       _favFolders.map(f => `
@@ -1082,6 +1084,7 @@ function refreshLib() {
 async function loadWatchlater() {
   const list = document.getElementById('later-list');
   const meta = document.getElementById('later-meta');
+  list.style.display = '';
   list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
   list.style.display = '';
   meta.textContent = '';
@@ -1093,14 +1096,35 @@ async function loadWatchlater() {
     meta.textContent = `共 ${_libItems.length} 条`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadWatchlater()">重试</button></div>`;
   }
 }
 
 function renderLibList(items, container) {
   // items 是已过滤后的列表;但勾选状态按 _libItems 的原始索引跟踪
   if (items.length === 0) {
-    container.innerHTML = '<div class="empty">没有匹配结果</div>';
+    // 区分"没数据"和"搜索无结果":搜索框空 = 列表本来就空
+    const q = (document.getElementById('lib-search')?.value || '').trim();
+    const isFiltering = q.length > 0;
+    // 根据容器 id 推断该调哪个 loadX
+    const retryMap = {
+      'history-list': 'loadHistory',
+      'fav-content-list': 'favEnter()',
+      'fav-folder-list': 'favLoadFolders',
+      'later-list': 'loadWatchlater',
+      'up-list': 'upRefresh',
+    };
+    // 特殊:history-list 可能是关注 tab,需要按 _libMode 区分
+    let retryFn = retryMap[container.id] || 'loadHistory';
+    if (container.id === 'history-list' && _libMode === 'follow') retryFn = 'loadFollow';
+    if (container.id === 'fav-content-list') {
+      // favEnter 需要 fid 参数,这里只能提示用户回到收藏夹列表
+      retryFn = 'favLoadFolders';
+    }
+    const hint = isFiltering
+      ? '没有匹配结果(试试其他关键词)'
+      : '暂无内容(可能 B 站限流或账号无数据,点下方重试)';
+    container.innerHTML = `<div class="empty">${hint}<br><button class="small secondary" style="margin-top:8px;" onclick="${retryFn}()">↻ 重新加载</button></div>`;
     return;
   }
   const isGrid = _libView === 'grid';
