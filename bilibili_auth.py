@@ -14,6 +14,14 @@ QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generat
 QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
 NAV_API = "https://api.bilibili.com/x/web-interface/nav"
 
+# B 站 passport 接口有风控,裸请求会 412。必须带浏览器 headers。
+BROWSER_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                  "(KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Referer": "https://www.bilibili.com/",
+    "Origin": "https://www.bilibili.com",
+}
+
 POLL_CODES = {"86101": "waiting", "86090": "scanned", "86038": "expired", "0": "success"}
 POLL_MESSAGES = {"86101": "未扫码", "86090": "已扫码,请在手机上确认", "86038": "二维码已失效", "0": "登录成功"}
 
@@ -23,7 +31,7 @@ _http_get = requests.get
 
 def qrcode_generate() -> dict:
     """生成二维码。返回 {'url','qrcode_key'}。"""
-    resp = _http_get(QR_GENERATE, timeout=10)
+    resp = _http_get(QR_GENERATE, headers=BROWSER_HEADERS, timeout=10)
     data = resp.json()
     if data.get("code") != 0:
         raise RuntimeError(f"生成二维码失败: {data.get('message')}")
@@ -33,7 +41,8 @@ def qrcode_generate() -> dict:
 
 def qrcode_poll(qrcode_key: str) -> dict:
     """轮询扫码状态。返回 parse_poll_response 结果。"""
-    resp = _http_get(QR_POLL, params={"qrcode_key": qrcode_key}, timeout=10)
+    resp = _http_get(QR_POLL, params={"qrcode_key": qrcode_key},
+                     headers=BROWSER_HEADERS, timeout=10)
     set_cookie = resp.headers.get("Set-Cookie", "")
     return parse_poll_response(resp.json(), set_cookie)
 

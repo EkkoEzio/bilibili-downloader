@@ -12,5 +12,5 @@ SESSION_COOKIE_FILE = DATA_DIR / "sess.json"     # 扫码登录拿到的 SESSDAT
 DOWNLOAD_DIR = Path.home() / "Downloads" / "bilibili"
 DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
-PORT = 5000
+PORT = 5050   # 避开 macOS ControlCenter 占用的 5000 端口
 BROWSER_COOKIE_SOURCE = "edge"   # 平时用 Edge 登 B 站
