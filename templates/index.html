@@ -125,8 +125,23 @@
 <body>
   <header>
     <h1>bilibili download</h1>
-    <div id="login-badge">未登录</div>
+    <div style="display:flex;gap:8px;align-items:center;">
+      <div id="login-badge">未登录</div>
+      <button class="small secondary" onclick="toggleSettings()">⚙ 设置</button>
+    </div>
   </header>
+
+  <!-- 设置区(默认折叠) -->
+  <section id="settings-section" style="display:none;">
+    <h2>设置</h2>
+    <div class="btn-row" style="margin-top:0;align-items:center;">
+      <span style="font-size:13px;color:#18191c;min-width:80px;">下载目录</span>
+      <input type="text" id="config-dir-input" style="flex:1;">
+      <button onclick="saveConfig()">保存</button>
+      <button class="small secondary" onclick="resetConfigDir()">恢复默认</button>
+    </div>
+    <div class="hint">路径含 ~ 自动展开。目录不存在会自动创建。</div>
+  </section>
 
   <!-- 登录区(登录成功后隐藏) -->
   <section id="login-section">
@@ -1080,6 +1095,35 @@ function escapeHtml(s) {
   return String(s||'').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 }
 function escapeAttr(s) { return escapeHtml(s); }
+
+/* ---------- 设置 ---------- */
+function toggleSettings() {
+  const sec = document.getElementById('settings-section');
+  sec.style.display = sec.style.display === 'none' ? '' : 'none';
+  if (sec.style.display !== 'none') {
+    document.getElementById('config-dir-input').value = DL_DIR;
+  }
+}
+
+async function saveConfig() {
+  const v = document.getElementById('config-dir-input').value.trim();
+  if (!v) { alert('请填写下载目录'); return; }
+  try {
+    const r = await (await fetch(API('/api/config'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ download_dir: v })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '保存失败');
+    DL_DIR = r.download_dir;
+    alert('已保存。后续下载会保存到:\n' + r.download_dir);
+  } catch (e) { alert(e.message); }
+}
+
+async function resetConfigDir() {
+  if (!confirm('恢复默认下载目录 ~/Downloads/bilibili ?')) return;
+  document.getElementById('config-dir-input').value = '~/Downloads/bilibili';
+  saveConfig();
+}
 
 /* ---------- 初始化 ---------- */
 async function loadConfig() {

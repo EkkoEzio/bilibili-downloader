@@ -8,7 +8,8 @@ import yt_dlp
 
 from quality import classify_formats, best_video_audio_choice
 from bilibili_auth import get_ytdlp_cookie_arg
-from config import DOWNLOAD_DIR, TASKS_FILE
+from config import TASKS_FILE
+import config  # 不用 `from config import DOWNLOAD_DIR`,要实时读 config.DOWNLOAD_DIR
 
 # 任务状态表:task_id -> {status, progress, speed, eta, title, filepath, error, cancel}
 _tasks: dict[str, dict] = {}
@@ -253,7 +254,7 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
     fmt_str = best_video_audio_choice(formats, label)
     # 分 P:文件名带 P 序号,避免覆盖
     tmpl = "%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1 else "%(title).200B.%(ext)s"
-    outtmpl = str(DOWNLOAD_DIR / tmpl)
+    outtmpl = str(config.DOWNLOAD_DIR / tmpl)
     base_opts = {
         "format": fmt_str,
         "outtmpl": outtmpl,
@@ -433,7 +434,7 @@ def _task_files(t: dict) -> list:
         return []
     prefix = title[:30]  # CJK 标题原样保留,30字符(~90B)在截断范围内,足够唯一
     try:
-        return [f for f in DOWNLOAD_DIR.iterdir()
+        return [f for f in config.DOWNLOAD_DIR.iterdir()
                 if f.is_file() and f.name.startswith(prefix)]
     except Exception:
         return []

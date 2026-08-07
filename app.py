@@ -8,7 +8,8 @@ from flask import Flask, request, jsonify, render_template, Response, stream_wit
 import qrcode
 import bilibili_auth as auth
 import downloader
-from config import PORT, COOKIE_FILE, DOWNLOAD_DIR, BROWSER_COOKIE_SOURCE
+from config import PORT, COOKIE_FILE, BROWSER_COOKIE_SOURCE
+import config  # DOWNLOAD_DIR 运行时可变,用 config.DOWNLOAD_DIR 实时读
 
 app = Flask(__name__)
 
@@ -380,14 +381,27 @@ def tasks():
 
 @app.route("/api/config")
 def get_config():
-    return jsonify({"ok": True, "download_dir": str(DOWNLOAD_DIR)})
+    return jsonify({"ok": True, "download_dir": str(config.DOWNLOAD_DIR)})
+
+
+@app.route("/api/config", methods=["POST"])
+def set_config():
+    """设置下载目录。{download_dir: '/path/...'}"""
+    body = request.get_json(silent=True) or {}
+    new_dir = body.get("download_dir", "").strip()
+    if not new_dir:
+        return jsonify({"ok": False, "error": "请填写下载目录"}), 400
+    r = config.set_download_dir(new_dir)
+    if not r.get("ok"):
+        return jsonify(r), 400
+    return jsonify({"ok": True, "download_dir": r["path"]})
 
 
 @app.route("/api/open-folder", methods=["POST"])
 def open_folder():
     """在 Finder 中打开下载目录。"""
     try:
-        subprocess.run(["open", str(DOWNLOAD_DIR)], check=False)
+        subprocess.run(["open", str(config.DOWNLOAD_DIR)], check=False)
         return jsonify({"ok": True})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
