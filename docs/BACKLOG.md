@@ -12,7 +12,11 @@
 ## 待办:内容浏览类(A)
 
 ### A2 关注 UP 主投稿
-- 状态: pending
+- 状态: done(2026-08-08)
+- 实现: /api/follow-updates;复用 yt-dlp WBI 签名调 arc/search 拿标题/时间/封面;
+  线程池并发各 UP、合并按时间倒序、2分钟缓存;前端「关注更新」标签多选下载。
+- 注意: arc/search 密集调用会触发 B 站限流(部分 UP 返回空),已加错峰延迟;
+  若结果偏少属限流,稍等再刷新即可。
 - 说明: 拉取我关注的所有 UP 主最新投稿,合并按时间倒序展示,多选下载。
 - 技术备注:
   - 关注列表 API 已验证可用:`/x/relation/followings?vmid={mid}`(返回 mid/uname/face)。
