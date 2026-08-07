@@ -7,8 +7,17 @@ if [ ! -d ".venv" ]; then
   echo "首次运行,正在创建虚拟环境并安装依赖..."
   python3 -m venv .venv
   source .venv/bin/activate
-  pip install --upgrade pip -q
-  pip install -r requirements.txt -q
+  pip install --upgrade pip -q 2>&1
+  # 安装依赖:失败时显示完整错误(不用 -q,让用户看到具体原因)
+  if ! pip install -r requirements.txt 2>&1; then
+    echo ""
+    echo "============================================"
+    echo "依赖安装失败!请看上面的错误信息。"
+    echo "常见原因:网络问题、Python 版本不兼容。"
+    echo "============================================"
+    read -n 1 -s -r -p "按任意键关闭窗口..."
+    exit 1
+  fi
 else
   source .venv/bin/activate
 fi
