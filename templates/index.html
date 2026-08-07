@@ -198,10 +198,32 @@
       <div class="tab" data-lib="follow">关注更新</div>
       <div class="tab" data-lib="up">UP 清单</div>
       <div class="tab" data-lib="fav">收藏夹</div>
+      <div class="tab" data-lib="later">稍后再看</div>
     </div>
 
     <!-- A4: 收藏夹浏览 -->
     <div id="lib-fav" style="display:none;">
+      <div id="fav-folder-list">
+        <div class="empty">加载中...</div>
+      </div>
+      <div id="fav-content-panel" style="display:none;margin-top:10px;">
+        <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+          <button class="small secondary" onclick="favBack()">← 返回收藏夹</button>
+          <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
+          <span id="fav-meta" style="color:#9499a0;font-size:12px;margin-left:auto;"></span>
+        </div>
+        <div id="history-list"><div class="empty">加载中...</div></div>
+      </div>
+    </div>
+
+    <!-- A5: 稍后再看 -->
+    <div id="lib-later" style="display:none;">
+      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+        <button onclick="loadWatchlater()">刷新</button>
+        <span id="later-meta" style="color:#9499a0;font-size:12px;"></span>
+      </div>
+      <div id="history-list"><div class="empty">点「刷新」加载稍后再看</div></div>
+    </div>
       <div id="fav-folder-list">
         <div class="empty">加载中...</div>
       </div>
@@ -662,9 +684,11 @@ document.querySelectorAll('.tab[data-lib]').forEach(t => {
     document.querySelectorAll('.tab[data-lib]').forEach(x => x.classList.remove('active'));
     t.classList.add('active');
     _libMode = t.dataset.lib;
-    document.getElementById('lib-history').style.display = (_libMode === 'up' || _libMode === 'fav') ? 'none' : '';
+    const isSimple = (_libMode === 'history' || _libMode === 'follow' || _libMode === 'later');
+    document.getElementById('lib-history').style.display = isSimple ? '' : 'none';
     document.getElementById('lib-up').style.display = _libMode === 'up' ? '' : 'none';
     document.getElementById('lib-fav').style.display = _libMode === 'fav' ? '' : 'none';
+    document.getElementById('lib-later').style.display = _libMode === 'later' ? '' : 'none';
     refreshLib();
   });
 });
@@ -689,13 +713,6 @@ async function loadFollow() {
 /* ---------- A4: 收藏夹 ---------- */
 let _favFolders = [];
 let _favCurrent = null;  // 当前进入的收藏夹 fid
-
-function refreshLib() {
-  if (_libMode === 'follow') loadFollow();
-  else if (_libMode === 'up') upRefresh();
-  else if (_libMode === 'fav') favLoadFolders();
-  else loadHistory();
-}
 
 async function favLoadFolders() {
   const box = document.getElementById('fav-folder-list');
@@ -827,6 +844,32 @@ async function upShowAll() {
     _libItems = r.items || [];
     renderLibList(_libItems, list);
     meta.textContent = `共 ${_libItems.length} 条(含已见)`;
+    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+  } catch (e) {
+    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+  }
+}
+
+/* ---------- A5: 稍后再看 ---------- */
+function refreshLib() {
+  if (_libMode === 'follow') loadFollow();
+  else if (_libMode === 'up') upRefresh();
+  else if (_libMode === 'fav') favLoadFolders();
+  else if (_libMode === 'later') loadWatchlater();
+  else loadHistory();
+}
+
+async function loadWatchlater() {
+  const list = document.getElementById('history-list');
+  const meta = document.getElementById('later-meta');
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
+  meta.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/watchlater'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderLibList(_libItems, list);
+    meta.textContent = `共 ${_libItems.length} 条`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
     list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';

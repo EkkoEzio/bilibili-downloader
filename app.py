@@ -347,6 +347,16 @@ def fav_content():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/watchlater")
+def watchlater():
+    """「稍后再看」列表。"""
+    try:
+        items = auth.fetch_watchlater()
+        return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
     """SSE 推送单个任务进度,完成/失败后关闭。"""

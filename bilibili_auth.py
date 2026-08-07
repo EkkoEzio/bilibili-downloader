@@ -227,6 +227,35 @@ def _my_mid(cj) -> Optional[int]:
         return None
 
 
+def fetch_watchlater() -> list[dict]:
+    """拉取「稍后再看」列表。直接用 B 站 toview 接口(比 yt-dlp 快且字段丰富)。
+    返回归一化项 [{bvid,title,uploader,thumbnail,duration,view_at,url}],
+    其中 view_at 是加入稍后再看的时间(tview_at)。
+    """
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取稍后再看")
+    resp = requests.get("https://api.bilibili.com/x/v2/history/toview",
+                        cookies=cj, headers=BROWSER_HEADERS, timeout=12)
+    data = _safe_json(resp)
+    if not data or data.get("code") != 0:
+        raise RuntimeError((data or {}).get("message", "获取稍后再看失败"))
+    out = []
+    for it in (data.get("data", {}) or {}).get("list", []) or []:
+        owner = it.get("owner") or {}
+        bvid = it.get("bvid", "")
+        out.append({
+            "bvid": bvid,
+            "title": it.get("title", ""),
+            "uploader": owner.get("name", ""),
+            "thumbnail": (it.get("pic") or "").replace("http:", "https:"),
+            "duration": it.get("duration", 0),
+            "view_at": it.get("tview_at", 0),
+            "url": f"https://www.bilibili.com/video/{bvid}",
+        })
+    return out
+
+
 def fetch_fav_folders() -> list[dict]:
     """列出我的收藏夹列表。"""
     cj = get_cookiejar()
