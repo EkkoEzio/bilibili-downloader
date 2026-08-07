@@ -53,9 +53,12 @@
 ## 待办:体验/健壮性类(B)
 
 ### B1 下载失败自动重试
-- 状态: pending
-- 说明: 网络抖动导致的失败自动重试 2 次,减少手动重下。
-- 技术备注: 在 `downloader._run_download` 捕获网络类异常后重试;注意区分「真失败」与「取消」。
+- 状态: done(2026-08-08)
+- 实现: _run_download 重试循环 max_retries=2(共尝试3次),递增退避 sleep(2/4/6 秒),
+  每次重建 YoutubeDL 实例;取消标志置位立刻退出;sleep 后二次检查。
+  前端 statusCN 加 retrying,带 spinner 显示「第N次重试」。
+- 验证: 16 测试通过(含 retry_loop_present、cancel_exits、retrying 渲染)。
+- 行为: 网络抖动自动重试,永久错误不重试,3 次全败才标记 failed。
 
 ### B2 下载设置(并发数/限速)
 - 状态: pending
