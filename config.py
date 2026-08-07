@@ -23,6 +23,7 @@ _DEFAULT_DOWNLOAD_DIR.mkdir(parents=True, exist_ok=True)
 
 _DEFAULT_MAX_CONCURRENT = 2     # B2: 默认并发数
 _DEFAULT_RATELIMIT_MBPS = 0    # B2: 默认不限速(0)
+_DEFAULT_THEME = "auto"         # C1: 主题 light/dark/auto
 MIN_CONCURRENT = 1
 MAX_CONCURRENT_LIMIT = 4  # 上限常量(不要复用这个名字,会和运行时变量冲突)
 
@@ -69,6 +70,11 @@ try:
 except Exception:
     RATELIMIT_MBPS = _DEFAULT_RATELIMIT_MBPS
 
+# THEME(light/dark/auto)
+THEME = _cfg.get("theme", _DEFAULT_THEME)
+if THEME not in ("light", "dark", "auto"):
+    THEME = _DEFAULT_THEME
+
 
 _config_lock = threading.Lock()
 
@@ -79,18 +85,20 @@ def get_config() -> dict:
         "download_dir": str(DOWNLOAD_DIR),
         "max_concurrent": MAX_CONCURRENT,
         "ratelimit_mbps": RATELIMIT_MBPS,
+        "theme": THEME,
     }
 
 
 def set_config(patch: dict) -> dict:
-    """部分更新用户配置。patch 可含 download_dir / max_concurrent / ratelimit_mbps。
+    """部分更新用户配置。patch 可含 download_dir / max_concurrent / ratelimit_mbps / theme。
     全部成功才写入磁盘(任一字段失败回滚)。"""
-    global DOWNLOAD_DIR, MAX_CONCURRENT, RATELIMIT_MBPS
+    global DOWNLOAD_DIR, MAX_CONCURRENT, RATELIMIT_MBPS, THEME
     with _config_lock:
         cur = _read()
         new_dir = DOWNLOAD_DIR
         new_mc = MAX_CONCURRENT
         new_rl = RATELIMIT_MBPS
+        new_theme = THEME
 
         if "download_dir" in patch:
             try:
@@ -112,13 +120,21 @@ def set_config(patch: dict) -> dict:
             except Exception as e:
                 return {"ok": False, "error": f"限速值无效:{e}"}
 
+        if "theme" in patch:
+            t = patch["theme"]
+            if t not in ("light", "dark", "auto"):
+                return {"ok": False, "error": "主题无效(light/dark/auto)"}
+            new_theme = t
+
         DOWNLOAD_DIR = new_dir
         MAX_CONCURRENT = new_mc
         RATELIMIT_MBPS = new_rl
+        THEME = new_theme
         cur.update({
             "download_dir": str(DOWNLOAD_DIR),
             "max_concurrent": MAX_CONCURRENT,
             "ratelimit_mbps": RATELIMIT_MBPS,
+            "theme": THEME,
         })
         try:
             _write(cur)

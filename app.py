@@ -395,7 +395,8 @@ def set_config():
         return jsonify(r), 400
     return jsonify({"ok": True, "download_dir": r["download_dir"],
                    "max_concurrent": r["max_concurrent"],
-                   "ratelimit_mbps": r["ratelimit_mbps"]})
+                   "ratelimit_mbps": r["ratelimit_mbps"],
+                   "theme": r["theme"]})
 
 
 @app.route("/api/open-folder", methods=["POST"])

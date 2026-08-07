@@ -7,15 +7,45 @@
 <meta name="referrer" content="no-referrer">
 <title>bilibili download</title>
 <style>
+  :root {
+    /* 浅色(默认) */
+    --bg-page: #f4f5f7;
+    --bg-card: #fff;
+    --bg-soft: #f7f9fa;
+    --bg-muted: #e3e5e7;
+    --text-main: #18191c;
+    --text-soft: #61666d;
+    --text-mute: #9499a0;
+    --border-soft: #f0f1f3;
+    --border-card: #e3e5e7;
+    --shadow: 0 1px 3px rgba(0,0,0,0.06);
+    --accent: #00a1d6;
+    --accent-soft: #e3f4fb;
+  }
+  body.dark {
+    --bg-page: #18191c;
+    --bg-card: #232527;
+    --bg-soft: #2c2d30;
+    --bg-muted: #3a3c40;
+    --text-main: #e8eaec;
+    --text-soft: #aeb1b5;
+    --text-mute: #6e7175;
+    --border-soft: #2c2d30;
+    --border-card: #3a3c40;
+    --shadow: 0 1px 3px rgba(0,0,0,0.3);
+    --accent: #23b8e8;
+    --accent-soft: #1c3a44;
+  }
   * { box-sizing: border-box; margin: 0; padding: 0; }
   body {
     font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
-    background: #f4f5f7;
-    color: #18191c;
+    background: var(--bg-page);
+    color: var(--text-main);
     line-height: 1.6;
     padding: 20px;
     max-width: 880px;
     margin: 0 auto;
+    transition: background .2s, color .2s;
   }
   header {
     display: flex;
@@ -37,13 +67,14 @@
   #login-badge.vip { background: #fff4e0; color: #b8860b; }
 
   section {
-    background: #fff;
+    background: var(--bg-card);
     border-radius: 10px;
     padding: 20px;
     margin-bottom: 16px;
-    box-shadow: 0 1px 3px rgba(0,0,0,0.06);
+    box-shadow: var(--shadow);
+    transition: background .2s;
   }
-  section h2 { font-size: 16px; margin-bottom: 14px; color: #18191c; }
+  section h2 { font-size: 16px; margin-bottom: 14px; color: var(--text-main); }
 
   .tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid #e3e5e7; }
   .tab {
@@ -58,14 +89,18 @@
 
   input[type="text"], textarea {
     width: 100%; padding: 10px 12px;
-    border: 1px solid #c9ccd0; border-radius: 6px;
-    font-size: 14px; font-family: inherit; outline: none; transition: border 0.15s;
+    border: 1px solid var(--border-card); border-radius: 6px;
+    background: var(--bg-card);
+    color: var(--text-main);
+    font-size: 14px; font-family: inherit; outline: none;
+    transition: border 0.15s, background .2s, color .2s;
   }
-  input[type="text"]:focus, textarea:focus { border-color: #00a1d6; }
+  input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
   textarea { min-height: 80px; resize: vertical; font-family: monospace; font-size: 12px; }
   select {
-    padding: 8px 10px; border: 1px solid #c9ccd0; border-radius: 6px;
-    font-size: 14px; background: #fff; cursor: pointer; max-width: 260px;
+    padding: 8px 10px; border: 1px solid var(--border-card); border-radius: 6px;
+    font-size: 14px; background: var(--bg-card); color: var(--text-main);
+    cursor: pointer; max-width: 260px;
   }
   button {
     padding: 9px 20px; border: none; border-radius: 6px;
@@ -81,19 +116,19 @@
   button.danger:hover:not(:disabled) { background: #fdecea; }
   .btn-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
 
-  .hint { font-size: 12px; color: #9499a0; margin-top: 6px; }
+  .hint { font-size: 12px; color: var(--text-mute); margin-top: 6px; }
   .warn { font-size: 12px; color: #b8860b; background: #fff4e0; padding: 6px 10px; border-radius: 6px; margin-top: 8px; }
   .url-row { display: flex; gap: 10px; }
   .url-row input { flex: 1; }
 
   #parse-result { margin-top: 16px; }
-  .video-card { display: flex; gap: 14px; padding: 12px; background: #f7f9fa; border-radius: 8px; flex-wrap: wrap; }
+  .video-card { display: flex; gap: 14px; padding: 12px; background: var(--bg-soft); border-radius: 8px; flex-wrap: wrap; }
   .video-card img { width: 160px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #e3e5e7; }
   .video-info { flex: 1; min-width: 240px; }
   .video-info .vt { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
   .video-info .vm { font-size: 13px; color: #61666d; }
 
-  .task-item { padding: 12px; background: #f7f9fa; border-radius: 8px; margin-top: 10px; }
+  .task-item { padding: 12px; background: var(--bg-soft); border-radius: 8px; margin-top: 10px; }
   .task-item .ti-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; gap: 8px; }
   .task-item .ti-head .label { font-weight: 600; word-break: break-all; }
   .progress-wrap { background: #e3e5e7; border-radius: 6px; height: 22px; overflow: hidden; position: relative; }
@@ -114,7 +149,7 @@
   #qrcode-img { text-align: center; margin: 12px 0; }
   #qrcode-img img { border: 1px solid #e3e5e7; border-radius: 6px; }
   #qr-status { text-align: center; font-size: 13px; color: #61666d; min-height: 20px; }
-  .empty { color: #9499a0; font-size: 14px; padding: 20px 0; text-align: center; }
+  .empty { color: var(--text-mute); font-size: 14px; padding: 20px 0; text-align: center; }
 
   /* spinner */
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #00a1d6; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
@@ -127,6 +162,7 @@
     <h1>bilibili download</h1>
     <div style="display:flex;gap:8px;align-items:center;">
       <div id="login-badge">未登录</div>
+      <button class="small secondary" onclick="toggleTheme()" id="theme-btn">🌙</button>
       <button class="small secondary" onclick="toggleSettings()">⚙ 设置</button>
     </div>
   </header>
@@ -161,7 +197,13 @@
     </div>
     <div class="hint" style="margin-bottom:12px;">并发和限速只影响后续启动的任务。</div>
 
-    <div class="btn-row" style="margin-top:0;">
+    <div class="btn-row" style="margin-top:0;align-items:center;">
+      <span style="font-size:13px;color:var(--text-main);min-width:80px;">主题</span>
+      <select id="config-theme">
+        <option value="auto">跟随系统</option>
+        <option value="light">浅色</option>
+        <option value="dark">深色</option>
+      </select>
       <button onclick="saveAllConfig()">保存设置</button>
     </div>
   </section>
@@ -1181,6 +1223,35 @@ function escapeHtml(s) {
 function escapeAttr(s) { return escapeHtml(s); }
 
 /* ---------- 设置 ---------- */
+/* ---------- C1: 主题(浅/深/跟随系统) ---------- */
+function applyTheme(theme) {
+  // theme: 'light' | 'dark' | 'auto'
+  if (theme === 'auto') {
+    document.body.classList.remove('dark');
+    // 跟随系统
+    const sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
+    if (sysDark) document.body.classList.add('dark');
+  } else if (theme === 'dark') {
+    document.body.classList.add('dark');
+  } else {
+    document.body.classList.remove('dark');
+  }
+  // 更新图标
+  const btn = document.getElementById('theme-btn');
+  if (btn) {
+    const isDark = document.body.classList.contains('dark');
+    btn.textContent = isDark ? '☀' : '🌙';
+  }
+}
+
+function toggleTheme() {
+  // 切换按钮:在 auto/light/dark 中循环
+  const cur = localStorage.getItem('bd_theme') || 'auto';
+  const next = cur === 'light' ? 'dark' : cur === 'dark' ? 'auto' : 'light';
+  localStorage.setItem('bd_theme', next);
+  applyTheme(next);
+}
+
 function toggleSettings() {
   const sec = document.getElementById('settings-section');
   sec.style.display = sec.style.display === 'none' ? '' : 'none';
@@ -1194,6 +1265,9 @@ function loadConfigIntoUI() {
     document.getElementById('config-dir-input').value = r.download_dir || DL_DIR;
     document.getElementById('config-concurrent').value = String(r.max_concurrent || 2);
     document.getElementById('config-ratelimit').value = String(r.ratelimit_mbps || 0);
+    const theme = r.theme || localStorage.getItem('bd_theme') || 'auto';
+    const el = document.getElementById('config-theme');
+    if (el) el.value = theme;
   });
 }
 
@@ -1201,11 +1275,15 @@ async function saveAllConfig() {
   const v = document.getElementById('config-dir-input').value.trim();
   const mc = document.getElementById('config-concurrent').value;
   const rl = document.getElementById('config-ratelimit').value;
+  const theme = document.getElementById('config-theme').value;
   if (!v) { alert('请填写下载目录'); return; }
+  // theme 存 localStorage(避免每次刷新后端),同时也存 config.json 让后端知道
+  localStorage.setItem('bd_theme', theme);
+  applyTheme(theme);
   try {
     const r = await (await fetch(API('/api/config'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ download_dir: v, max_concurrent: mc, ratelimit_mbps: rl })
+      body: JSON.stringify({ download_dir: v, max_concurrent: mc, ratelimit_mbps: rl, theme })
     })).json();
     if (!r.ok) throw new Error(r.error || '保存失败');
     DL_DIR = r.download_dir;
@@ -1244,6 +1322,11 @@ async function loadTasks() {
 
 (async function init() {
   await loadConfig();
+  // 应用主题: localStorage 优先(即时), 后端配置兜底
+  const stored = localStorage.getItem('bd_theme');
+  const cfg = await fetch(API('/api/config')).then(r => r.json()).catch(() => null);
+  const theme = stored || (cfg && cfg.theme) || 'auto';
+  applyTheme(theme);
   await refreshLogin();
   await loadTasks();
   // 打开页面自动刷新观看历史(已登录才加载)
