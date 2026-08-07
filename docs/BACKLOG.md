@@ -61,10 +61,13 @@
 - 行为: 网络抖动自动重试,永久错误不重试,3 次全败才标记 failed。
 
 ### B2 下载设置(并发数/限速)
-- 状态: pending
-- 说明: 界面可配同时下载数、单任务限速,避免占满带宽。
-- 技术备注: yt-dlp 支持 `ratelimit`(字节/秒);并发数现在 start_batch 里用 Semaphore(默认2),
-  把它做成可配置存 `data/config.json`。
+- 状态: done(2026-08-08)
+- 实现: config.py 新增 MAX_CONCURRENT(1-4,默认2)+ RATELIMIT_MBPS(默认0=不限);
+  set_config 部分更新,失败回滚。start_batch 默认用 config.MAX_CONCURRENT,
+  _ydl_opts 注入 ratelimit。
+- 前端: 设置区加「同时下载数」「单任务限速」下拉。
+- 验证: 设 3/1/10(截到4) 全生效;重启持久化;16 测试不破。
+- 坑: 'MAX_CONCURRENT' 同时作为上限4 和变量名会互相覆盖,已改名上限为 MAX_CONCURRENT_LIMIT。
 
 ### B3 下载目录界面可选
 - 状态: done(2026-08-08)
