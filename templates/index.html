@@ -355,6 +355,7 @@
         <button class="small secondary" onclick="loadFollow(true)">⚡ 强制刷新(后台约需 10 秒)</button>
       </div>
       <div id="history-list" style="display:none;"></div>
+      <div id="lib-pager" style="display:none;"></div>
       <div id="history-actions" style="display:none;margin-top:10px;">
         <div class="btn-row">
           <button class="small secondary" onclick="libToggleAll(true)">全选</button>
@@ -751,7 +752,85 @@ async function batchDownload() {
 }
 
 /* ---------- 我的B站:观看历史 ---------- */
-let _libItems = [];  // 当前列表项(历史/收藏夹通用)
+let _libItems = [];  // 全量数据(历史/收藏夹通用)
+let _libPage = 1;          // 当前页码
+let _libPageSize = 20;     // 每页条数
+
+/* 分页渲染:从 _libItems 中取当前页,渲染到 history-list + 更新分页器 */
+function renderPage() {
+  const list = document.getElementById('history-list');
+  const meta = document.getElementById('history-meta');
+  list.style.display = '';
+  // 搜索过滤(如果有)
+  const q = getLibSearchQuery();
+  let filtered = _libItems;
+  if (q) {
+    filtered = _libItems.filter(it => {
+      const t = (it.title || '').toLowerCase();
+      const u = (it.uploader || '-').toLowerCase();
+      return t.includes(q) || u.includes(q);
+    });
+  }
+  const totalPages = Math.max(1, Math.ceil(filtered.length / _libPageSize));
+  if (_libPage > totalPages) _libPage = totalPages;
+  const start = (_libPage - 1) * _libPageSize;
+  const pageItems = filtered.slice(start, start + _libPageSize);
+  renderLibList(pageItems, list);
+  // meta
+  const baseText = `共 ${_libItems.length} 条`;
+  meta.textContent = q ? `${baseText} · 过滤 ${filtered.length}/${_libItems.length} · 第${_libPage}/${totalPages}页` : `${baseText} · 第${_libPage}/${totalPages}页`;
+  meta.dataset.base = baseText;
+  // 分页器
+  renderPaginator(totalPages, filtered.length);
+  document.getElementById('history-actions').style.display = pageItems.length ? '' : 'none';
+}
+
+/* 渲染分页器(页码 + 每页条数) */
+function renderPaginator(totalPages, totalItems) {
+  let pager = document.getElementById('lib-pager');
+  if (!pager) return;
+  if (totalItems <= _libPageSize && _libPage === 1) {
+    // 数据少于一页,不显示分页器
+    pager.style.display = 'none';
+    return;
+  }
+  pager.style.display = '';
+  let html = `<div class="btn-row" style="margin-top:10px;justify-content:center;">`;
+  // 上一页
+  html += `<button class="small secondary" ${_libPage <= 1 ? 'disabled' : ''} onclick="goPage(${_libPage - 1})">‹ 上一页</button>`;
+  // 页码(最多显示 7 个)
+  const maxShow = 7;
+  let s = Math.max(1, _libPage - 3);
+  let e = Math.min(totalPages, s + maxShow - 1);
+  s = Math.max(1, e - maxShow + 1);
+  if (s > 1) html += `<button class="small secondary" onclick="goPage(1)">1</button><span style="color:#9499a0;">…</span>`;
+  for (let i = s; i <= e; i++) {
+    html += `<button class="small ${i === _libPage ? '' : 'secondary'}" ${i === _libPage ? 'disabled' : ''} onclick="goPage(${i})">${i}</button>`;
+  }
+  if (e < totalPages) html += `<span style="color:#9499a0;">…</span><button class="small secondary" onclick="goPage(${totalPages})">${totalPages}</button>`;
+  // 下一页
+  html += `<button class="small secondary" ${_libPage >= totalPages ? 'disabled' : ''} onclick="goPage(${_libPage + 1})">下一页 ›</button>`;
+  // 每页条数
+  html += `<select id="lib-page-size" onchange="changePageSize(this.value)" style="margin-left:16px;">`;
+  [10, 20, 50, 100].forEach(n => {
+    html += `<option value="${n}" ${n === _libPageSize ? 'selected' : ''}>${n}条/页</option>`;
+  });
+  html += `</select></div>`;
+  pager.innerHTML = html;
+}
+
+function goPage(p) {
+  _libPage = p;
+  renderPage();
+  // 滚动到列表顶部
+  document.getElementById('history-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function changePageSize(n) {
+  _libPageSize = parseInt(n);
+  _libPage = 1;
+  renderPage();
+}
 
 async function loadHistory() {
   const list = document.getElementById('history-list');
@@ -760,11 +839,11 @@ async function loadHistory() {
   list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
   meta.textContent = '';
   try {
-    const r = await (await fetch(API('/api/history?size=50'))).json();
+    const r = await (await fetch(API('/api/history?size=200'))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(_libItems, list);
-    meta.textContent = `共 ${_libItems.length} 条`;
+    _libPage = 1;  // 重置到第1页
+    renderPage();
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
     list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
@@ -1101,24 +1180,9 @@ function getLibSearchQuery() {
 }
 
 function applyLibFilter() {
-  const q = getLibSearchQuery();
-  const list = document.getElementById('history-list');
-  let filtered = _libItems;
-  if (q) {
-    filtered = _libItems.filter(it => {
-      const t = (it.title || '').toLowerCase();
-      const u = (it.uploader || '-').toLowerCase();
-      return t.includes(q) || u.includes(q);
-    });
-  }
-  renderLibList(filtered, list);
-  // 更新过滤计数(保存原始 meta,过滤后追加显示)
-  const metaEl = document.getElementById('history-meta');
-  if (metaEl) {
-    if (!metaEl.dataset.base) metaEl.dataset.base = metaEl.textContent || '';
-    const base = metaEl.dataset.base;
-    metaEl.textContent = q ? `${base} · 过滤 ${filtered.length}/${_libItems.length}` : base;
-  }
+  // 搜索过滤时重置到第1页,用 renderPage 统一渲染(分页+过滤)
+  _libPage = 1;
+  renderPage();
 }
 
 function libToggleAll(checked) {
