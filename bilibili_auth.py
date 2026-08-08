@@ -357,16 +357,20 @@ def _safe_json(resp):
 
 
 def fetch_up_videos(mid: int, ps: int = 10) -> list[dict]:
-    """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。单个失败不影响整体。"""
+    """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。单个失败不影响整体。
+
+    遇到 412/风控返回 [],不抛异常(避免一个 UP 风控拖累整个 fetch_follow_updates)。
+    """
     try:
-        import random as _rnd, time as _t
-        _t.sleep(_rnd.uniform(0, 0.5))  # 错峰,降低被限流概率
         ie = _get_wbi_ie()
         signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": "1", "order": "pubdate"}, str(mid))
         resp = requests.get("https://api.bilibili.com/x/space/wbi/arc/search",
                             params=signed, cookies=get_cookiejar(),
                             headers={**BROWSER_HEADERS, "Referer": f"https://space.bilibili.com/{mid}"},
                             timeout=12)
+        # 412/风控时返回 HTML 不是 JSON,_safe_json 返回 None
+        if resp.status_code == 412:
+            return []
         data = _safe_json(resp)
         if not data or data.get("code") != 0:
             return []
@@ -389,17 +393,23 @@ _follow_cache = {"items": None, "ts": 0.0}
 
 
 def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -> list[dict]:
-    """并发拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 5 分钟缓存。"""
+    """拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 5 分钟缓存。
+
+    重要: B 站 arc/search 接口对**账号级别**限流敏感,6 并发 + 错峰 0-0.5s
+    仍会触发 412 限流(实测 30/30 全失败,账号风控持续 5+ 分钟)。
+    改为**串行 + 1.5 秒间隔**,牺牲速度换稳定性。30 UP = 45 秒。
+    """
     import time as _time
     if (not force and _follow_cache["items"] is not None
             and _time.time() - _follow_cache["ts"] < 300):  # 5 分钟
         return _follow_cache["items"]
-    from concurrent.futures import ThreadPoolExecutor
     follows = fetch_followings(1, max_ups)
     results = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        for items in ex.map(lambda f: fetch_up_videos(f["mid"], ps), follows):
-            results.extend(items)
+    # 串行拉取,每个 UP 间间隔 1.5 秒
+    for up in follows:
+        items = fetch_up_videos(up["mid"], ps)
+        results.extend(items)
+        _time.sleep(1.5)
     results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
     _follow_cache.update(items=results, ts=_time.time())
     return results
