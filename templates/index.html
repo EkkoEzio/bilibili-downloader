@@ -313,6 +313,7 @@
           <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
           <span id="fav-meta" style="color:#9499a0;font-size:12px;margin-left:auto;"></span>
         </div>
+        <div id="fav-content-list" style="display:none;"></div>
       </div>
     </div>
 
@@ -973,6 +974,10 @@ async function favEnter(fid) {
   document.getElementById('fav-current-title').textContent = folder.title;
   document.getElementById('fav-meta').textContent = '';
   const list = document.getElementById('fav-content-list');
+  if (!list) {
+    console.error('fav-content-list 元素不存在');
+    return;
+  }
   list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
   list.style.display = '';
   try {
@@ -983,7 +988,7 @@ async function favEnter(fid) {
     document.getElementById('fav-meta').textContent = `共 ${_libItems.length} 条`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="favEnter(${fid})">↻ 重试</button></div>`;
   }
 }
 
