@@ -59,3 +59,53 @@ def test_choice_av_only():
     from quality import best_video_audio_choice
     opts = [{"format_id": "mp4-1", "kind": "av", "label": "720P", "tbr": 800}]
     assert best_video_audio_choice(opts, "720P") == "mp4-1"
+
+
+# ---------- 仅音频 / 就近降档 ----------
+
+def _dash_opts():
+    return [
+        {"format_id": "30280", "kind": "audio", "label": "音频", "tbr": 200},
+        {"format_id": "v1080", "kind": "video", "label": "1080P", "height": 1080, "tbr": 3000},
+        {"format_id": "v720", "kind": "video", "label": "720P", "height": 720, "tbr": 1500},
+        {"format_id": "v480", "kind": "video", "label": "480P", "height": 480, "tbr": 800},
+    ]
+
+
+def test_choice_audio_only():
+    """选「音频」直接返回音频轨 format_id,不与视频合并。"""
+    from quality import best_video_audio_choice
+    assert best_video_audio_choice(_dash_opts(), "音频") == "30280"
+
+
+def test_choice_audio_but_no_audio_track_falls_back():
+    """源没有独立音频轨时选「音频」,兜底到最佳视频(不崩溃)。"""
+    from quality import best_video_audio_choice
+    opts = [o for o in _dash_opts() if o["kind"] != "audio"]
+    assert best_video_audio_choice(opts, "音频") == "v1080"
+
+
+def test_choice_missing_label_downgrades_to_nearest_below():
+    """选 1080P 但源最高 720P:降到 720P,而不是现在的「兜底最高=720」歧义;
+    关键场景:选 720P 而源只有 1080/480 → 选 480(不超过所选清晰度)。"""
+    from quality import best_video_audio_choice
+    opts = [o for o in _dash_opts() if o["format_id"] != "v720"]
+    assert best_video_audio_choice(opts, "720P") == "v480+30280"
+
+
+def test_choice_missing_label_no_lower_takes_lowest():
+    """选 360P 但源最低 480P:取最低档 480(宁可低也别超)。"""
+    from quality import best_video_audio_choice
+    assert best_video_audio_choice(_dash_opts(), "360P") == "v480+30280"
+
+
+def test_choice_missing_label_downgrades_av():
+    from quality import best_video_audio_choice
+    opts = [{"format_id": "mp4-720", "kind": "av", "label": "720P", "height": 720, "tbr": 800}]
+    assert best_video_audio_choice(opts, "1080P") == "mp4-720"
+
+
+def test_choice_empty_label_still_best():
+    """空标签(自动)仍是最高画质,行为不变。"""
+    from quality import best_video_audio_choice
+    assert best_video_audio_choice(_dash_opts(), "") == "v1080+30280"

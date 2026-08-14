@@ -142,6 +142,21 @@ def test_app_annotations_resolve():
     typing.get_type_hints(app_module._parse_mid_from_input)
 
 
+# ---------- /api/up-list/set-auto ----------
+
+def test_up_list_set_auto_route(client, monkeypatch):
+    """POST /api/up-list/set-auto {mid, auto} 落到数据层。"""
+    calls = []
+    monkeypatch.setattr("app.up_list.set_auto",
+                        lambda mid, auto: calls.append((int(mid), auto)) or True)
+    r = client.post("/api/up-list/set-auto",
+                    json={"mid": 42, "auto": True})
+    assert r.get_json()["ok"]
+    assert calls == [(42, True)]
+    # 缺参数报 400
+    assert client.post("/api/up-list/set-auto", json={"mid": 42}).status_code == 400
+
+
 # ---------- 前端结构(沿用仓库惯例:对模板做内容断言) ----------
 
 def _tpl():
@@ -162,3 +177,14 @@ def test_frontend_modal_uses_theme_vars():
     modal_start = html.find('id="del-modal"')
     modal = html[modal_start:modal_start + 400]
     assert "var(--bg-card)" in modal, "弹窗应使用 var(--bg-card) 而非硬编码白色"
+
+
+def test_frontend_audio_and_auto_and_badge():
+    """2026-08-15 批次前端:仅音频选项 / UP 追更开关 / 已下载角标 / 设置开关。"""
+    html = _tpl()
+    assert '<option value="音频">' in html, "清晰度下拉应有仅音频"
+    assert "upToggleAuto" in html, "UP 管理应有自动追更开关"
+    assert "/api/up-list/set-auto" in html
+    assert "dl-badge" in html, "列表项应有已下载角标"
+    assert "config-save-danmaku" in html, "设置区应有弹幕开关"
+    assert "config-auto-interval" in html, "设置区应有追更间隔"

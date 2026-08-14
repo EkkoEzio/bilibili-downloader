@@ -150,3 +150,125 @@ def test_list_tasks_returns_copies():
         assert downloader._tasks["k2"]["status"] == "downloading"
     finally:
         downloader._tasks.pop("k2", None)
+
+
+# ---------- 已下载判定 / 下载 opts / 通知与弹幕钩子(2026-08-15 批次) ----------
+
+def test_is_downloaded():
+    """done 任务的 bvid 命中即视为已下载;进行中/失败的不算。"""
+    _mk_task("dd1", status="done", url="https://www.bilibili.com/video/BV1xx411c7mD")
+    _mk_task("dd2", status="downloading", url="https://www.bilibili.com/video/BV2xx411c7mD")
+    try:
+        assert downloader.is_downloaded("https://www.bilibili.com/video/BV1xx411c7mD?p=3") is True
+        assert downloader.is_downloaded("https://www.bilibili.com/video/BV2xx411c7mD") is False
+        assert downloader.is_downloaded("https://www.bilibili.com/video/BV3xx411c7mD") is False
+    finally:
+        downloader._tasks.pop("dd1", None)
+        downloader._tasks.pop("dd2", None)
+
+
+def _reset_dl_config(monkeypatch):
+    monkeypatch.setattr(downloader.config, "SORT_BY_UP", False)
+    monkeypatch.setattr(downloader.config, "SAVE_COVER", False)
+    monkeypatch.setattr(downloader.config, "SAVE_SUBTITLE", False)
+    monkeypatch.setattr(downloader.config, "SAVE_DANMAKU", False)
+    monkeypatch.setattr(downloader.config, "NOTIFY", False)
+
+
+def test_base_opts_audio_single_track_no_merge(monkeypatch):
+    """仅音频单轨不需要 merge_output_format;组合轨/best 仍合并为 mp4。"""
+    _reset_dl_config(monkeypatch)
+    o = downloader._base_opts("30280", 1, "t")
+    assert "merge_output_format" not in o
+    for fmt in ("30016+30280", "best"):
+        assert downloader._base_opts(fmt, 1, "t")["merge_output_format"] == "mp4"
+
+
+def test_base_opts_sort_by_up_and_extras(monkeypatch):
+    _reset_dl_config(monkeypatch)
+    monkeypatch.setattr(downloader.config, "SORT_BY_UP", True)
+    monkeypatch.setattr(downloader.config, "SAVE_COVER", True)
+    monkeypatch.setattr(downloader.config, "SAVE_SUBTITLE", True)
+    o = downloader._base_opts("30016+30280", 2, "t")
+    assert "%(uploader)s/" in o["outtmpl"]
+    assert "P%(playlist_index)s" in o["outtmpl"]
+    assert o["writethumbnail"] is True
+    assert o["writesubtitles"] is True
+    assert o["subtitleslangs"]
+
+
+def test_run_download_success_notifies_and_saves_danmaku(monkeypatch, tmp_path):
+    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
+    _reset_dl_config(monkeypatch)
+    monkeypatch.setattr(downloader.config, "SAVE_DANMAKU", True)
+    monkeypatch.setattr(downloader.config, "NOTIFY", True)
+
+    notified, saved = [], []
+    monkeypatch.setattr(downloader, "_notify_done", lambda title: notified.append(title))
+    monkeypatch.setattr(downloader.extras, "save_danmaku_for",
+                        lambda url, p, page=1: saved.append((url, str(p))))
+
+    (tmp_path / "测试视频.mp4").write_bytes(b"x" * 10)
+
+    class _OkYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def download(self, urls):
+            return "ok"
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _OkYDL)
+    t = _mk_task("ok1", title="测试视频", url="https://www.bilibili.com/video/BV1xx411c7mD")
+    try:
+        downloader._run_download(
+            "ok1", t["url"], "",
+            [{"format_id": "1", "label": "720P", "kind": "av", "tbr": 1, "height": 720}], 1)
+        assert t["status"] == "done"
+        assert "finished_at" in t
+        assert notified == ["测试视频"]
+        assert saved and saved[0][0] == t["url"] and saved[0][1].endswith("测试视频.mp4")
+    finally:
+        downloader._tasks.pop("ok1", None)
+
+
+def test_run_download_success_notify_disabled(monkeypatch, tmp_path):
+    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
+    _reset_dl_config(monkeypatch)
+    monkeypatch.setattr(downloader.config, "NOTIFY", False)
+
+    notified = []
+    monkeypatch.setattr(downloader, "_notify_done", lambda title: notified.append(title))
+
+    class _OkYDL:
+        def __init__(self, opts):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def download(self, urls):
+            return "ok"
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _OkYDL)
+    t = _mk_task("ok2", title="x", url="https://www.bilibili.com/video/BV1zz411c7mD")
+    try:
+        downloader._run_download(
+            "ok2", t["url"], "",
+            [{"format_id": "1", "label": "720P", "kind": "av", "tbr": 1, "height": 720}], 1)
+        assert t["status"] == "done"
+        assert notified == []
+    finally:
+        downloader._tasks.pop("ok2", None)

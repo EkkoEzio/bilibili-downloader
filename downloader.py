@@ -1,15 +1,24 @@
 """yt-dlp 封装:解析、下载、进度、取消。"""
 import json
+import logging
+import subprocess
+import sys
 import threading
 import uuid
 from typing import Optional
 
 import yt_dlp
 
+import extras
 from quality import classify_formats, best_video_audio_choice
 from bilibili_auth import get_ytdlp_cookie_arg
 from config import TASKS_FILE
 import config  # 不用 `from config import DOWNLOAD_DIR`,要实时读 config.DOWNLOAD_DIR
+
+log = logging.getLogger("bd.downloader")
+
+# 已下载判定复用的 bvid 提取(extras 也用它定位弹幕)
+bvid_from_url = extras.bvid_from_url
 
 # 任务状态表:task_id -> {status, progress, speed, eta, title, filepath, error, cancel}
 _tasks: dict[str, dict] = {}
@@ -197,6 +206,56 @@ def _sanitize(name: str) -> str:
     return name.strip().rstrip(".") or "video"
 
 
+def _base_opts(fmt_str: str, page: int, task_id: str) -> dict:
+    """构造下载基础 opts:format、输出模板(可选按 UP 归档)、附件开关、进度钩子。
+
+    仅音频/单体格式不设 merge_output_format;组合轨(DASH 视频+音频)或
+    best 需要合并时才要求输出 mp4。
+    """
+    sub = "%(uploader)s/" if config.SORT_BY_UP else ""
+    tmpl = "%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1 else "%(title).200B.%(ext)s"
+    opts = {
+        "format": fmt_str,
+        "outtmpl": str(config.DOWNLOAD_DIR / (sub + tmpl)),
+        "progress_hooks": [_progress_hook(task_id)],
+    }
+    if "+" in fmt_str or fmt_str == "best":
+        opts["merge_output_format"] = "mp4"
+    if config.SAVE_COVER:
+        opts["writethumbnail"] = True
+    if config.SAVE_SUBTITLE:
+        opts["writesubtitles"] = True
+        opts["subtitleslangs"] = ["zh-Hans", "zh-CN"]
+        opts["subtitlesformat"] = "srt/best"
+    return opts
+
+
+def _notify_done(title: str) -> None:
+    """下载完成发 macOS 通知(可在设置里关)。"""
+    if not config.NOTIFY or sys.platform != "darwin":
+        return
+    safe = (title or "视频").replace('"', "'")[:60]
+    try:
+        subprocess.run(
+            ["osascript", "-e",
+             f'display notification "《{safe}》下载完成" with title "bilibili download"'],
+            check=False)
+    except Exception:
+        pass
+
+
+def is_downloaded(url: str) -> bool:
+    """该视频(BV 号)是否已有 done 任务——列表「已下载」标记与批量跳过用。"""
+    bv = bvid_from_url(url)
+    if not bv:
+        return False
+    with _tasks_lock:
+        for t in _tasks.values():
+            if t.get("status") == "done" and bvid_from_url(t.get("url") or "") == bv:
+                return True
+    return False
+
+
 def _progress_hook(task_id: str):
     state = {"bucket": None}  # 上次落盘所在的 5% 进度桶
 
@@ -273,15 +332,7 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
             return
 
     fmt_str = best_video_audio_choice(formats, label)
-    # 分 P:文件名带 P 序号,避免覆盖
-    tmpl = "%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1 else "%(title).200B.%(ext)s"
-    outtmpl = str(config.DOWNLOAD_DIR / tmpl)
-    base_opts = {
-        "format": fmt_str,
-        "outtmpl": outtmpl,
-        "merge_output_format": "mp4",
-        "progress_hooks": [_progress_hook(task_id)],
-    }
+    base_opts = _base_opts(fmt_str, page, task_id)
 
     max_retries = 2  # 失败后最多重试 2 次,共尝试 3 次
     last_err = None
@@ -323,18 +374,32 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                 ydl.download([url])
             # 成功: 统计实际下载文件大小,用于 C3 统计面板
             import time as _t
+            files = []
+            done_ok = False
             with _tasks_lock:
                 t = _tasks.get(task_id)
                 if t and t["status"] != "failed":
                     t["status"] = "cancelled" if t.get("cancel") else "done"
                     t["error"] = ""
                     t["finished_at"] = int(_t.time())
+                    done_ok = t["status"] == "done"
                     try:
-                        total = sum(f.stat().st_size for f in _task_files(t) if f.is_file())
-                        t["downloaded_bytes"] = total
+                        files = _task_files(t)
+                        t["downloaded_bytes"] = sum(f.stat().st_size for f in files if f.is_file())
                     except Exception:
                         t["downloaded_bytes"] = 0
             _persist()
+            # 弹幕落盘与系统通知是慢操作,放锁外;尽力而为,不影响任务状态
+            if done_ok:
+                if config.SAVE_DANMAKU and files:
+                    try:
+                        extras.save_danmaku_for(url, files[0], page)
+                    except Exception:
+                        log.exception("弹幕保存失败 %s", url)
+                if t:
+                    if config.NOTIFY:
+                        _notify_done(t["title"])
+                    log.info("任务完成 %s 《%s》", task_id, t.get("title", ""))
             return
         except Exception as e:
             last_err = e

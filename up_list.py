@@ -33,7 +33,11 @@ def _write(data: dict) -> None:
 
 def list_ups() -> list[dict]:
     with _lock:
-        return _read().get("ups", [])
+        ups = _read().get("ups", [])
+    # 老数据没有 auto 字段,统一补默认 False
+    for u in ups:
+        u.setdefault("auto", False)
+    return ups
 
 
 def add_up(mid: int, uname: str = "", face: str = "") -> dict:
@@ -42,11 +46,25 @@ def add_up(mid: int, uname: str = "", face: str = "") -> dict:
         # 已存在就不重复加
         for u in data["ups"]:
             if int(u["mid"]) == int(mid):
+                u.setdefault("auto", False)
                 return u
-        u = {"mid": int(mid), "uname": uname, "face": face, "added_at": int(time.time())}
+        u = {"mid": int(mid), "uname": uname, "face": face,
+             "added_at": int(time.time()), "auto": False}
         data["ups"].append(u)
         _write(data)
         return u
+
+
+def set_auto(mid: int, auto: bool) -> bool:
+    """开/关某 UP 的订阅追更(自动下载新增投稿)。"""
+    with _lock:
+        data = _read()
+        for u in data["ups"]:
+            if int(u["mid"]) == int(mid):
+                u["auto"] = bool(auto)
+                _write(data)
+                return True
+        return False
 
 
 def remove_up(mid: int) -> bool:

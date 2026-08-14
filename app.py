@@ -1,5 +1,6 @@
 """Flask 路由层。薄,业务委托给 bilibili_auth / downloader。"""
 import io
+import logging
 import re
 import time
 import json
@@ -9,11 +10,23 @@ from typing import Optional
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 
 import qrcode
+import auto_refresh
 import up_list
 import bilibili_auth as auth
 import downloader
 from config import PORT, COOKIE_FILE, BROWSER_COOKIE_SOURCE
 import config  # DOWNLOAD_DIR 运行时可变,用 config.DOWNLOAD_DIR 实时读
+
+# 日志:控制台 + data/app.log(排 B 站 412/风控/下载失败要看这里)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    handlers=[
+        logging.FileHandler(config.DATA_DIR / "app.log", encoding="utf-8"),
+        logging.StreamHandler(),
+    ],
+)
+log = logging.getLogger("bd.app")
 
 app = Flask(__name__)
 
@@ -280,6 +293,17 @@ def up_list_remove():
     return jsonify({"ok": ok})
 
 
+@app.route("/api/up-list/set-auto", methods=["POST"])
+def up_list_set_auto():
+    """开关某 UP 的订阅追更。{mid, auto}"""
+    body = request.get_json(silent=True) or {}
+    mid = body.get("mid")
+    if mid is None or "auto" not in body:
+        return jsonify({"ok": False, "error": "缺少 mid 或 auto"}), 400
+    ok = up_list.set_auto(int(mid), bool(body["auto"]))
+    return jsonify({"ok": ok})
+
+
 @app.route("/api/up-list/reset-seen", methods=["POST"])
 def up_list_reset_seen():
     body = request.get_json(silent=True) or {}
@@ -434,10 +458,7 @@ def set_config():
     r = config.set_config(body)
     if not r.get("ok"):
         return jsonify(r), 400
-    return jsonify({"ok": True, "download_dir": r["download_dir"],
-                   "max_concurrent": r["max_concurrent"],
-                   "ratelimit_mbps": r["ratelimit_mbps"],
-                   "theme": r["theme"]})
+    return jsonify(r)
 
 
 @app.route("/api/open-folder", methods=["POST"])
@@ -452,4 +473,5 @@ def open_folder():
 
 if __name__ == "__main__":
     print(f"\n  浏览器打开: http://localhost:{PORT}\n")
+    auto_refresh.start_loop()  # 订阅追更轮询(间隔见 config.AUTO_REFRESH_MINUTES)
     app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
