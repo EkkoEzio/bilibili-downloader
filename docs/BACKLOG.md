@@ -130,6 +130,29 @@
 
 ---
 
+## 2026-08-15 功能批次(已完成)
+
+- **仅音频**:quality 选「音频」直接返回音频轨 format_id;前端三处清晰度下拉
+  (单视频/批量/我的B站)加「🎵 仅音频」。仅音频/单体不设 merge_output_format。
+- **就近降档**:选的清晰度源没有时,取不超过该高度的最高档;都没有取最低档
+  (宁可低不超高)。此前是「兜底最高」,语义含糊。
+- **订阅追更(自动下载)**:up_list 加 auto 字段 + set_auto 路由;auto_refresh
+  模块定时串行拉取,新增投稿自动入队(max_concurrent=1)。间隔按合规要求 ≥3s/UP,
+  轮询下限 10 分钟。限流不推进 last_seen,跳过已下载。
+- **已下载标记**:downloader.is_downloaded(BV 去重);前端列表角标 + 批量下载
+  自动跳过并提示。SSE 完成后刷新角标。
+- **弹幕保存**:extras.py 解析 B 站分段 protobuf(seg.so,经典 list.so 已 400),
+  落成经典 B 站 XML(<d p="...">),PotPlayer/IINA 可加载。字幕/封面走 yt-dlp
+  选项(writesubtitles/writethumbnail)。设置区可开关。
+- **小件**:按 UP 主建子目录(SORT_BY_UP)、完成后 macOS 通知(osascript,可关)、
+  日志落盘 data/app.log、启动脚本端口就绪再开浏览器(冷启动不再 404)。
+- **观看历史「加载更早」**:服务端分页(page+size=100)逐页追加 + bvid 去重。
+- **合规**:新增 docs/COMPLIANCE.md(法律风险边界 + 护栏 + 三档结论),README 加
+  合法性 FAQ 与免责声明引用。
+- 测试 34 → 69 个。
+
+---
+
 ## 2026-08-14 优化批次(已完成)
 
 - **收藏夹内容接口修复**:曾因 `bilibili_auth` 未导入 `yt_dlp` 抛 NameError,
