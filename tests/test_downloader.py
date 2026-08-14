@@ -3,6 +3,7 @@
 不依赖 yt-dlp mock(易死锁),改用源码静态分析 + 简单业务测试。
 """
 import inspect
+from pathlib import Path
 
 import downloader
 
@@ -34,8 +35,7 @@ def test_cancel_exits_immediately():
 
 def test_retry_state_renders_in_frontend():
     """前端 statusCN 包含 retrying。"""
-    import re
-    html = open("/Users/hushen/Desktop/b站视频下载/templates/index.html", encoding="utf-8").read()
+    html = (Path(__file__).resolve().parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
     assert "retrying" in html, "前端缺少 retrying 状态处理"
     # 验证 statusCN 中有中文标签
     assert "重试中" in html
