@@ -164,6 +164,14 @@
   #qr-status { text-align: center; font-size: 13px; color: #61666d; min-height: 20px; }
   .empty { color: var(--text-mute); font-size: 14px; padding: 20px 0; text-align: center; }
 
+  /* 已下载角标 */
+  .dl-badge {
+    display: inline-block; font-size: 10px; font-weight: 600;
+    color: #2e7d32; background: #e8f5e9; border: 1px solid #c8e6c9;
+    padding: 0 5px; border-radius: 8px; vertical-align: 1px; margin-left: 4px;
+  }
+  body.dark .dl-badge { background: #1e3a24; color: #81c784; border-color: #2e5a34; }
+
   /* spinner */
   .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #00a1d6; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
@@ -225,6 +233,32 @@
         <option value="light">浅色</option>
         <option value="dark">深色</option>
       </select>
+    </div>
+
+    <div class="btn-row" style="margin-top:0;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:13px;color:var(--text-main);min-width:80px;">下载附件</span>
+      <label style="font-size:13px;"><input type="checkbox" id="config-save-danmaku"> 保存弹幕(.xml)</label>
+      <label style="font-size:13px;"><input type="checkbox" id="config-save-subtitle"> 保存字幕(srt)</label>
+      <label style="font-size:13px;"><input type="checkbox" id="config-save-cover"> 保存封面</label>
+    </div>
+
+    <div class="btn-row" style="margin-top:0;align-items:center;flex-wrap:wrap;">
+      <span style="font-size:13px;color:var(--text-main);min-width:80px;">归档/通知</span>
+      <label style="font-size:13px;"><input type="checkbox" id="config-sort-by-up"> 按 UP 主建子目录</label>
+      <label style="font-size:13px;"><input type="checkbox" id="config-notify"> 完成后系统通知</label>
+      <span style="margin-left:24px;font-size:13px;color:var(--text-main);">追更检查间隔</span>
+      <select id="config-auto-interval" style="margin-left:8px;max-width:140px;">
+        <option value="10">10 分钟</option>
+        <option value="30">30 分钟</option>
+        <option value="60">1 小时</option>
+        <option value="120">2 小时</option>
+        <option value="360">6 小时</option>
+      </select>
+    </div>
+    <div class="hint" style="margin-bottom:12px;">追更只下载 UP 清单里开启了「自动追更」的 UP;间隔刻意较长(协议"自动程序"条款,低频串行更安全)。</div>
+
+    <div class="btn-row" style="margin-top:0;align-items:center;">
+      <span style="font-size:13px;color:var(--text-main);min-width:80px;"></span>
       <button onclick="saveAllConfig()">保存设置</button>
     </div>
   </section>
@@ -369,6 +403,7 @@
             <option value="720P">720P</option>
             <option value="480P">480P</option>
             <option value="360P">360P</option>
+            <option value="音频">🎵 仅音频</option>
           </select>
           <button onclick="libDownload()">下载选中</button>
         </div>
@@ -596,12 +631,18 @@ async function loadPartFormats(url) {
 
 function qualitySelectHtml(formats, bestLabel) {
   const videoOnly = formats.filter(f => f.kind === 'video' || f.kind === 'av');
-  const options = videoOnly.map(f => {
+  let options = videoOnly.map(f => {
     const sel = (f.label === bestLabel) ? 'selected' : '';
     // #10 显示预估大小
     const sizeTxt = f.size_mb ? ` (${f.size_mb} MB)` : '';
     return `<option value="${f.label}" ${sel}>${f.label}${sizeTxt}</option>`;
   }).join('');
+  // 仅音频(有独立音频轨时可选)
+  const audio = formats.find(f => f.kind === 'audio');
+  if (audio) {
+    const sizeTxt = audio.size_mb ? ` (${audio.size_mb} MB)` : '';
+    options += `<option value="音频">🎵 仅音频${sizeTxt}</option>`;
+  }
   if (!options) return '<div class="hint">无可用清晰度</div>';
   return `<div class="btn-row"><select id="quality-select">${options}</select></div>`;
 }
@@ -713,10 +754,11 @@ function renderBatchList(title) {
         <option value="720P">720P</option>
         <option value="480P">480P</option>
         <option value="360P">360P</option>
+        <option value="音频">🎵 仅音频</option>
       </select>
       <button onclick="batchDownload()">批量下载</button>
     </div>
-    <div class="hint">批量下载最多 2 个同时进行,其余排队。</div>`;
+    <div class="hint">批量下载最多 2 个同时进行,其余排队;已下载过的项会自动跳过。</div>`;
   // 更新计数 + 监听勾选变化
   document.querySelectorAll('input[data-bidx]').forEach(cb => cb.addEventListener('change', updateBatchCount));
   updateBatchCount();
@@ -737,18 +779,21 @@ async function batchDownload() {
   const checked = [...document.querySelectorAll('input[data-bidx]:checked')];
   if (checked.length === 0) { alert('请至少勾选一项'); return; }
   const label = document.getElementById('batch-quality').value;
-  const items = checked.map(cb => {
+  let items = checked.map(cb => {
     const idx = parseInt(cb.dataset.bidx);
     const it = _batchItems[idx];
     return { url: it.url, title: it.title, page: it.url.includes('?p=') ? parseInt(it.url.split('?p=')[1]) : 1 };
   });
+  const skipped = items.filter(it => isUrlDownloaded(it.url)).length;
+  items = items.filter(it => !isUrlDownloaded(it.url));
+  if (items.length === 0) { alert('所选项均已下载过'); return; }
   try {
     const r = await (await fetch(API('/api/batch/download'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ items, label })
     })).json();
     if (!r.ok) throw new Error(r.error || '启动失败');
-    alert(`已加入 ${r.count} 个下载任务`);
+    alert(`已加入 ${r.count} 个下载任务${skipped ? `(跳过 ${skipped} 个已下载)` : ''}`);
     // 订阅所有新任务进度
     r.task_ids.forEach(subscribeProgress);
   } catch (e) {
@@ -1075,12 +1120,27 @@ async function upListRender() {
     return;
   }
   panel.style.display = '';
-  panel.innerHTML = `<div style="font-size:13px;font-weight:600;margin-bottom:8px;">已管理 UP(${r.ups.length})</div>` + r.ups.map(u => `
+  panel.innerHTML = `<div style="font-size:13px;font-weight:600;margin-bottom:8px;">已管理 UP(${r.ups.length})<span style="font-weight:normal;color:var(--text-mute);margin-left:8px;">勾选「自动追更」后,系统会定时把新投稿自动加入下载队列</span></div>` + r.ups.map(u => `
     <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
       <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'" style="width:24px;height:24px;border-radius:50%;background:var(--bg-muted);">
       <span style="flex:1;">${escapeHtml(u.uname || ('UP ' + u.mid))} <span style="color:var(--text-mute);">mid:${u.mid}</span></span>
+      <label style="font-size:12px;color:${u.auto ? 'var(--accent)' : 'var(--text-mute)'};display:flex;align-items:center;gap:4px;">
+        <input type="checkbox" ${u.auto ? 'checked' : ''} onchange="upToggleAuto(${u.mid}, this.checked)">自动追更
+      </label>
       <button class="small danger" onclick="upRemove(${u.mid})">移除</button>
     </div>`).join('');
+}
+
+async function upToggleAuto(mid, auto) {
+  try {
+    const r = await (await fetch(API('/api/up-list/set-auto'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ mid, auto })
+    })).json();
+    if (!r.ok) { alert('切换失败'); upListRender(); return; }
+    if (auto) alert(`已开启自动追更。新投稿会按设置的间隔自动入队下载(串行低速,不会立刻看到;队列区可见)。`);
+    upListRender();
+  } catch (e) { alert(e.message); }
 }
 
 async function upRemove(mid) {
@@ -1187,6 +1247,8 @@ function renderLibList(pairs, container) {
   container.className = isGrid ? 'lib-grid' : '';
   container.innerHTML = pairs.map(({ it, idx: origIdx }) => {
     const checked = origIdx >= 0 && _libChecked.has(origIdx) ? 'checked' : '';
+    const badgeHtml = isUrlDownloaded(it.url)
+      ? '<span class="dl-badge">已下载</span>' : '';
     const pct = it.watched_pct || 0;
     const showProgress = it.duration && pct > 0 && pct < 100;
     const progressHtml = showProgress
@@ -1203,7 +1265,7 @@ function renderLibList(pairs, container) {
       <label class="video-item" style="position:relative;">
         <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)" class="vi-check">
         <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'">
-        <div class="vi-title">${escapeHtml(it.title)}</div>
+        <div class="vi-title">${escapeHtml(it.title)} ${badgeHtml}</div>
         <div class="vi-meta">
           ${escapeHtml(it.uploader || '-')} ${it.duration ? '· ' + formatDuration(it.duration) : ''}
         </div>
@@ -1216,7 +1278,7 @@ function renderLibList(pairs, container) {
       <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)">
       <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" style="width:100px;height:62px;object-fit:cover;border-radius:4px;flex-shrink:0;background:var(--bg-muted);">
       <div style="flex:1;min-width:0;">
-        <div style="font-size:13px;font-weight:600;word-break:break-all;">${escapeHtml(it.title)}</div>
+        <div style="font-size:13px;font-weight:600;word-break:break-all;">${escapeHtml(it.title)} ${badgeHtml}</div>
         <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">
           UP:${escapeHtml(it.uploader || '-')} ${it.duration ? '· ' + formatDuration(it.duration) : ''}
           ${it.view_at ? '· ' + formatTime(it.view_at) : ''}
@@ -1284,17 +1346,20 @@ async function libDownload() {
   const checked = [...document.querySelectorAll('input[data-libidx]:checked')];
   if (checked.length === 0) { alert('请至少勾选一项'); return; }
   const label = document.getElementById('lib-quality').value;
-  const items = checked.map(cb => {
+  let items = checked.map(cb => {
     const it = _libItems[parseInt(cb.dataset.libidx)];
     return { url: it.url, title: it.title, page: 1 };
   });
+  const skipped = items.filter(it => isUrlDownloaded(it.url)).length;
+  items = items.filter(it => !isUrlDownloaded(it.url));
+  if (items.length === 0) { alert('所选项均已下载过'); return; }
   try {
     const r = await (await fetch(API('/api/batch/download'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({ items, label })
     })).json();
     if (!r.ok) throw new Error(r.error || '启动失败');
-    alert(`已加入 ${r.count} 个下载任务`);
+    alert(`已加入 ${r.count} 个下载任务${skipped ? `(跳过 ${skipped} 个已下载)` : ''}`);
     r.task_ids.forEach(subscribeProgress);
   } catch (e) { alert(e.message); }
 }
@@ -1319,7 +1384,11 @@ function subscribeProgress(taskId, retries) {
     retries = 0;  // 收到消息说明连接正常,重置重试计数
     const t = JSON.parse(ev.data);
     renderTask(t);
-    if (t.status === 'done') loadStats();  // C3: 完成后刷新统计
+    if (t.status === 'done') {
+      loadStats();   // C3: 完成后刷新统计
+      // 刷新已下载角标(列表项可能因此显示"已下载")
+      loadTasks().then(() => refreshLibBadges());
+    }
     if (['done', 'failed', 'cancelled'].includes(t.status)) {
       es.close(); delete _activeSSE[taskId];
     }
@@ -1508,6 +1577,20 @@ function loadConfigIntoUI() {
     const theme = r.theme || localStorage.getItem('bd_theme') || 'auto';
     const el = document.getElementById('config-theme');
     if (el) el.value = theme;
+    // 2026-08-15 批次新增项
+    const checks = {
+      'config-save-danmaku': r.save_danmaku,
+      'config-save-subtitle': r.save_subtitle,
+      'config-save-cover': r.save_cover,
+      'config-sort-by-up': r.sort_by_up,
+      'config-notify': r.notify,
+    };
+    for (const [id, v] of Object.entries(checks)) {
+      const c = document.getElementById(id);
+      if (c) c.checked = !!v;
+    }
+    const interval = document.getElementById('config-auto-interval');
+    if (interval) interval.value = String(r.auto_refresh_minutes || 30);
   });
 }
 
@@ -1520,10 +1603,19 @@ async function saveAllConfig() {
   // theme 存 localStorage(避免每次刷新后端),同时也存 config.json 让后端知道
   localStorage.setItem('bd_theme', theme);
   applyTheme(theme);
+  const body = {
+    download_dir: v, max_concurrent: mc, ratelimit_mbps: rl, theme,
+    save_danmaku: document.getElementById('config-save-danmaku').checked,
+    save_subtitle: document.getElementById('config-save-subtitle').checked,
+    save_cover: document.getElementById('config-save-cover').checked,
+    sort_by_up: document.getElementById('config-sort-by-up').checked,
+    notify: document.getElementById('config-notify').checked,
+    auto_refresh_minutes: parseInt(document.getElementById('config-auto-interval').value),
+  };
   try {
     const r = await (await fetch(API('/api/config'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ download_dir: v, max_concurrent: mc, ratelimit_mbps: rl, theme })
+      body: JSON.stringify(body)
     })).json();
     if (!r.ok) throw new Error(r.error || '保存失败');
     DL_DIR = r.download_dir;
@@ -1565,17 +1657,49 @@ async function loadStats() {
     document.getElementById('stat-day-count').textContent = r.day_count;
   } catch (e) {}
 }
+/* ---------- 已下载判定(列表角标 + 批量跳过) ---------- */
+let _doneBvids = new Set();  // 已完成任务的 BV 号集合
+
+function bvFromUrl(url) {
+  const m = /BV[0-9A-Za-z]{10}/.exec(url || '');
+  return m ? m[0] : null;
+}
+
+function isUrlDownloaded(url) {
+  const bv = bvFromUrl(url);
+  return !!bv && _doneBvids.has(bv);
+}
+
+/* 下载完成后重渲染当前 lib 列表,让"已下载"角标即时出现 */
+function refreshLibBadges() {
+  if (!_libItems.length) return;
+  const show = (id) => document.getElementById(id);
+  if (_libMode === 'history' || _libMode === 'follow') {
+    if (show('history-list').offsetParent !== null) renderPage();
+  } else if (_libMode === 'later') {
+    if (show('later-list').offsetParent !== null) renderLibList(withIdx(_libItems), show('later-list'));
+  } else if (_libMode === 'up') {
+    if (show('up-list').offsetParent !== null) renderLibList(withIdx(_libItems), show('up-list'));
+  } else if (_libMode === 'fav' && _favCurrent) {
+    if (show('fav-content-list').offsetParent !== null) renderLibList(withIdx(_libItems), show('fav-content-list'));
+  }
+}
+
 async function loadTasks() {
   try {
     const r = await (await fetch(API('/api/tasks'))).json();
+    const tasks = r.tasks || [];
+    // 维护已下载 BV 集合
+    _doneBvids = new Set(tasks.filter(t => t.status === 'done')
+      .map(t => bvFromUrl(t.url)).filter(Boolean));
     const list = document.getElementById('queue-list');
-    if (!r.tasks || r.tasks.length === 0) {
+    if (tasks.length === 0) {
       list.innerHTML = '<div class="empty" id="queue-list-empty">暂无下载任务</div>';
       return;
     }
     list.innerHTML = '';
-    r.tasks.slice().reverse().forEach(renderTask);
-    r.tasks.filter(t => ['queued','downloading','merging','cancelling'].includes(t.status))
+    tasks.slice().reverse().forEach(renderTask);
+    tasks.filter(t => ['queued','downloading','merging','cancelling'].includes(t.status))
       .forEach(t => subscribeProgress(t.task_id));
   } catch (e) {}
 }
@@ -1592,6 +1716,8 @@ async function loadTasks() {
   await loadStats();
   // 打开页面自动刷新观看历史(已登录才加载;复用 refreshLogin 的结果,不再多发一次请求)
   if (_loggedIn) loadHistory();
+  // 后台任务(自动追更入队等)靠轮询刷新队列,与 SSE 互为兜底
+  setInterval(loadTasks, 30000);
 })();
 </script>
 </body>

@@ -22,8 +22,17 @@ else
   source .venv/bin/activate
 fi
 
-# 自动在浏览器打开(后台执行,2秒后)
-( sleep 2 && open "http://localhost:5050" ) &
+# 自动在浏览器打开:等端口就绪再开(冷启动装依赖时 2 秒可能还没起好)
+(
+  for i in $(seq 1 60); do
+    if curl -s -o /dev/null "http://localhost:5050/api/config"; then
+      open "http://localhost:5050"
+      exit 0
+    fi
+    sleep 1
+  done
+  echo "提示:端口 5050 60 秒内未就绪,请手动打开浏览器访问。"
+) &
 
 python3 app.py
 read -n 1 -s -r -p "按任意键关闭窗口..."
