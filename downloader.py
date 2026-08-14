@@ -198,14 +198,16 @@ def _sanitize(name: str) -> str:
 
 
 def _progress_hook(task_id: str):
-    state_changed = False
+    state = {"bucket": None}  # 上次落盘所在的 5% 进度桶
 
     def hook(d):
-        nonlocal state_changed
+        persist = False
         with _tasks_lock:
             t = _tasks.get(task_id)
-            if not t:
-                return
+            # 取消或任务记录已删:抛异常让 yt-dlp 立即中止,
+            # 否则下载会完整跑完才被标记(浪费带宽/磁盘)。
+            if not t or t.get("cancel"):
+                raise yt_dlp.utils.DownloadCancelled("任务已取消")
             if d["status"] == "downloading":
                 # 进入下载态(yt-dlp hook 第一次回调就把 queued→downloading)
                 t["status"] = "downloading"
@@ -216,18 +218,20 @@ def _progress_hook(task_id: str):
                 t["progress"] = round(downloaded / total * 100, 1) if total else 0
                 t["speed"] = round(speed / 1024, 1)  # KB/s
                 t["eta"] = d.get("eta") or 0
-                state_changed = False  # downloading 是高频更新,节流:每 5% 存一次
-                if int(t["progress"]) % 5 == 0:
-                    state_changed = True
+                # downloading 是高频更新,节流:每进入一个新的 5% 桶才落一次盘
+                bucket = int(t["progress"]) // 5
+                if bucket != state["bucket"]:
+                    state["bucket"] = bucket
+                    persist = True
             elif d["status"] == "finished":
                 t["progress"] = 100
                 t["status"] = "merging"  # yt-dlp 合并阶段
-                state_changed = True
+                persist = True
             elif d["status"] == "error":
                 t["status"] = "failed"
                 t["error"] = "下载出错"
-                state_changed = True
-        if state_changed:
+                persist = True
+        if persist:
             _persist()
     return hook
 
@@ -236,6 +240,15 @@ def _is_cancelled(task_id: str) -> bool:
     with _tasks_lock:
         t = _tasks.get(task_id)
         return bool(t and t.get("cancel"))
+
+
+def _finalize_cancelled(task_id: str) -> None:
+    """把未终结的任务落为已取消(取消发生在下载回调之外时的兜底)。"""
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+        if t and t["status"] not in ("done", "failed", "cancelled"):
+            t["status"] = "cancelled"
+    _persist()
 
 
 def _run_download(task_id: str, url: str, label: str, formats: list[dict], page: int) -> None:
@@ -274,10 +287,15 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
     last_err = None
     for attempt in range(max_retries + 1):
         # 用户主动取消 → 立刻退出,不算失败也不重试
+        # (注意:_persist/_finalize_cancelled 会抢 _tasks_lock,不能在锁内调用)
         with _tasks_lock:
             t = _tasks.get(task_id)
-            if not t or t.get("cancel"):
-                return
+            cancelled = bool(t and t.get("cancel"))
+        if not t:
+            return
+        if cancelled:
+            _finalize_cancelled(task_id)
+            return
         # 第二次起把进度回退一点,便于 UI 显示「正在重试」
         if attempt > 0:
             with _tasks_lock:
@@ -291,8 +309,12 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
             # 退避后再次检查取消(用户在 sleep 期间点了取消)
             with _tasks_lock:
                 t = _tasks.get(task_id)
-                if not t or t.get("cancel"):
-                    return
+                cancelled = bool(t and t.get("cancel"))
+            if not t:
+                return
+            if cancelled:
+                _finalize_cancelled(task_id)
+                return
 
         # 每次重试都重建 YoutubeDL 实例(避免内部状态污染)
         opts = _ydl_opts(base_opts)
@@ -316,13 +338,13 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
             return
         except Exception as e:
             last_err = e
-            # 取消标志置位 → 不再重试
+            # 取消标志置位 → 不再重试(锁内只读标志,收尾放锁外,避免重入死锁)
             with _tasks_lock:
                 t = _tasks.get(task_id)
-                if t and t.get("cancel"):
-                    t["status"] = "cancelled"
-                    _persist()
-                    return
+                cancelled = bool(t and t.get("cancel"))
+            if cancelled:
+                _finalize_cancelled(task_id)
+                return
 
     # 全部尝试失败
     with _tasks_lock:
@@ -419,13 +441,16 @@ def cancel_download(task_id: str) -> bool:
 
 
 def get_task(task_id: str) -> Optional[dict]:
+    """返回任务快照(拷贝)。调用方(SSE/jsonify)序列化时不受下载线程并发写影响。"""
     with _tasks_lock:
-        return _tasks.get(task_id)
+        t = _tasks.get(task_id)
+        return dict(t) if t else None
 
 
 def list_tasks() -> list[dict]:
+    """返回全部任务的快照列表(每项为拷贝)。"""
     with _tasks_lock:
-        return list(_tasks.values())
+        return [dict(t) for t in _tasks.values()]
 
 
 def find_active_by_url(url: str, label: str, page: int = 1) -> Optional[str]:
