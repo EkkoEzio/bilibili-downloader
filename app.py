@@ -1,11 +1,15 @@
 """Flask 路由层。薄,业务委托给 bilibili_auth / downloader。"""
 import io
+import re
 import time
 import json
 import subprocess
+from typing import Optional
+
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 
 import qrcode
+import up_list
 import bilibili_auth as auth
 import downloader
 from config import PORT, COOKIE_FILE, BROWSER_COOKIE_SOURCE
@@ -231,9 +235,6 @@ def follow_updates():
 
 
 # ---------- A3: 自定义 UP 清单 ----------
-import re as _re
-import up_list
-
 
 def _parse_mid_from_input(s: str) -> Optional[int]:
     """从主页 URL 或纯 mid 数字中提取 mid。支持:
@@ -241,7 +242,7 @@ def _parse_mid_from_input(s: str) -> Optional[int]:
        - 12345
     """
     s = (s or "").strip()
-    m = _re.search(r"space\.bilibili\.com/(\d+)", s)
+    m = re.search(r"space\.bilibili\.com/(\d+)", s)
     if m:
         return int(m.group(1))
     if s.isdigit():
@@ -291,39 +292,38 @@ def up_list_reset_seen():
 
 @app.route("/api/up-updates")
 def up_updates():
-    """拉清单中所有 UP 的新增视频。?include_seen=true 把已见的一起返回(否则只返回增量)。"""
-    from concurrent.futures import ThreadPoolExecutor
+    """拉清单中所有 UP 的新增视频。?include_seen=true 把已见的一起返回(否则只返回增量)。
+
+    风控:与 fetch_follow_updates 同一结论——arc/search 并发会触发 B 站账号级
+    412,必须串行 + UP 间 1.5 秒间隔。mark_seen 只用本次实际拿到的数据推进;
+    某 UP 被限流返回空时保持原 last_seen,否则用户没看到的视频会被误标为已见。
+    """
     include_seen = request.args.get("include_seen") == "true"
     ups = up_list.list_ups()
     if not ups:
         return jsonify({"ok": True, "items": [], "ups": []})
 
-    def fetch_one(up):
-        return up, auth.fetch_up_videos(int(up["mid"]), ps=20)
-
-    results_by_up = []
-    with ThreadPoolExecutor(max_workers=6) as ex:
-        for up, videos in ex.map(fetch_one, ups):
-            last = up_list.get_last_seen(int(up["mid"]))
+    results = []
+    for i, up in enumerate(ups):
+        mid = int(up["mid"])
+        fetched = auth.fetch_up_videos(mid, ps=20)
+        if fetched:
+            newest = fetched[0]  # arc/search 按 pubdate 倒序,第一条即最新
+            last = up_list.get_last_seen(mid)
             if not include_seen and last:
-                # 只保留比 last_seen 时间更新的
                 seen_ts = last.get("ts", 0)
-                videos = [v for v in videos if v.get("view_at", 0) > seen_ts]
-                # 也排除 bvid 相同的(防御)
                 seen_bvid = last.get("bvid", "")
-                videos = [v for v in videos if v.get("bvid") != seen_bvid]
-            for v in videos:
-                v["uploader_mid"] = up["mid"]
-            results_by_up.extend(videos)
-
-    results_by_up.sort(key=lambda x: x.get("view_at", 0), reverse=True)
-    # 自动更新 last_seen 为每个 UP 的最新视频
-    for up in ups:
-        vs = auth.fetch_up_videos(int(up["mid"]), ps=1)
-        if vs:
-            v = vs[0]
-            up_list.mark_seen(int(up["mid"]), v["bvid"], v.get("view_at", 0), v.get("title", ""))
-    return jsonify({"ok": True, "items": results_by_up, "ups": ups})
+                fetched = [v for v in fetched
+                           if v.get("view_at", 0) > seen_ts and v.get("bvid") != seen_bvid]
+            for v in fetched:
+                v["uploader_mid"] = mid
+            results.extend(fetched)
+            up_list.mark_seen(mid, newest["bvid"], newest.get("view_at", 0),
+                              newest.get("title", ""))
+        if i < len(ups) - 1:
+            time.sleep(1.5)  # 防 arc/search 账号级限流
+    results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
+    return jsonify({"ok": True, "items": results, "ups": ups})
 
 
 # ---------- A4: 收藏夹浏览 ----------
@@ -381,10 +381,11 @@ def tasks():
 
 @app.route("/api/stats")
 def stats():
-    """统计面板: 总下载数、总字节数、本月/今日 数。"""
-    import time as _t
-    now = int(_t.time())
-    month_start = now - 86400 * 30  # 30 天内近似「本月」
+    """统计面板: 总下载数、总字节数、本月/今日 数。本月=自然月。"""
+    import datetime as _dt
+    now = int(time.time())
+    today = _dt.date.today()
+    month_start = int(time.mktime(_dt.date(today.year, today.month, 1).timetuple()))
     day_start = now - 86400
 
     total_count = 0
@@ -396,9 +397,6 @@ def stats():
             continue
         total_count += 1
         total_bytes += t.get("downloaded_bytes") or 0
-        done_at = t.get("view_at") or t.get("added_at")  # 兜底用 added_at(view_at 是历史项的时间戳)
-        # 完成时间没有显式字段,用任务首次出现在 tasks.json 的时间近似 = 文件 mtime 或 added_at
-        # 简化: 如果没 finish_at,就不计入 day/month
         finished = t.get("finished_at")
         if finished:
             if finished >= day_start:
@@ -408,8 +406,7 @@ def stats():
 
     # 也扫一下磁盘真实文件大小兜底(历史任务没有 downloaded_bytes 字段时)
     try:
-        from config import DOWNLOAD_DIR
-        disk_bytes = sum(f.stat().st_size for f in DOWNLOAD_DIR.iterdir() if f.is_file())
+        disk_bytes = sum(f.stat().st_size for f in config.DOWNLOAD_DIR.iterdir() if f.is_file())
     except Exception:
         disk_bytes = 0
 

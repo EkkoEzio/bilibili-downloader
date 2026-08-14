@@ -60,8 +60,8 @@
     font-size: 14px;
     padding: 4px 12px;
     border-radius: 14px;
-    background: #e3e5e7;
-    color: #61666d;
+    background: var(--bg-muted);
+    color: var(--text-soft);
   }
   #login-badge.ok { background: #e8f5e9; color: #2e7d32; }
   #login-badge.vip { background: #fff4e0; color: #b8860b; }
@@ -76,11 +76,11 @@
   }
   section h2 { font-size: 16px; margin-bottom: 14px; color: var(--text-main); }
 
-  .tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid #e3e5e7; }
+  .tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border-card); }
   .tab {
     padding: 8px 16px; cursor: pointer;
     border-bottom: 2px solid transparent;
-    font-size: 14px; color: #61666d; transition: all 0.15s;
+    font-size: 14px; color: var(--text-soft); transition: all 0.15s;
   }
   .tab.active { color: #00a1d6; border-bottom-color: #00a1d6; }
   .tab:hover { color: #00a1d6; }
@@ -109,10 +109,10 @@
   }
   button:hover:not(:disabled) { background: #0091c2; }
   button:disabled { background: #c9ccd0; cursor: not-allowed; }
-  button.secondary { background: #fff; color: #00a1d6; border: 1px solid #00a1d6; }
-  button.secondary:hover:not(:disabled) { background: #e3f4fb; }
+  button.secondary { background: var(--bg-card); color: #00a1d6; border: 1px solid #00a1d6; }
+  button.secondary:hover:not(:disabled) { background: var(--accent-soft); }
   button.small { padding: 5px 12px; font-size: 12px; }
-  button.danger { background: #fff; color: #e53935; border: 1px solid #e53935; }
+  button.danger { background: var(--bg-card); color: #e53935; border: 1px solid #e53935; }
   button.danger:hover:not(:disabled) { background: #fdecea; }
   .btn-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
 
@@ -123,7 +123,7 @@
 
   #parse-result { margin-top: 16px; }
   .video-card { display: flex; gap: 14px; padding: 12px; background: var(--bg-soft); border-radius: 8px; flex-wrap: wrap; }
-  .video-card img { width: 160px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: #e3e5e7; }
+  .video-card img { width: 160px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: var(--bg-muted); }
   .video-info { flex: 1; min-width: 240px; }
   .video-info .vt { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
 
@@ -139,12 +139,12 @@
   #history-list.lib-grid .vi-title { font-size: 13px; font-weight: 600; line-height: 1.35; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
   #history-list.lib-grid .vi-meta { font-size: 11px; color: var(--text-mute); }
   #history-list.lib-grid .vi-check { position: absolute; top: 6px; right: 6px; }
-  .video-info .vm { font-size: 13px; color: #61666d; }
+  .video-info .vm { font-size: 13px; color: var(--text-soft); }
 
   .task-item { padding: 12px; background: var(--bg-soft); border-radius: 8px; margin-top: 10px; }
   .task-item .ti-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; gap: 8px; }
   .task-item .ti-head .label { font-weight: 600; word-break: break-all; }
-  .progress-wrap { background: #e3e5e7; border-radius: 6px; height: 22px; overflow: hidden; position: relative; }
+  .progress-wrap { background: var(--bg-muted); border-radius: 6px; height: 22px; overflow: hidden; position: relative; }
   .progress-bar { background: linear-gradient(90deg, #00a1d6, #23b8e8); height: 100%; transition: width 0.3s; background-size: 24px 24px; }
   .progress-bar.active { background-image: linear-gradient(45deg, rgba(255,255,255,.25) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.25) 50%, rgba(255,255,255,.25) 75%, transparent 75%, transparent); background-size: 24px 24px; animation: progstripes 0.8s linear infinite; }
   @keyframes progstripes { from { background-position: 0 0; } to { background-position: 24px 0; } }
@@ -160,7 +160,7 @@
   .status-tag.failed, .status-tag.cancelled { background: #fdecea; color: #c62828; }
 
   #qrcode-img { text-align: center; margin: 12px 0; }
-  #qrcode-img img { border: 1px solid #e3e5e7; border-radius: 6px; }
+  #qrcode-img img { border: 1px solid var(--border-card); border-radius: 6px; }
   #qr-status { text-align: center; font-size: 13px; color: #61666d; min-height: 20px; }
   .empty { color: var(--text-mute); font-size: 14px; padding: 20px 0; text-align: center; }
 
@@ -192,21 +192,21 @@
   <section id="settings-section" style="display:none;">
     <h2>设置</h2>
     <div class="btn-row" style="margin-top:0;align-items:center;">
-      <span style="font-size:13px;color:#18191c;min-width:80px;">下载目录</span>
+      <span style="font-size:13px;color:var(--text-main);min-width:80px;">下载目录</span>
       <input type="text" id="config-dir-input" style="flex:1;">
       <button class="small secondary" onclick="resetConfigDir()">恢复默认</button>
     </div>
     <div class="hint" style="margin-bottom:12px;">路径含 ~ 自动展开。目录不存在会自动创建。</div>
 
     <div class="btn-row" style="margin-top:0;align-items:center;margin-bottom:6px;">
-      <span style="font-size:13px;color:#18191c;min-width:80px;">同时下载数</span>
+      <span style="font-size:13px;color:var(--text-main);min-width:80px;">同时下载数</span>
       <select id="config-concurrent">
         <option value="1">1</option>
         <option value="2">2</option>
         <option value="3">3</option>
         <option value="4">4</option>
       </select>
-      <span style="margin-left:24px;font-size:13px;color:#18191c;min-width:80px;">单任务限速</span>
+      <span style="margin-left:24px;font-size:13px;color:var(--text-main);min-width:80px;">单任务限速</span>
       <select id="config-ratelimit" style="margin-left:8px;">
         <option value="0">不限速</option>
         <option value="1">1 MB/s</option>
@@ -311,7 +311,7 @@
         <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
           <button class="small secondary" onclick="favBack()">← 返回收藏夹</button>
           <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
-          <span id="fav-meta" style="color:#9499a0;font-size:12px;margin-left:auto;"></span>
+          <span id="fav-meta" style="color:var(--text-mute);font-size:12px;margin-left:auto;"></span>
         </div>
         <div id="fav-content-list" style="display:none;"></div>
       </div>
@@ -321,7 +321,7 @@
     <div id="lib-later" style="display:none;">
       <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
         <button onclick="loadWatchlater()">刷新</button>
-        <span id="later-meta" style="color:#9499a0;font-size:12px;"></span>
+        <span id="later-meta" style="color:var(--text-mute);font-size:12px;"></span>
       </div>
       <div id="later-list" style="display:none;"></div>
     </div>
@@ -333,11 +333,11 @@
         <button onclick="upAdd()">添加</button>
         <button class="small secondary" onclick="upListRender()">管理清单</button>
       </div>
-      <div id="up-list-panel" style="display:none;margin-bottom:10px;padding:10px;background:#f7f9fa;border-radius:8px;"></div>
+      <div id="up-list-panel" style="display:none;margin-bottom:10px;padding:10px;background:var(--bg-soft);border-radius:8px;"></div>
       <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
         <button onclick="upRefresh()">刷新看新增</button>
         <button class="small secondary" onclick="upShowAll()">查看全部(含已见)</button>
-        <span id="up-meta" style="color:#9499a0;font-size:12px;"></span>
+        <span id="up-meta" style="color:var(--text-mute);font-size:12px;"></span>
       </div>
       <div id="up-list" style="display:none;"></div>
     </div>
@@ -348,20 +348,21 @@
         <button onclick="refreshLib()">刷新</button>
         <input type="text" id="lib-search" placeholder="🔍 按标题/UP主过滤" oninput="applyLibFilter()" style="flex:1;max-width:280px;padding:6px 10px;">
         <button class="small secondary" id="lib-view-btn" onclick="toggleLibView()">📋 列表</button>
-        <span id="history-meta" style="color:#9499a0;font-size:12px;"></span>
+        <span id="history-meta" style="color:var(--text-mute);font-size:12px;"></span>
       </div>
       <!-- 关注 tab 专用: 强制刷新(跳过缓存) -->
       <div class="btn-row" id="follow-force-row" style="display:none;margin-top:0;margin-bottom:10px;">
-        <span style="font-size:12px;color:#9499a0;">缓存可能过期,点这里</span>
-        <button class="small secondary" onclick="loadFollow(true)">⚡ 强制刷新(后台约需 10 秒)</button>
+        <span style="font-size:12px;color:var(--text-mute);">缓存可能过期,点这里</span>
+        <button class="small secondary" onclick="loadFollow(true)">⚡ 强制刷新(串行防限流,约需 30-60 秒)</button>
       </div>
       <div id="history-list" style="display:none;"></div>
+      <div id="history-more" style="display:none;"></div>
       <div id="lib-pager" style="display:none;"></div>
       <div id="history-actions" style="display:none;margin-top:10px;">
         <div class="btn-row">
           <button class="small secondary" onclick="libToggleAll(true)">全选</button>
           <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
-          <span style="color:#9499a0;font-size:12px;">已选 <b id="lib-count">0</b> 项</span>
+          <span style="color:var(--text-mute);font-size:12px;">已选 <b id="lib-count">0</b> 项</span>
           <select id="lib-quality" style="margin-left:auto;max-width:160px;">
             <option value="">最高画质(自动)</option>
             <option value="1080P">1080P</option>
@@ -381,14 +382,14 @@
     <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
       <button class="small secondary" onclick="deleteSelectedTasks()">删除选中</button>
       <button class="small danger" onclick="clearAllRecords()">清除所有记录</button>
-      <span style="color:#9499a0;font-size:12px;margin-left:auto;">勾选后可批量删除</span>
+      <span style="color:var(--text-mute);font-size:12px;margin-left:auto;">勾选后可批量删除</span>
     </div>
     <div id="queue-list"></div>
   </section>
 
   <!-- 删除选择弹窗 -->
   <div id="del-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;align-items:center;justify-content:center;">
-    <div style="background:#fff;border-radius:10px;padding:20px;width:320px;">
+    <div style="background:var(--bg-card);border-radius:10px;padding:20px;width:320px;">
       <div id="del-modal-title" style="font-weight:600;margin-bottom:14px;"></div>
       <div class="btn-row" style="margin-top:0;flex-direction:column;align-items:stretch;">
         <button onclick="delChoice(false)">只删除下载记录</button>
@@ -416,9 +417,12 @@ document.querySelectorAll('.tab').forEach(t => {
 });
 
 /* ---------- 登录状态 ---------- */
+let _loggedIn = false;  // 最近一次 refreshLogin 的结果(init 等处复用,免重复请求)
+
 async function refreshLogin() {
   try {
     const r = await (await fetch(API('/api/login/status'))).json();
+    _loggedIn = !!r.logged_in;
     const badge = document.getElementById('login-badge');
     const loginSection = document.getElementById('login-section');
     if (r.logged_in) {
@@ -433,7 +437,7 @@ async function refreshLogin() {
       badge.className = 'login-badge';
       loginSection.style.display = '';
     }
-  } catch (e) { /* ignore */ }
+  } catch (e) { _loggedIn = false; /* ignore */ }
 }
 
 async function logout() {
@@ -686,10 +690,10 @@ function renderBatchList(title) {
   }
   // 勾选列表 + 全选/全不选 + 清晰度选择 + 批量下载按钮
   const itemRows = _batchItems.map((it, i) => `
-    <label style="display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
+    <label style="display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--border-soft);cursor:pointer;">
       <input type="checkbox" data-bidx="${i}" checked>
       <span style="flex:1;word-break:break-all;font-size:13px;">${escapeHtml(it.title)}</span>
-      ${it.duration ? `<span style="color:#9499a0;font-size:12px;">${formatDuration(it.duration)}</span>` : ''}
+      ${it.duration ? `<span style="color:var(--text-mute);font-size:12px;">${formatDuration(it.duration)}</span>` : ''}
       ${it.error ? `<span style="color:#e53935;font-size:12px;">${escapeHtml(it.error)}</span>` : ''}
     </label>`).join('');
   box.innerHTML = `
@@ -697,9 +701,9 @@ function renderBatchList(title) {
     <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
       <button class="small secondary" onclick="batchToggleAll(true)">全选</button>
       <button class="small secondary" onclick="batchToggleAll(false)">全不选</button>
-      <span style="color:#9499a0;font-size:12px;">已选 <b id="batch-count">0</b> 项</span>
+      <span style="color:var(--text-mute);font-size:12px;">已选 <b id="batch-count">0</b> 项</span>
     </div>
-    <div style="max-height:280px;overflow-y:auto;border:1px solid #e3e5e7;border-radius:6px;">
+    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border-card);border-radius:6px;">
       ${itemRows}
     </div>
     <div class="btn-row">
@@ -757,6 +761,9 @@ let _libItems = [];  // 全量数据(历史/收藏夹通用)
 let _libPage = 1;          // 当前页码
 let _libPageSize = 20;     // 每页条数
 
+/* 带 _libItems 原始索引的项(勾选状态按原始索引跟踪,渲染免 indexOf 反查) */
+const withIdx = (arr) => arr.map((it, idx) => ({ it, idx }));
+
 /* 分页渲染:从 _libItems 中取当前页,渲染到 history-list + 更新分页器 */
 function renderPage() {
   const list = document.getElementById('history-list');
@@ -775,15 +782,18 @@ function renderPage() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / _libPageSize));
   if (_libPage > totalPages) _libPage = totalPages;
   const start = (_libPage - 1) * _libPageSize;
-  const pageItems = filtered.slice(start, start + _libPageSize);
-  renderLibList(pageItems, list);
+  const pagePairs = [];
+  filtered.forEach((it, idx) => {
+    if (idx >= start && idx < start + _libPageSize) pagePairs.push({ it, idx });
+  });
+  renderLibList(pagePairs, list);
   // meta
   const baseText = `共 ${_libItems.length} 条`;
   meta.textContent = q ? `${baseText} · 过滤 ${filtered.length}/${_libItems.length} · 第${_libPage}/${totalPages}页` : `${baseText} · 第${_libPage}/${totalPages}页`;
   meta.dataset.base = baseText;
   // 分页器
   renderPaginator(totalPages, filtered.length);
-  document.getElementById('history-actions').style.display = pageItems.length ? '' : 'none';
+  document.getElementById('history-actions').style.display = pagePairs.length ? '' : 'none';
 }
 
 /* 渲染分页器(页码 + 每页条数) */
@@ -804,11 +814,11 @@ function renderPaginator(totalPages, totalItems) {
   let s = Math.max(1, _libPage - 3);
   let e = Math.min(totalPages, s + maxShow - 1);
   s = Math.max(1, e - maxShow + 1);
-  if (s > 1) html += `<button class="small secondary" onclick="goPage(1)">1</button><span style="color:#9499a0;">…</span>`;
+  if (s > 1) html += `<button class="small secondary" onclick="goPage(1)">1</button><span style="color:var(--text-mute);">…</span>`;
   for (let i = s; i <= e; i++) {
     html += `<button class="small ${i === _libPage ? '' : 'secondary'}" ${i === _libPage ? 'disabled' : ''} onclick="goPage(${i})">${i}</button>`;
   }
-  if (e < totalPages) html += `<span style="color:#9499a0;">…</span><button class="small secondary" onclick="goPage(${totalPages})">${totalPages}</button>`;
+  if (e < totalPages) html += `<span style="color:var(--text-mute);">…</span><button class="small secondary" onclick="goPage(${totalPages})">${totalPages}</button>`;
   // 下一页
   html += `<button class="small secondary" ${_libPage >= totalPages ? 'disabled' : ''} onclick="goPage(${_libPage + 1})">下一页 ›</button>`;
   // 每页条数
@@ -833,22 +843,63 @@ function changePageSize(n) {
   renderPage();
 }
 
+/* 观看历史:服务端分页(B站每页上限 100 条),逐页追加,不再一次拉完 */
+let _histServerPage = 0;   // 已拉取的 B 站服务端历史页码
+let _histHasMore = false;
+
 async function loadHistory() {
   const list = document.getElementById('history-list');
   const meta = document.getElementById('history-meta');
   list.style.display = '';
   list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
   meta.textContent = '';
+  _libItems = [];
+  _libChecked.clear();
+  _libPage = 1;
+  _histServerPage = 0;
+  await fetchHistoryPage();
+}
+
+async function fetchHistoryPage() {
   try {
-    const r = await (await fetch(API('/api/history?size=200'))).json();
+    const r = await (await fetch(API(`/api/history?page=${_histServerPage + 1}&size=100`))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
-    _libItems = r.items || [];
-    _libPage = 1;  // 重置到第1页
+    _histServerPage++;
+    const items = r.items || [];
+    _histHasMore = items.length === 100;
+    if (_histServerPage === 1) {
+      _libItems = items;
+    } else {
+      // 翻页间隙可能产生新观看记录,按 bvid 去重
+      const seen = new Set(_libItems.map(it => it.bvid));
+      _libItems = _libItems.concat(items.filter(it => !seen.has(it.bvid)));
+    }
     renderPage();
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    document.getElementById('history-list').innerHTML =
+      `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadHistory()">重试</button></div>`;
+    _histHasMore = false;
   }
+  updateHistoryMore();
+}
+
+function updateHistoryMore() {
+  const box = document.getElementById('history-more');
+  if (!box) return;
+  if (_libMode === 'history' && _histHasMore) {
+    box.style.display = '';
+    box.innerHTML = `<div class="btn-row" style="margin-top:6px;justify-content:center;">
+      <button class="small secondary" onclick="loadMoreHistory()">加载更早的历史 ↓</button>
+    </div>`;
+  } else {
+    box.style.display = 'none';
+  }
+}
+
+async function loadMoreHistory() {
+  const box = document.getElementById('history-more');
+  box.innerHTML = '<div class="empty"><span class="spinner"></span>加载更早的历史...</div>';
+  await fetchHistoryPage();
 }
 
 /* ---------- 我的B站:关注更新 (A2) + UP清单 (A3) ---------- */
@@ -874,7 +925,7 @@ document.querySelectorAll('.tab[data-lib]').forEach(t => {
     _libItems = [];
     _libChecked.clear();
     // 隐藏所有列表容器(由各 loadX 函数按需显示)
-    ['history-list', 'later-list', 'fav-content-list', 'up-list'].forEach(id => {
+    ['history-list', 'history-more', 'later-list', 'fav-content-list', 'up-list'].forEach(id => {
       const el = document.getElementById(id);
       if (el) el.style.display = 'none';
     });
@@ -897,7 +948,7 @@ async function loadFollow(force) {
   // 用关注专用缓存即时显示,避免 9 秒 spinner 卡死(且不会用历史的 _libItems)
   if (!force && _followItemsCache.length > 0) {
     _libItems = _followItemsCache;
-    renderLibList(_libItems, list);
+    renderLibList(withIdx(_libItems), list);
     meta.innerHTML = '<span class="spinner"></span> 后台刷新中...';
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
     fetch(API('/api/follow-updates'))
@@ -906,21 +957,21 @@ async function loadFollow(force) {
         if (r.ok) {
           _followItemsCache = r.items || [];
           _libItems = _followItemsCache;
-          renderLibList(_libItems, list);
+          renderLibList(withIdx(_libItems), list);
           meta.textContent = `共 ${_libItems.length} 条(按时间倒序,后台刷新完成)`;
         }
       })
       .catch(() => { meta.textContent = '后台刷新失败'; });
     return;
   }
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>正在加载关注 UP 的最新投稿(可能需要 5-15 秒)...</div>';
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>正在串行拉取关注 UP 的最新投稿(防限流,30 个 UP 约需 45 秒)...</div>';
   meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/follow-updates' + (force ? '?force=true' : '')))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
     _followItemsCache = _libItems;  // 存关注专用缓存
-    renderLibList(_libItems, list);
+    renderLibList(withIdx(_libItems), list);
     meta.textContent = `共 ${_libItems.length} 条(按时间倒序)`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
@@ -946,18 +997,18 @@ async function favLoadFolders() {
       return;
     }
     box.innerHTML = `<div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-      <span style="color:#9499a0;font-size:12px;">共 ${_favFolders.length} 个收藏夹</span>
+      <span style="color:var(--text-mute);font-size:12px;">共 ${_favFolders.length} 个收藏夹</span>
       <button class="small secondary" onclick="favLoadFolders()">↻ 刷新</button>
     </div>
-    <div style="border:1px solid #e3e5e7;border-radius:6px;overflow:hidden;">` +
+    <div style="border:1px solid var(--border-card);border-radius:6px;overflow:hidden;">` +
       _favFolders.map(f => `
-        <div onclick="favEnter(${f.fid})" style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid #f0f1f3;cursor:pointer;transition:background .1s;" onmouseover="this.style.background='#f0f7fb'" onmouseout="this.style.background=''">
+        <div onclick="favEnter(${f.fid})" style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--border-soft);cursor:pointer;transition:background .1s;" onmouseover="this.style.background='var(--accent-soft)'" onmouseout="this.style.background=''">
           <div style="width:32px;height:32px;background:#00a1d6;color:#fff;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;">${escapeHtml((f.title || '?').slice(0,1))}</div>
           <div style="flex:1;">
             <div style="font-weight:600;font-size:14px;">${escapeHtml(f.title)}</div>
-            <div style="font-size:12px;color:#9499a0;">${f.media_count || 0} 个视频</div>
+            <div style="font-size:12px;color:var(--text-mute);">${f.media_count || 0} 个视频</div>
           </div>
-          <span style="color:#9499a0;">›</span>
+          <span style="color:var(--text-mute);">›</span>
         </div>`).join('') + '</div>';
   } catch (e) {
     box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
@@ -984,7 +1035,7 @@ async function favEnter(fid) {
     const r = await (await fetch(API(`/api/fav-content?fid=${fid}`))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(_libItems, list);
+    renderLibList(withIdx(_libItems), list);
     document.getElementById('fav-meta').textContent = `共 ${_libItems.length} 条`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
@@ -1020,14 +1071,14 @@ async function upListRender() {
   const r = await (await fetch(API('/api/up-list'))).json();
   if (!r.ok || r.ups.length === 0) {
     panel.style.display = 'none';
-    if (r.ups.length === 0) { panel.style.display = ''; panel.innerHTML = '<div style="color:#9499a0;">清单为空。粘贴主页链接或 mid 加 UP。</div>'; }
+    if (r.ups.length === 0) { panel.style.display = ''; panel.innerHTML = '<div style="color:var(--text-mute);">清单为空。粘贴主页链接或 mid 加 UP。</div>'; }
     return;
   }
   panel.style.display = '';
   panel.innerHTML = `<div style="font-size:13px;font-weight:600;margin-bottom:8px;">已管理 UP(${r.ups.length})</div>` + r.ups.map(u => `
     <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
-      <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'" style="width:24px;height:24px;border-radius:50%;background:#e3e5e7;">
-      <span style="flex:1;">${escapeHtml(u.uname || ('UP ' + u.mid))} <span style="color:#9499a0;">mid:${u.mid}</span></span>
+      <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'" style="width:24px;height:24px;border-radius:50%;background:var(--bg-muted);">
+      <span style="flex:1;">${escapeHtml(u.uname || ('UP ' + u.mid))} <span style="color:var(--text-mute);">mid:${u.mid}</span></span>
       <button class="small danger" onclick="upRemove(${u.mid})">移除</button>
     </div>`).join('');
 }
@@ -1044,14 +1095,14 @@ async function upRemove(mid) {
 async function upRefresh() {
   const list = document.getElementById('up-list');
   const meta = document.getElementById('up-meta');
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>拉取清单 UP 的最新视频...(约几秒)</div>';
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>串行拉取清单 UP 的最新视频(防限流,UP 多时约需数十秒)...</div>';
   list.style.display = '';
   meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/up-updates'))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(_libItems, list);
+    renderLibList(withIdx(_libItems), list);
     meta.textContent = r.ups.length === 0 ? '清单为空,先添加 UP'
       : `共 ${_libItems.length} 条新增(对比上次刷新)`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
@@ -1063,13 +1114,13 @@ async function upRefresh() {
 async function upShowAll() {
   const list = document.getElementById('up-list');
   const meta = document.getElementById('up-meta');
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>拉取清单 UP 的全部近期视频...</div>';
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>串行拉取清单 UP 的全部近期视频(防限流,UP 多时约需数十秒)...</div>';
   list.style.display = '';
   try {
     const r = await (await fetch(API('/api/up-updates?include_seen=true'))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(_libItems, list);
+    renderLibList(withIdx(_libItems), list);
     meta.textContent = `共 ${_libItems.length} 条(含已见)`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
@@ -1097,7 +1148,7 @@ async function loadWatchlater() {
     const r = await (await fetch(API('/api/watchlater'))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(_libItems, list);
+    renderLibList(withIdx(_libItems), list);
     meta.textContent = `共 ${_libItems.length} 条`;
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
@@ -1105,9 +1156,9 @@ async function loadWatchlater() {
   }
 }
 
-function renderLibList(items, container) {
-  // items 是已过滤后的列表;但勾选状态按 _libItems 的原始索引跟踪
-  if (items.length === 0) {
+function renderLibList(pairs, container) {
+  // pairs: [{it, idx}] — idx 是 _libItems 的原始索引,勾选状态按它跟踪
+  if (pairs.length === 0) {
     // 区分"没数据"和"搜索无结果":搜索框空 = 列表本来就空
     const q = (document.getElementById('lib-search')?.value || '').trim();
     const isFiltering = q.length > 0;
@@ -1134,14 +1185,13 @@ function renderLibList(items, container) {
   }
   const isGrid = _libView === 'grid';
   container.className = isGrid ? 'lib-grid' : '';
-  container.innerHTML = items.map((it) => {
-    const origIdx = _libItems.indexOf(it);
+  container.innerHTML = pairs.map(({ it, idx: origIdx }) => {
     const checked = origIdx >= 0 && _libChecked.has(origIdx) ? 'checked' : '';
     const pct = it.watched_pct || 0;
     const showProgress = it.duration && pct > 0 && pct < 100;
     const progressHtml = showProgress
       ? `<div style="margin-top:4px;display:flex;align-items:center;gap:6px;">
-           <div style="flex:1;background:#e3e5e7;height:5px;border-radius:3px;overflow:hidden;">
+           <div style="flex:1;background:var(--bg-muted);height:5px;border-radius:3px;overflow:hidden;">
              <div style="background:#00a1d6;height:100%;width:${Math.min(pct, 100)}%;transition:width .3s;"></div>
            </div>
            <span style="font-size:11px;color:#00a1d6;font-weight:600;min-width:50px;text-align:right;">${pct}%</span>
@@ -1162,12 +1212,12 @@ function renderLibList(items, container) {
     }
     // 列表(默认)
     return `
-    <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid #f0f1f3;cursor:pointer;">
+    <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid var(--border-soft);cursor:pointer;">
       <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)">
-      <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" style="width:100px;height:62px;object-fit:cover;border-radius:4px;flex-shrink:0;background:#e3e5e7;">
+      <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" style="width:100px;height:62px;object-fit:cover;border-radius:4px;flex-shrink:0;background:var(--bg-muted);">
       <div style="flex:1;min-width:0;">
         <div style="font-size:13px;font-weight:600;word-break:break-all;">${escapeHtml(it.title)}</div>
-        <div style="font-size:12px;color:#61666d;margin-top:2px;">
+        <div style="font-size:12px;color:var(--text-soft);margin-top:2px;">
           UP:${escapeHtml(it.uploader || '-')} ${it.duration ? '· ' + formatDuration(it.duration) : ''}
           ${it.view_at ? '· ' + formatTime(it.view_at) : ''}
         </div>
@@ -1334,7 +1384,7 @@ function renderTask(t) {
   box.innerHTML = `
     <div class="ti-head">
       <input type="checkbox" data-qid="${t.task_id}" ${_queueChecked.has(t.task_id)?'checked':''} onchange="toggleQueueCheck('${t.task_id}', this.checked)" style="flex-shrink:0;cursor:pointer;">
-      <span class="label" style="flex:1;">${escapeHtml(t.title || '(解析中)')}${partTag} <span style="color:#9499a0;font-weight:normal;font-size:12px;">[${escapeHtml(t.label||'')}]</span></span>
+      <span class="label" style="flex:1;">${escapeHtml(t.title || '(解析中)')}${partTag} <span style="color:var(--text-mute);font-weight:normal;font-size:12px;">[${escapeHtml(t.label||'')}]</span></span>
       <span class="status-tag ${t.status}">${statusCN[t.status] || t.status}</span>
     </div>
     ${progInner}${actions}`;
@@ -1540,11 +1590,8 @@ async function loadTasks() {
   await refreshLogin();
   await loadTasks();
   await loadStats();
-  // 打开页面自动刷新观看历史(已登录才加载)
-  try {
-    const st = await (await fetch(API('/api/login/status'))).json();
-    if (st.logged_in) loadHistory();
-  } catch (e) {}
+  // 打开页面自动刷新观看历史(已登录才加载;复用 refreshLogin 的结果,不再多发一次请求)
+  if (_loggedIn) loadHistory();
 })();
 </script>
 </body>
