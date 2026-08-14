@@ -7,6 +7,7 @@ import re
 from typing import Optional
 
 import requests
+import yt_dlp
 
 from config import SESSION_COOKIE_FILE, COOKIE_FILE, BROWSER_COOKIE_SOURCE
 
@@ -294,25 +295,30 @@ def fetch_fav_folders() -> list[dict]:
 def fetch_fav_content(fid: int, ps: int = 30) -> list[dict]:
     """拉取某个收藏夹内的视频。用 yt-dlp 的 medialist URL,它内部带 WBI+翻页。
 
-    如果收藏夹私密或没视频,返回 []。
+    下载失败(私密收藏夹/风控)返回 [];其他异常向上抛,由路由层报 500。
+    注意:这里只捕获 DownloadError——曾经裸 `except Exception` 把模块级
+    NameError(未 import yt_dlp)也吞掉,导致接口静默永远返回空。
     """
     try:
         opts = {"quiet": True, "skip_download": True, "extract_flat": True}
         opts.update(get_ytdlp_cookie_arg())
         info = yt_dlp.YoutubeDL(opts).extract_info(
             f"https://www.bilibili.com/medialist/detail/ml{fid}", download=False)
-        items = []
-        for e in (info.get("entries") or []):
-            eid = e.get("id") or ""
-            url = e.get("url") or (f"https://www.bilibili.com/video/{eid}" if eid else "")
-            items.append({
-                "bvid": eid,
-                "title": e.get("title", ""),
-                "url": url,
-            })
-        return items
-    except Exception:
+    except yt_dlp.utils.DownloadError:
         return []
+    items = []
+    for e in (info.get("entries") or []):
+        eid = e.get("id") or ""
+        url = e.get("url") or (f"https://www.bilibili.com/video/{eid}" if eid else "")
+        items.append({
+            "bvid": eid,
+            "title": e.get("title", ""),
+            "uploader": e.get("uploader", ""),
+            "thumbnail": (e.get("thumbnails") or [{}])[0].get("url", ""),
+            "duration": e.get("duration") or 0,
+            "url": url,
+        })
+    return items
 
 
 def fetch_followings(page: int = 1, size: int = 50) -> list[dict]:

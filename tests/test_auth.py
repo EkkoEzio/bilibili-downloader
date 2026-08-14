@@ -1,4 +1,7 @@
 import json
+import pytest
+import yt_dlp
+import bilibili_auth
 from bilibili_auth import parse_poll_response, POLL_CODES, save_session, load_session, clear_session
 
 
@@ -55,3 +58,58 @@ def test_save_load_clear_session(tmp_path, monkeypatch):
     assert loaded["DedeUserID"] == "123"
     clear_session()
     assert load_session() is None
+
+
+# ---------- 收藏夹内容(A4 回归) ----------
+
+class _StubYDL:
+    """替身 YoutubeDL:按需返回预设 info 或抛预设异常。"""
+    info = {"entries": [{"id": "BV1xx", "title": "视频A",
+                         "url": "https://www.bilibili.com/video/BV1xx"}]}
+    exc = None
+
+    def __init__(self, opts):
+        pass
+
+    def extract_info(self, url, download):
+        if _StubYDL.exc:
+            raise _StubYDL.exc
+        return _StubYDL.info
+
+
+def _patch_ydl(monkeypatch, info=None, exc=None):
+    _StubYDL.info = info if info is not None else _StubYDL.info
+    _StubYDL.exc = exc
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _StubYDL)
+    monkeypatch.setattr(bilibili_auth, "get_ytdlp_cookie_arg", lambda: {})
+
+
+def test_fetch_fav_content_parses_entries(monkeypatch):
+    """正常解析 yt-dlp 返回的 entries。
+
+    回归:模块内未 import yt_dlp 时抛 NameError 被裸 except 吞掉,
+    接口永远返回空列表(2026-08-14 修复)。
+    """
+    _patch_ydl(monkeypatch, info={"entries": [
+        {"id": "BV1xx", "title": "视频A", "url": "https://www.bilibili.com/video/BV1xx"},
+        {"id": "BV2xx", "title": "视频B", "url": ""},
+    ]})
+    items = bilibili_auth.fetch_fav_content(123)
+    assert len(items) == 2
+    assert items[0]["bvid"] == "BV1xx"
+    assert items[0]["title"] == "视频A"
+    # 裸 BV 兜底补全成可下载链接
+    assert items[1]["url"] == "https://www.bilibili.com/video/BV2xx"
+
+
+def test_fetch_fav_content_download_error_returns_empty(monkeypatch):
+    """下载失败(如私密收藏夹 403)仍返回空列表,这是预期行为。"""
+    _patch_ydl(monkeypatch, exc=yt_dlp.utils.DownloadError("403"))
+    assert bilibili_auth.fetch_fav_content(123) == []
+
+
+def test_fetch_fav_content_does_not_swallow_programming_errors(monkeypatch):
+    """意外异常(非 DownloadError)应向上抛给路由层报 500,而不是静默返回空。"""
+    _patch_ydl(monkeypatch, exc=RuntimeError("boom"))
+    with pytest.raises(RuntimeError):
+        bilibili_auth.fetch_fav_content(123)
