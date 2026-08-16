@@ -362,14 +362,14 @@ def _safe_json(resp):
         return None
 
 
-def fetch_up_videos(mid: int, ps: int = 10) -> list[dict]:
+def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
     """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。单个失败不影响整体。
 
-    遇到 412/风控返回 [],不抛异常(避免一个 UP 风控拖累整个 fetch_follow_updates)。
+    ps=页大小,pn=页码(1 起)。遇到 412/风控返回 [],不抛异常。
     """
     try:
         ie = _get_wbi_ie()
-        signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": "1", "order": "pubdate"}, str(mid))
+        signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": str(pn), "order": "pubdate"}, str(mid))
         resp = requests.get("https://api.bilibili.com/x/space/wbi/arc/search",
                             params=signed, cookies=get_cookiejar(),
                             headers={**BROWSER_HEADERS, "Referer": f"https://space.bilibili.com/{mid}"},

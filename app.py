@@ -265,7 +265,11 @@ def _parse_mid_from_input(s: str) -> Optional[int]:
 
 @app.route("/api/up-list")
 def up_list_get():
-    return jsonify({"ok": True, "ups": up_list.list_ups()})
+    ups = up_list.list_ups()
+    for u in ups:
+        last = up_list.get_last_seen(int(u["mid"]))
+        u["fetched_at"] = (last or {}).get("fetched_at")
+    return jsonify({"ok": True, "ups": ups})
 
 
 @app.route("/api/up-list/add", methods=["POST"])
@@ -319,8 +323,9 @@ def up_updates():
     """拉清单中所有 UP 的新增视频。?include_seen=true 把已见的一起返回(否则只返回增量)。
 
     风控:与 fetch_follow_updates 同一结论——arc/search 并发会触发 B 站账号级
-    412,必须串行 + UP 间 1.5 秒间隔。mark_seen 只用本次实际拿到的数据推进;
-    某 UP 被限流返回空时保持原 last_seen,否则用户没看到的视频会被误标为已见。
+    412,必须串行 + UP 间 1.5 秒间隔。增量拉取走 auto_refresh.fetch_new:
+    依据上次拉取时间自适应页大小(刚拉过只拉 5 条),爆发更新翻页兜底。
+    新增写入本地历史(up_list.add_history,上限 100 条),「查看历史」离线可读。
     """
     include_seen = request.args.get("include_seen") == "true"
     ups = up_list.list_ups()
@@ -328,26 +333,29 @@ def up_updates():
         return jsonify({"ok": True, "items": [], "ups": []})
 
     results = []
+    now = int(time.time())
     for i, up in enumerate(ups):
         mid = int(up["mid"])
-        fetched = auth.fetch_up_videos(mid, ps=20)
-        if fetched:
-            newest = fetched[0]  # arc/search 按 pubdate 倒序,第一条即最新
-            last = up_list.get_last_seen(mid)
-            if not include_seen and last:
-                seen_ts = last.get("ts", 0)
-                seen_bvid = last.get("bvid", "")
-                fetched = [v for v in fetched
-                           if v.get("view_at", 0) > seen_ts and v.get("bvid") != seen_bvid]
-            for v in fetched:
+        last = None if include_seen else up_list.get_last_seen(mid)
+        new, newest = auto_refresh.fetch_new(mid, last)
+        if newest:
+            for v in new:
                 v["uploader_mid"] = mid
-            results.extend(fetched)
+            results.extend(new)
+            if not include_seen:
+                up_list.add_history(new)
             up_list.mark_seen(mid, newest["bvid"], newest.get("view_at", 0),
-                              newest.get("title", ""))
+                              newest.get("title", ""), fetched_at=now)
         if i < len(ups) - 1:
             time.sleep(1.5)  # 防 arc/search 账号级限流
     results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
     return jsonify({"ok": True, "items": results, "ups": ups})
+
+
+@app.route("/api/up-history")
+def up_history():
+    """UP 清单的本地发现历史(上限 100 条)。纯本地,不打 B 站接口。"""
+    return jsonify({"ok": True, "items": up_list.list_history()})
 
 
 # ---------- A4: 收藏夹浏览 ----------

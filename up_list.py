@@ -1,9 +1,11 @@
-"""A3: 自定义 UP 清单 + 增量记录。
+"""A3: 自定义 UP 清单 + 增量记录 + 本地历史。
 
 数据格式 data/up_list.json:
 {
-  "ups": [{"mid", "uname", "face", "added_at"}],  # 用户管理的 UP 列表
-  "last_seen": {"<mid>": {"bvid":..., "ts":..., "title":...}}  # 上次「刷新看到」的 UP 最新视频
+  "ups": [{"mid", "uname", "face", "added_at", "auto"}],  # 用户管理的 UP 列表
+  "last_seen": {"<mid>": {"bvid":..., "ts":..., "title":..., "fetched_at":...}},
+      # 上次「刷新看到」的最新视频;fetched_at 是上次拉取时刻(自适应页大小用)
+  "history": [{"bvid", "title", ..., "found_at"}]  # 历次刷新发现的新增(新在前,上限100)
 }
 
 读/写都用文件锁保证并发安全。
@@ -16,6 +18,8 @@ from typing import Optional
 from config import UP_LIST_FILE
 
 _lock = threading.Lock()
+
+HISTORY_CAP = 100  # 本地历史上限(用户 2026-08-16 暂定)
 
 
 def _read() -> dict:
@@ -84,12 +88,56 @@ def get_last_seen(mid: int) -> Optional[dict]:
         return _read().get("last_seen", {}).get(str(mid))
 
 
-def mark_seen(mid: int, bvid: str, ts: int, title: str = "") -> None:
-    """刷新时记录「最新已见」,下次对比用。"""
+def mark_seen(mid: int, bvid: str, ts: int, title: str = "",
+              fetched_at: Optional[int] = None) -> None:
+    """刷新时记录「最新已见」,下次对比用。fetched_at 记录本次拉取时刻
+    (自适应页大小的依据);不传则保留原值。"""
     with _lock:
         data = _read()
-        data["last_seen"][str(mid)] = {"bvid": bvid, "ts": ts, "title": title}
+        entry = data["last_seen"].get(str(mid), {})
+        entry.update({"bvid": bvid, "ts": ts, "title": title})
+        if fetched_at is not None:
+            entry["fetched_at"] = int(fetched_at)
+        data["last_seen"][str(mid)] = entry
         _write(data)
+
+
+def get_fetched_at(mid: int) -> Optional[int]:
+    """某 UP 上次拉取的时刻;从未拉过返回 None。"""
+    with _lock:
+        last = _read().get("last_seen", {}).get(str(mid))
+    return (last or {}).get("fetched_at")
+
+
+def add_history(items: list) -> None:
+    """把本轮发现的新增视频存入本地历史:按 bvid 去重、按发布时间倒序、上限 HISTORY_CAP。
+
+    历史「看之前拉到过什么」用,离线可读,不再为看历史打 B 站接口。
+    超过上限裁掉最旧的。
+    """
+    if not items:
+        return
+    with _lock:
+        data = _read()
+        hist = data.get("history", [])
+        have = {h.get("bvid") for h in hist}
+        now = int(time.time())
+        for v in items:
+            bv = v.get("bvid")
+            if not bv or bv in have:
+                continue
+            have.add(bv)
+            entry = dict(v)
+            entry["found_at"] = now
+            hist.append(entry)
+        hist.sort(key=lambda h: (h.get("view_at", 0), h.get("found_at", 0)), reverse=True)
+        data["history"] = hist[:HISTORY_CAP]
+        _write(data)
+
+
+def list_history() -> list:
+    with _lock:
+        return _read().get("history", [])
 
 
 def reset_seen(mid: int) -> None:

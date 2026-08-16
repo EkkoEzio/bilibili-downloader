@@ -10,6 +10,7 @@
 import logging
 import threading
 import time
+from typing import Optional
 
 import bilibili_auth as auth
 import config
@@ -20,7 +21,50 @@ log = logging.getLogger("bd.auto_refresh")
 
 UP_INTERVAL = 3.0  # UP 之间的请求间隔(秒),自动任务不低于 3 秒
 
+# 增量拉取参数:B 站 arc/search 不支持按时间过滤,只能按 pubdate 倒序分页。
+# 依据「上次拉取时间」自适应页大小:刚拉过(24h 内)只拉小页,降低单次响应量;
+# 一页全是新视频(爆发更新)时翻页兜底,保证不漏。
+FULL_PS = 20
+RECENT_PS = 5
+RECENT_WINDOW = 24 * 3600
+MAX_PAGES = 3
+
 _lock = threading.Lock()  # 防止上一轮没跑完又叠一轮
+
+
+def estimate_ps(fetched_at, now=None) -> int:
+    """自适应页大小:24h 内拉过 → RECENT_PS;从未拉过/隔久了 → FULL_PS。"""
+    now = now if now is not None else time.time()
+    if not fetched_at:
+        return FULL_PS
+    return RECENT_PS if now - fetched_at <= RECENT_WINDOW else FULL_PS
+
+
+def fetch_new(mid: int, last: Optional[dict] = None):
+    """增量拉取单个 UP。返回 (新增视频列表, 本轮最新一条或 None)。
+
+    last 是 up_list.get_last_seen() 的结果(None = 全量)。
+    翻页终止条件:页不满 / 页尾出现已见 / 到 MAX_PAGES。
+    """
+    ps = estimate_ps(last.get("fetched_at") if last else None)
+    seen_ts = (last or {}).get("ts", 0)
+    seen_bvid = (last or {}).get("bvid", "")
+    collected = []
+    got_bvids = set()
+    for pn in range(1, MAX_PAGES + 1):
+        page = auth.fetch_up_videos(mid, ps=ps, pn=pn)
+        if not page:
+            break
+        for v in page:
+            if v.get("bvid") not in got_bvids:
+                got_bvids.add(v.get("bvid"))
+                collected.append(v)
+        if len(page) < ps or page[-1].get("view_at", 0) <= seen_ts:
+            break
+    newest = collected[0] if collected else None
+    new = [v for v in collected
+           if v.get("view_at", 0) > seen_ts and v.get("bvid") != seen_bvid]
+    return new, newest
 
 
 def refresh_once() -> int:
@@ -33,27 +77,21 @@ def refresh_once() -> int:
         for i, up in enumerate(ups):
             try:
                 mid = int(up["mid"])
-                fetched = auth.fetch_up_videos(mid, ps=20)
-                if not fetched:
+                last = up_list.get_last_seen(mid)
+                new, newest = fetch_new(mid, last)
+                if not newest:
                     log.warning("追更:%s 无数据(可能限流),跳过且不推进 last_seen",
                                 up.get("uname") or mid)
                 else:
-                    newest = fetched[0]  # arc/search 按 pubdate 倒序
-                    last = up_list.get_last_seen(mid)
-                    fresh = fetched
-                    if last:
-                        seen_ts = last.get("ts", 0)
-                        seen_bvid = last.get("bvid", "")
-                        fresh = [v for v in fresh
-                                 if v.get("view_at", 0) > seen_ts and v.get("bvid") != seen_bvid]
-                    fresh = [v for v in fresh if not downloader.is_downloaded(v["url"])]
-                    if fresh:
-                        downloader.start_batch(fresh, label="", max_concurrent=1)
-                        queued += len(fresh)
-                        log.info("追更入队 %s:%d 条", up.get("uname") or mid, len(fresh))
+                    up_list.add_history(new)  # 历史记「发现的新增」(含已下载过的)
+                    to_dl = [v for v in new if not downloader.is_downloaded(v["url"])]
+                    if to_dl:
+                        downloader.start_batch(to_dl, label="", max_concurrent=1)
+                        queued += len(to_dl)
+                        log.info("追更入队 %s:%d 条", up.get("uname") or mid, len(to_dl))
                     # 处理成功才推进已见;异常/限流留给下一轮重试
                     up_list.mark_seen(mid, newest["bvid"], newest.get("view_at", 0),
-                                      newest.get("title", ""))
+                                      newest.get("title", ""), fetched_at=int(time.time()))
             except Exception:
                 log.exception("追更处理 UP %s 异常", up.get("mid"))
             # 无论本轮结果如何,UP 之间都保持间隔(防风控的关键)

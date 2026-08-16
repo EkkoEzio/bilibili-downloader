@@ -13,11 +13,12 @@ def client():
 
 
 def _patch_up_env(monkeypatch, ups, fetch_by_mid, last_seen=None):
-    """给 /api/up-updates 打桩:UP 清单、fetch_up_videos、last_seen 读写。"""
+    """给 /api/up-updates 打桩:UP 清单、fetch_up_videos、last_seen 读写、历史。"""
     marked = []
     sleeps = []
+    history = []
 
-    def fake_fetch(mid, ps=10):
+    def fake_fetch(mid, ps=10, pn=1):
         return fetch_by_mid.get(int(mid), [])
 
     monkeypatch.setattr("app.up_list.list_ups", lambda: ups)
@@ -25,9 +26,12 @@ def _patch_up_env(monkeypatch, ups, fetch_by_mid, last_seen=None):
     monkeypatch.setattr("app.up_list.get_last_seen",
                         lambda mid: last_seen.get(int(mid)) if last_seen else None)
     monkeypatch.setattr("app.up_list.mark_seen",
-                        lambda mid, bvid, ts, title="": marked.append((int(mid), bvid, ts)))
+                        lambda mid, bvid, ts, title="", fetched_at=None:
+                            marked.append((int(mid), bvid, ts, fetched_at)))
+    monkeypatch.setattr("app.up_list.add_history",
+                        lambda items: history.extend(v["bvid"] for v in items))
     monkeypatch.setattr("app.time.sleep", lambda s: sleeps.append(s))
-    return marked, sleeps
+    return marked, sleeps, history
 
 
 def _vid(bvid, ts, title="视频"):
@@ -40,24 +44,24 @@ def test_up_updates_fetches_each_up_once(client, monkeypatch):
     ups = [{"mid": 1}, {"mid": 2}]
     fetch_calls = []
 
-    def fake_fetch(mid, ps=10):
-        fetch_calls.append((int(mid), ps))
+    def fake_fetch(mid, ps=10, pn=1):
+        fetch_calls.append((int(mid), ps, pn))
         return [_vid(f"BV{mid}", 100)]
 
-    marked, _ = _patch_up_env(monkeypatch, ups, {})
+    marked, _, _ = _patch_up_env(monkeypatch, ups, {})
     monkeypatch.setattr("app.auth.fetch_up_videos", fake_fetch)
 
     r = client.get("/api/up-updates")
     assert r.get_json()["ok"]
-    # 每个 UP 只请求一次(ps=20),不再有 ps=1 的二次抓取
-    assert fetch_calls == [(1, 20), (2, 20)]
+    # 每个 UP 只请求一次(整页 20,无 last_seen 不翻页),没有二次抓取
+    assert fetch_calls == [(1, 20, 1), (2, 20, 1)]
 
 
 def test_up_updates_serial_with_delay(client, monkeypatch):
     """arc/search 并发会触发 B 站账号级 412,必须串行 + UP 间隔。"""
     ups = [{"mid": 1}, {"mid": 2}, {"mid": 3}]
-    marked, sleeps = _patch_up_env(monkeypatch, ups,
-                                   {1: [_vid("BV1", 1)], 2: [], 3: [_vid("BV3", 3)]})
+    marked, sleeps, _ = _patch_up_env(monkeypatch, ups,
+                                      {1: [_vid("BV1", 1)], 2: [], 3: [_vid("BV3", 3)]})
     import app as app_module
     src = inspect.getsource(app_module.up_updates)
     assert "ThreadPoolExecutor" not in src, "不得用线程池并发打 arc/search"
@@ -69,14 +73,12 @@ def test_up_updates_serial_with_delay(client, monkeypatch):
 def test_up_updates_rate_limited_up_keeps_last_seen(client, monkeypatch):
     """UP 被限流返回空时,不得推进 last_seen——否则用户没看到的视频永远不再算新增。"""
     ups = [{"mid": 1}, {"mid": 2}]
-    # mid=2 整页(ps=20)被限流为空,但若代码再发 ps=1 拿到数据就会误推进
-    marked, _ = _patch_up_env(monkeypatch, ups, {1: [_vid("BVnew1", 200)]})
+    # mid=2 整页被限流为空
+    marked, _, _ = _patch_up_env(monkeypatch, ups, {1: [_vid("BVnew1", 200)]})
 
-    def fake_fetch(mid, ps=10):
+    def fake_fetch(mid, ps=10, pn=1):
         mid = int(mid)
-        if mid == 2:
-            return [_vid("BVnew2", 999)] if ps == 1 else []
-        return [_vid("BVnew1", 200)]
+        return [] if mid == 2 else [_vid("BVnew1", 200)]
 
     monkeypatch.setattr("app.auth.fetch_up_videos", fake_fetch)
 
@@ -85,13 +87,13 @@ def test_up_updates_rate_limited_up_keeps_last_seen(client, monkeypatch):
     assert body["ok"]
     bvids = [it["bvid"] for it in body["items"]]
     assert bvids == ["BVnew1"], "被限流的 UP 不应产出条目"
-    assert marked == [(1, "BVnew1", 200)], "只有真正拿到数据的 UP 才推进 last_seen"
+    assert [m[:3] for m in marked] == [(1, "BVnew1", 200)], "只有真正拿到数据的 UP 才推进 last_seen"
 
 
 def test_up_updates_filters_seen_videos(client, monkeypatch):
     """增量模式:只返回比 last_seen 更新的视频,并推进最新已见。"""
     ups = [{"mid": 1}]
-    marked, _ = _patch_up_env(
+    marked, _, history = _patch_up_env(
         monkeypatch, ups,
         {1: [_vid("BVnew", 200, "新视频"), _vid("BVold", 100, "旧视频")]},  # arc/search 按最新在前
         last_seen={1: {"bvid": "BVold", "ts": 100, "title": "旧视频"}})
@@ -99,13 +101,14 @@ def test_up_updates_filters_seen_videos(client, monkeypatch):
     r = client.get("/api/up-updates")
     body = r.get_json()
     assert [it["bvid"] for it in body["items"]] == ["BVnew"]
-    assert marked == [(1, "BVnew", 200)]
+    assert marked[0][:3] == (1, "BVnew", 200)
+    assert history == ["BVnew"], "发现的新增写入本地历史"
 
 
 def test_up_updates_include_seen_returns_all(client, monkeypatch):
-    """include_seen=true:已见的也返回,但仍推进最新已见。"""
+    """include_seen=true:已见的也返回,但不写历史(历史只记增量发现)。"""
     ups = [{"mid": 1}]
-    marked, _ = _patch_up_env(
+    marked, _, history = _patch_up_env(
         monkeypatch, ups,
         {1: [_vid("BVnew", 200, "新视频"), _vid("BVold", 100, "旧视频")]},  # arc/search 按最新在前
         last_seen={1: {"bvid": "BVold", "ts": 100, "title": "旧视频"}})
@@ -113,7 +116,65 @@ def test_up_updates_include_seen_returns_all(client, monkeypatch):
     r = client.get("/api/up-updates?include_seen=true")
     body = r.get_json()
     assert [it["bvid"] for it in body["items"]] == ["BVnew", "BVold"]
-    assert marked == [(1, "BVnew", 200)]
+    assert marked[0][:3] == (1, "BVnew", 200)
+    assert history == [], "include_seen 不写历史"
+
+
+# ---------- 增量拉取 + 本地历史(2026-08-16) ----------
+
+def test_up_updates_adaptive_ps_recent_fetch(client, monkeypatch):
+    """上次拉取在 24h 内 → 单 UP 只请求小页,不再整页 20 条。"""
+    import time as _t
+    import auto_refresh
+    calls = []
+
+    def fake_fetch(mid, ps=10, pn=1):
+        calls.append((int(mid), ps, pn))
+        return [_vid("BVnew", 200)]
+
+    monkeypatch.setattr("app.up_list.list_ups", lambda: [{"mid": 1}])
+    monkeypatch.setattr("app.auth.fetch_up_videos", fake_fetch)
+    monkeypatch.setattr("app.up_list.get_last_seen",
+                        lambda mid: {"bvid": "BVold", "ts": 100,
+                                     "fetched_at": _t.time() - 3600})
+    monkeypatch.setattr("app.up_list.mark_seen", lambda *a, **k: None)
+    monkeypatch.setattr("app.up_list.add_history", lambda items: None)
+    monkeypatch.setattr("app.time.sleep", lambda s: None)
+
+    r = client.get("/api/up-updates")
+    assert r.get_json()["ok"]
+    assert calls[0] == (1, auto_refresh.RECENT_PS, 1)
+
+
+def test_up_updates_appends_history_readable_via_route(client, monkeypatch, tmp_path):
+    """刷新发现的新增写入本地历史,「查看历史」离线可读(不再打 B 站接口)。"""
+    import up_list as up_list_module
+    monkeypatch.setattr(up_list_module, "UP_LIST_FILE", tmp_path / "up_list.json")
+    monkeypatch.setattr("app.up_list.list_ups", lambda: [{"mid": 1}])
+    monkeypatch.setattr("app.auth.fetch_up_videos",
+                        lambda mid, ps=10, pn=1: [_vid("BVh1", 200), _vid("BVold", 50)])
+    monkeypatch.setattr("app.up_list.get_last_seen",
+                        lambda mid: {"bvid": "BVold", "ts": 100})
+    monkeypatch.setattr("app.up_list.mark_seen", lambda *a, **k: None)
+    monkeypatch.setattr("app.time.sleep", lambda s: None)
+
+    r = client.get("/api/up-updates")
+    assert [it["bvid"] for it in r.get_json()["items"]] == ["BVh1"]
+
+    h = client.get("/api/up-history").get_json()
+    assert h["ok"]
+    assert [it["bvid"] for it in h["items"]] == ["BVh1"]
+    assert h["items"][0]["found_at"] > 0
+
+
+def test_up_list_includes_fetched_at(client, monkeypatch, tmp_path):
+    """/api/up-list 返回 fetched_at,管理面板显示「上次拉取」时间。"""
+    import up_list as up_list_module
+    monkeypatch.setattr(up_list_module, "UP_LIST_FILE", tmp_path / "up_list.json")
+    up_list_module.add_up(1, "UPA", "")
+    up_list_module.mark_seen(1, "BVx", 100, "标题", fetched_at=1234)
+    r = client.get("/api/up-list").get_json()
+    assert r["ups"][0]["fetched_at"] == 1234
 
 
 # ---------- /api/stats ----------
@@ -188,3 +249,10 @@ def test_frontend_audio_and_auto_and_badge():
     assert "dl-badge" in html, "列表项应有已下载角标"
     assert "config-save-danmaku" in html, "设置区应有弹幕开关"
     assert "config-auto-interval" in html, "设置区应有追更间隔"
+
+
+def test_frontend_up_history_local():
+    """2026-08-16:「查看历史」走本地 /api/up-history,不再全量打 B 站。"""
+    html = _tpl()
+    assert "/api/up-history" in html
+    assert "查看历史(本地)" in html

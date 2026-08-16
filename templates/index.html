@@ -370,7 +370,7 @@
       <div id="up-list-panel" style="display:none;margin-bottom:10px;padding:10px;background:var(--bg-soft);border-radius:8px;"></div>
       <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
         <button onclick="upRefresh()">刷新看新增</button>
-        <button class="small secondary" onclick="upShowAll()">查看全部(含已见)</button>
+        <button class="small secondary" onclick="upShowAll()">📜 查看历史(本地)</button>
         <span id="up-meta" style="color:var(--text-mute);font-size:12px;"></span>
       </div>
       <div id="up-list" style="display:none;"></div>
@@ -1123,7 +1123,10 @@ async function upListRender() {
   panel.innerHTML = `<div style="font-size:13px;font-weight:600;margin-bottom:8px;">已管理 UP(${r.ups.length})<span style="font-weight:normal;color:var(--text-mute);margin-left:8px;">勾选「自动追更」后,系统会定时把新投稿自动加入下载队列</span></div>` + r.ups.map(u => `
     <div style="display:flex;align-items:center;gap:8px;padding:4px 0;font-size:13px;">
       <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'" style="width:24px;height:24px;border-radius:50%;background:var(--bg-muted);">
-      <span style="flex:1;">${escapeHtml(u.uname || ('UP ' + u.mid))} <span style="color:var(--text-mute);">mid:${u.mid}</span></span>
+      <span style="flex:1;">${escapeHtml(u.uname || ('UP ' + u.mid))}
+        <span style="color:var(--text-mute);">mid:${u.mid}</span>
+        ${u.fetched_at ? `<span style="color:var(--text-mute);font-size:11px;">· 上次拉取 ${formatTime(u.fetched_at)}</span>` : '<span style="color:var(--text-mute);font-size:11px;">· 未拉取过</span>'}
+      </span>
       <label style="font-size:12px;color:${u.auto ? 'var(--accent)' : 'var(--text-mute)'};display:flex;align-items:center;gap:4px;">
         <input type="checkbox" ${u.auto ? 'checked' : ''} onchange="upToggleAuto(${u.mid}, this.checked)">自动追更
       </label>
@@ -1174,17 +1177,20 @@ async function upRefresh() {
 async function upShowAll() {
   const list = document.getElementById('up-list');
   const meta = document.getElementById('up-meta');
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>串行拉取清单 UP 的全部近期视频(防限流,UP 多时约需数十秒)...</div>';
   list.style.display = '';
+  list.innerHTML = '<div class="empty"><span class="spinner"></span>读取本地历史...</div>';
+  meta.textContent = '';
   try {
-    const r = await (await fetch(API('/api/up-updates?include_seen=true'))).json();
-    if (!r.ok) throw new Error(r.error || '加载失败');
+    const r = await (await fetch(API('/api/up-history'))).json();
+    if (!r.ok) throw new Error(r.error || '读取失败');
     _libItems = r.items || [];
     renderLibList(withIdx(_libItems), list);
-    meta.textContent = `共 ${_libItems.length} 条(含已见)`;
+    meta.textContent = _libItems.length
+      ? `共 ${_libItems.length} 条(本地历史,上限 100 条)`
+      : '历史为空——点「刷新看新增」后,发现的视频会存在这里';
     document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="upShowAll()">重试</button></div>`;
   }
 }
 
