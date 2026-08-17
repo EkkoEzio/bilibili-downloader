@@ -1,5 +1,6 @@
 """路由层行为测试:/api/up-updates(A3)与 /api/stats(C3)。"""
 import inspect
+import json
 import time
 
 import pytest
@@ -175,6 +176,55 @@ def test_up_list_includes_fetched_at(client, monkeypatch, tmp_path):
     up_list_module.mark_seen(1, "BVx", 100, "标题", fetched_at=1234)
     r = client.get("/api/up-list").get_json()
     assert r["ups"][0]["fetched_at"] == 1234
+
+
+# ---------- UP 名称:添加时用用户卡片,拉取时空名自动回填 ----------
+
+def test_up_list_add_uses_user_card(client, monkeypatch, tmp_path):
+    """添加 UP 时优先走用户卡片接口拿名称+头像(mid 人记不住,必须显示名称)。"""
+    import up_list as up_list_module
+    monkeypatch.setattr(up_list_module, "UP_LIST_FILE", tmp_path / "up_list.json")
+    monkeypatch.setattr("app.auth.fetch_up_card",
+                        lambda mid: {"uname": "远古野", "face": "https://x/face.jpg"})
+    monkeypatch.setattr("app.auth.fetch_up_videos",
+                        lambda mid, ps=10, pn=1: (_ for _ in ()).throw(AssertionError("不应再走 arc/search")))
+    r = client.post("/api/up-list/add", json={"input": "46817116"})
+    body = r.get_json()
+    assert body["ok"]
+    assert body["up"]["uname"] == "远古野"
+    assert body["up"]["face"] == "https://x/face.jpg"
+
+    # 存量无名称记录:重新添加同一个 mid 会补上名称
+    up_list_module.UP_LIST_FILE.write_text(
+        json.dumps({"ups": [{"mid": 46817116, "uname": "", "face": "", "added_at": 1, "auto": False}],
+                    "last_seen": {}, "history": []}), encoding="utf-8")
+    r2 = client.post("/api/up-list/add", json={"input": "46817116"})
+    assert r2.get_json()["up"]["uname"] == "远古野"
+
+
+def test_up_updates_backfills_missing_uname(client, monkeypatch):
+    """存量数据没有 uname:拉取到视频后自动回填 UP 名称。"""
+    ups = [{"mid": 1, "uname": "", "face": "", "auto": False}]
+    marked, _, _ = _patch_up_env(
+        monkeypatch, ups,
+        {1: [_vid("BVnew", 200)]})  # _vid 的 uploader 字段为 "UP"
+    renamed = []
+    monkeypatch.setattr("app.up_list.set_uname",
+                        lambda mid, uname: renamed.append((int(mid), uname)) or True)
+    r = client.get("/api/up-updates")
+    assert r.get_json()["ok"]
+    assert renamed == [(1, "UP")], "uname 为空时应回填"
+
+
+def test_up_updates_keeps_existing_uname(client, monkeypatch):
+    """已有名称的 UP 不重复回填。"""
+    ups = [{"mid": 1, "uname": "已有名", "face": "", "auto": False}]
+    _patch_up_env(monkeypatch, ups, {1: [_vid("BVnew", 200)]})
+    renamed = []
+    monkeypatch.setattr("app.up_list.set_uname",
+                        lambda mid, uname: renamed.append((int(mid), uname)) or True)
+    client.get("/api/up-updates")
+    assert renamed == []
 
 
 # ---------- /api/stats ----------

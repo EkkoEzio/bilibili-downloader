@@ -83,6 +83,9 @@ def refresh_once() -> int:
                     log.warning("追更:%s 无数据(可能限流),跳过且不推进 last_seen",
                                 up.get("uname") or mid)
                 else:
+                    # 存量记录没存到名称的,用视频作者名回填
+                    if not up.get("uname") and newest.get("uploader"):
+                        up_list.set_uname(mid, newest["uploader"])
                     up_list.add_history(new)  # 历史记「发现的新增」(含已下载过的)
                     to_dl = [v for v in new if not downloader.is_downloaded(v["url"])]
                     if to_dl:

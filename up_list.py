@@ -47,10 +47,15 @@ def list_ups() -> list[dict]:
 def add_up(mid: int, uname: str = "", face: str = "") -> dict:
     with _lock:
         data = _read()
-        # 已存在就不重复加
+        # 已存在:不重复加,但补齐缺失的名称/头像(存量记录回填)
         for u in data["ups"]:
             if int(u["mid"]) == int(mid):
                 u.setdefault("auto", False)
+                if uname and not u.get("uname"):
+                    u["uname"] = uname
+                    if face:
+                        u["face"] = face
+                    _write(data)
                 return u
         u = {"mid": int(mid), "uname": uname, "face": face,
              "added_at": int(time.time()), "auto": False}
@@ -66,6 +71,21 @@ def set_auto(mid: int, auto: bool) -> bool:
         for u in data["ups"]:
             if int(u["mid"]) == int(mid):
                 u["auto"] = bool(auto)
+                _write(data)
+                return True
+        return False
+
+
+def set_uname(mid: int, uname: str) -> bool:
+    """写入 UP 名称。给「添加时没拿到名称、后续拉取到数据」的存量记录回填用
+    (mid 人记不住,界面必须能显示名称)。"""
+    if not uname:
+        return False
+    with _lock:
+        data = _read()
+        for u in data["ups"]:
+            if int(u["mid"]) == int(mid):
+                u["uname"] = uname
                 _write(data)
                 return True
         return False

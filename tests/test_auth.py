@@ -113,3 +113,27 @@ def test_fetch_fav_content_does_not_swallow_programming_errors(monkeypatch):
     _patch_ydl(monkeypatch, exc=RuntimeError("boom"))
     with pytest.raises(RuntimeError):
         bilibili_auth.fetch_fav_content(123)
+
+
+# ---------- 用户卡片(2026-08-17:mid → UP 名称/头像) ----------
+
+def test_fetch_up_card_parses_name_and_face(monkeypatch):
+    class _Resp:
+        def json(self):
+            return {"code": 0, "data": {"card": {"name": "远古野", "face": "https://x/face.jpg"}}}
+    monkeypatch.setattr(bilibili_auth.requests, "get", lambda *a, **k: _Resp())
+    card = bilibili_auth.fetch_up_card(46817116)
+    assert card == {"uname": "远古野", "face": "https://x/face.jpg"}
+
+
+def test_fetch_up_card_failure_returns_none(monkeypatch):
+    class _Resp:
+        def json(self):
+            return {"code": -404}
+    monkeypatch.setattr(bilibili_auth.requests, "get", lambda *a, **k: _Resp())
+    assert bilibili_auth.fetch_up_card(1) is None
+
+    def boom(*a, **k):
+        raise RuntimeError("net")
+    monkeypatch.setattr(bilibili_auth.requests, "get", boom)
+    assert bilibili_auth.fetch_up_card(1) is None

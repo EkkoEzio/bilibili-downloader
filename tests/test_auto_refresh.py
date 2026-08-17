@@ -169,3 +169,28 @@ def test_fetch_new_rate_limited(monkeypatch):
     calls = _patch_fetch_calls(monkeypatch, {})
     new, newest = auto_refresh.fetch_new(1, {"bvid": "x", "ts": 1, "fetched_at": time.time()})
     assert new == [] and newest is None
+
+
+# ---------- 名称回填 ----------
+
+def test_refresh_once_backfills_missing_uname(monkeypatch):
+    """存量 UP 没有 uname:追更拉到视频后自动回填名称。"""
+    ups = [{"mid": 1, "auto": True, "uname": "", "face": ""}]
+    renamed = []
+    batches, marked, _, _ = _patch_env(
+        monkeypatch, ups, {1: [_vid("BVn", 100)]})
+    monkeypatch.setattr(auto_refresh.up_list, "set_uname",
+                        lambda mid, uname: renamed.append((int(mid), uname)) or True)
+    auto_refresh.refresh_once()
+    assert renamed == [(1, "UP")], "uname 为空时用视频作者名回填"
+
+
+def test_refresh_once_no_uname_backfill_when_named(monkeypatch):
+    ups = [{"mid": 1, "auto": True, "uname": "已有名", "face": ""}]
+    renamed = []
+    batches, marked, _, _ = _patch_env(
+        monkeypatch, ups, {1: [_vid("BVn", 100)]})
+    monkeypatch.setattr(auto_refresh.up_list, "set_uname",
+                        lambda mid, uname: renamed.append((int(mid), uname)) or True)
+    auto_refresh.refresh_once()
+    assert renamed == []

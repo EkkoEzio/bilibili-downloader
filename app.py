@@ -279,10 +279,16 @@ def up_list_add():
     mid = _parse_mid_from_input(body.get("input", ""))
     if not mid:
         return jsonify({"ok": False, "error": "请输入 B 站主页链接或 UP 的 mid"}), 400
-    # 尝试从 arc/search 拿 uname/face 显示更友好
-    items = auth.fetch_up_videos(mid, ps=1)
-    uname = items[0]["uploader"] if items else ""
-    face = items[0]["thumbnail"] if items else ""
+    # 用户卡片接口直接拿名称+头像(名称必须显示,mid 人记不住);
+    # 失败再退回从最新投稿的作者名兜底
+    uname, face = "", ""
+    card = auth.fetch_up_card(mid)
+    if card:
+        uname, face = card.get("uname", ""), card.get("face", "")
+    if not uname:
+        items = auth.fetch_up_videos(mid, ps=1)
+        if items:
+            uname = items[0].get("uploader", "")
     u = up_list.add_up(mid, uname, face)
     return jsonify({"ok": True, "up": u})
 
@@ -339,6 +345,9 @@ def up_updates():
         last = None if include_seen else up_list.get_last_seen(mid)
         new, newest = auto_refresh.fetch_new(mid, last)
         if newest:
+            # 存量记录没存到名称的,用视频作者名回填(mid 人记不住)
+            if not up.get("uname") and newest.get("uploader"):
+                up_list.set_uname(mid, newest["uploader"])
             for v in new:
                 v["uploader_mid"] = mid
             results.extend(new)

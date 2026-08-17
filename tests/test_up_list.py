@@ -80,3 +80,13 @@ def test_history_caps_at_100(store):
     h = store.list_history()
     assert len(h) == 100, "超过上限应裁掉最旧的"
     assert h[0]["bvid"] == "BV104" and h[-1]["bvid"] == "BV005", "保留最新 100 条"
+
+
+# ---------- 名称回填(2026-08-17:mid 记不住,要显示 UP 名) ----------
+
+def test_set_uname_fills_and_overwrites(store):
+    """set_uname 写入 UP 名称(调用方负责只在空时补;显式调用允许改名)。"""
+    store.add_up(1, "", "")
+    assert store.set_uname(1, "远古野") is True
+    assert store.list_ups()[0]["uname"] == "远古野"
+    assert store.set_uname(404, "x") is False, "不存在的 UP 返回 False"

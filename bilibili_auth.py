@@ -362,6 +362,23 @@ def _safe_json(resp):
         return None
 
 
+def fetch_up_card(mid: int) -> Optional[dict]:
+    """公开的用户卡片接口:mid → {"uname", "face"}。失败返回 None。
+
+    添加 UP 时用它拿名称/头像(arc/search 的视频列表里没有 UP 头像)。
+    """
+    try:
+        r = requests.get("https://api.bilibili.com/x/web-interface/card",
+                         params={"mid": mid}, headers=BROWSER_HEADERS, timeout=10)
+        data = r.json()
+        if data.get("code") != 0:
+            return None
+        card = (data.get("data") or {}).get("card") or {}
+        return {"uname": card.get("name", ""), "face": card.get("face", "")}
+    except Exception:
+        return None
+
+
 def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
     """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。单个失败不影响整体。
 
