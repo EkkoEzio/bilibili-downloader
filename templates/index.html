@@ -42,29 +42,40 @@
     background: var(--bg-page);
     color: var(--text-main);
     line-height: 1.6;
-    padding: 20px;
-    max-width: 880px;
-    margin: 0 auto;
     transition: background .2s, color .2s;
   }
-  header {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    margin-bottom: 24px;
-    padding-bottom: 16px;
-    border-bottom: 2px solid #00a1d6;
+
+  /* ---------- 侧边栏布局 ---------- */
+  .app-shell { display: flex; min-height: 100vh; }
+  .sidebar {
+    width: 212px; flex-shrink: 0;
+    background: var(--bg-card);
+    border-right: 1px solid var(--border-card);
+    padding: 20px 14px 16px;
+    position: sticky; top: 0; height: 100vh;
+    display: flex; flex-direction: column;
   }
-  header h1 { font-size: 22px; color: #00a1d6; }
-  #login-badge {
-    font-size: 14px;
-    padding: 4px 12px;
-    border-radius: 14px;
-    background: var(--bg-muted);
-    color: var(--text-soft);
+  .brand { font-size: 17px; font-weight: 700; color: var(--accent); padding: 2px 10px 18px; letter-spacing: .5px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 12px; border-radius: 8px;
+    color: var(--text-soft); cursor: pointer; font-size: 14px;
+    margin-bottom: 2px; user-select: none; transition: background .15s, color .15s;
   }
-  #login-badge.ok { background: #e8f5e9; color: #2e7d32; }
-  #login-badge.vip { background: #fff4e0; color: #b8860b; }
+  .nav-item svg { width: 18px; height: 18px; flex-shrink: 0; }
+  .nav-item:hover { background: var(--bg-soft); color: var(--text-main); }
+  .nav-item.active { background: var(--accent-soft); color: var(--accent); font-weight: 600; }
+  .sidebar-foot { margin-top: auto; font-size: 11px; color: var(--text-mute); padding: 8px 10px 0; }
+  .main { flex: 1; min-width: 0; padding: 20px 24px 48px; max-width: 940px; }
+  .page { display: none; }
+  .page.active { display: block; }
+  @media (max-width: 720px) {
+    .app-shell { flex-direction: column; }
+    .sidebar { width: auto; height: auto; position: static; flex-direction: row; flex-wrap: wrap; align-items: center; gap: 2px; }
+    .brand { padding: 2px 10px 6px; }
+    .sidebar-foot { display: none; }
+    .main { padding: 14px; }
+  }
 
   section {
     background: var(--bg-card);
@@ -74,7 +85,18 @@
     box-shadow: var(--shadow);
     transition: background .2s;
   }
-  section h2 { font-size: 16px; margin-bottom: 14px; color: var(--text-main); }
+  .card-title { display: flex; align-items: center; gap: 8px; font-size: 16px; font-weight: 600; margin-bottom: 14px; color: var(--text-main); }
+  .card-title svg { width: 18px; height: 18px; color: var(--accent); flex-shrink: 0; }
+
+  .topbar { display: flex; justify-content: flex-end; align-items: center; gap: 8px; margin-bottom: 14px; }
+  #login-badge {
+    font-size: 13px; padding: 4px 12px; border-radius: 14px;
+    background: var(--bg-muted); color: var(--text-soft);
+    display: inline-flex; align-items: center; gap: 5px;
+  }
+  #login-badge svg { width: 13px; height: 13px; }
+  #login-badge.ok { background: #e8f5e9; color: #2e7d32; }
+  #login-badge.vip { background: #fff4e0; color: #b8860b; }
 
   .tabs { display: flex; gap: 4px; margin-bottom: 14px; border-bottom: 1px solid var(--border-card); }
   .tab {
@@ -82,8 +104,8 @@
     border-bottom: 2px solid transparent;
     font-size: 14px; color: var(--text-soft); transition: all 0.15s;
   }
-  .tab.active { color: #00a1d6; border-bottom-color: #00a1d6; }
-  .tab:hover { color: #00a1d6; }
+  .tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .tab:hover { color: var(--accent); }
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
@@ -96,7 +118,7 @@
     transition: border 0.15s, background .2s, color .2s;
   }
   input[type="text"]:focus, textarea:focus { border-color: var(--accent); }
-  textarea { min-height: 80px; resize: vertical; font-family: monospace; font-size: 12px; }
+  textarea { min-height: 96px; resize: vertical; font-family: monospace; font-size: 12px; }
   select {
     padding: 8px 10px; border: 1px solid var(--border-card); border-radius: 6px;
     font-size: 14px; background: var(--bg-card); color: var(--text-main);
@@ -104,16 +126,19 @@
   }
   button {
     padding: 9px 20px; border: none; border-radius: 6px;
-    background: #00a1d6; color: #fff; font-size: 14px; cursor: pointer;
+    background: var(--accent); color: #fff; font-size: 14px; cursor: pointer;
     transition: background 0.15s; font-family: inherit;
+    display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   }
-  button:hover:not(:disabled) { background: #0091c2; }
+  button svg { width: 15px; height: 15px; flex-shrink: 0; }
+  button:hover:not(:disabled) { filter: brightness(.93); }
   button:disabled { background: #c9ccd0; cursor: not-allowed; }
-  button.secondary { background: var(--bg-card); color: #00a1d6; border: 1px solid #00a1d6; }
+  button.secondary { background: var(--bg-card); color: var(--accent); border: 1px solid var(--accent); }
   button.secondary:hover:not(:disabled) { background: var(--accent-soft); }
   button.small { padding: 5px 12px; font-size: 12px; }
   button.danger { background: var(--bg-card); color: #e53935; border: 1px solid #e53935; }
   button.danger:hover:not(:disabled) { background: #fdecea; }
+  button.icon-btn { padding: 8px 10px; }
   .btn-row { display: flex; gap: 10px; margin-top: 12px; align-items: center; flex-wrap: wrap; }
 
   .hint { font-size: 12px; color: var(--text-mute); margin-top: 6px; }
@@ -126,20 +151,25 @@
   .video-card img { width: 160px; height: 100px; object-fit: cover; border-radius: 6px; flex-shrink: 0; background: var(--bg-muted); }
   .video-info { flex: 1; min-width: 240px; }
   .video-info .vt { font-weight: 600; margin-bottom: 4px; word-break: break-all; }
+  .video-info .vm { font-size: 13px; color: var(--text-soft); }
 
-  /* C2: 网格视图 */
-  #history-list.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
-  #history-list.lib-grid .video-item {
+  /* ---------- 列表页统一工具栏 ---------- */
+  .lib-toolbar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  .lib-toolbar button, .lib-toolbar input, .lib-toolbar select { height: 36px; }
+  .lib-toolbar .lib-search { flex: 1; max-width: 300px; min-width: 160px; padding: 0 10px; }
+  .lib-toolbar .lib-meta { color: var(--text-mute); font-size: 12px; margin-left: auto; }
+
+  .lib-list.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 12px; }
+  .lib-list.lib-grid .video-item {
     display: flex; flex-direction: column; gap: 6px;
     padding: 10px; background: var(--bg-soft); border-radius: 8px;
     cursor: pointer; transition: background .15s;
   }
-  #history-list.lib-grid .video-item:hover { background: var(--bg-muted); }
-  #history-list.lib-grid .video-item img { width: 100%; height: 124px; object-fit: cover; border-radius: 6px; background: var(--bg-muted); }
-  #history-list.lib-grid .vi-title { font-size: 13px; font-weight: 600; line-height: 1.35; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  #history-list.lib-grid .vi-meta { font-size: 11px; color: var(--text-mute); }
-  #history-list.lib-grid .vi-check { position: absolute; top: 6px; right: 6px; }
-  .video-info .vm { font-size: 13px; color: var(--text-soft); }
+  .lib-list.lib-grid .video-item:hover { background: var(--bg-muted); }
+  .lib-list.lib-grid .video-item img { width: 100%; height: 124px; object-fit: cover; border-radius: 6px; background: var(--bg-muted); }
+  .lib-list.lib-grid .vi-title { font-size: 13px; font-weight: 600; line-height: 1.35; word-break: break-all; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .lib-list.lib-grid .vi-meta { font-size: 11px; color: var(--text-mute); }
+  .lib-list.lib-grid .vi-check { position: absolute; top: 6px; right: 6px; }
 
   .task-item { padding: 12px; background: var(--bg-soft); border-radius: 8px; margin-top: 10px; }
   .task-item .ti-head { display: flex; justify-content: space-between; margin-bottom: 6px; font-size: 14px; gap: 8px; }
@@ -154,14 +184,14 @@
   .task-item .ti-err { color: #e53935; font-size: 13px; margin-top: 4px; }
   .task-item .ti-actions { margin-top: 8px; display: flex; gap: 8px; }
   .status-tag { font-size: 12px; padding: 2px 8px; border-radius: 10px; white-space: nowrap; flex-shrink: 0; }
-  .status-tag.queued, .status-tag.interrupted { background: #e3e5e7; color: #61666d; }
+  .status-tag.queued, .status-tag.interrupted { background: var(--bg-muted); color: var(--text-soft); }
   .status-tag.downloading, .status-tag.merging, .status-tag.cancelling, .status-tag.retrying { background: #fff4e0; color: #b8860b; }
   .status-tag.done { background: #e8f5e9; color: #2e7d32; }
   .status-tag.failed, .status-tag.cancelled { background: #fdecea; color: #c62828; }
 
   #qrcode-img { text-align: center; margin: 12px 0; }
   #qrcode-img img { border: 1px solid var(--border-card); border-radius: 6px; }
-  #qr-status { text-align: center; font-size: 13px; color: #61666d; min-height: 20px; }
+  #qr-status { text-align: center; font-size: 13px; color: var(--text-soft); min-height: 20px; }
   .empty { color: var(--text-mute); font-size: 14px; padding: 20px 0; text-align: center; }
 
   /* 已下载角标 */
@@ -172,267 +202,417 @@
   }
   body.dark .dl-badge { background: #1e3a24; color: #81c784; border-color: #2e5a34; }
 
+  /* 统计条 */
+  .stats-bar { display: flex; gap: 18px; flex-wrap: wrap; font-size: 13px; color: var(--text-soft); padding: 4px 2px 0; }
+  .stats-bar b { color: var(--text-main); }
+
   /* spinner */
-  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid #00a1d6; border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
+  .spinner { display: inline-block; width: 14px; height: 14px; border: 2px solid var(--accent); border-top-color: transparent; border-radius: 50%; animation: spin 0.8s linear infinite; vertical-align: -2px; margin-right: 6px; }
   @keyframes spin { to { transform: rotate(360deg); } }
   .merging-anim { display: flex; align-items: center; gap: 8px; color: #b8860b; font-size: 13px; }
 </style>
 </head>
 <body>
-  <header>
-    <h1>bilibili download</h1>
-    <div style="display:flex;gap:8px;align-items:center;">
+<div class="app-shell">
+
+  <!-- ========== 侧边栏 ========== -->
+  <aside class="sidebar">
+    <div class="brand">bilibili 下载</div>
+    <nav id="nav">
+      <div class="nav-item active" data-page="downloads" onclick="goPage('downloads')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>下载记录</span>
+      </div>
+      <div class="nav-item" data-page="history" onclick="goPage('history')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+        <span>观看历史</span>
+      </div>
+      <div class="nav-item" data-page="follows" onclick="goPage('follows')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
+        <span>关注账号</span>
+      </div>
+      <div class="nav-item" data-page="feed" onclick="goPage('feed')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
+        <span>更新推送</span>
+      </div>
+      <div class="nav-item" data-page="fav" onclick="goPage('fav')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+        <span>收藏夹</span>
+      </div>
+      <div class="nav-item" data-page="later" onclick="goPage('later')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
+        <span>稍后再看</span>
+      </div>
+      <div class="nav-item" data-page="settings" onclick="goPage('settings')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+        <span>设置</span>
+      </div>
+    </nav>
+    <div class="sidebar-foot">本地运行 · 数据不出本机</div>
+  </aside>
+
+  <!-- ========== 主区域 ========== -->
+  <main class="main">
+
+    <div class="topbar">
       <div id="login-badge">未登录</div>
-      <button class="small secondary" onclick="toggleTheme()" id="theme-btn">🌙</button>
-      <button class="small secondary" onclick="toggleSettings()">⚙ 设置</button>
-    </div>
-  </header>
-
-  <!-- C3: 统计面板 -->
-  <div id="stats-bar" style="display:flex;gap:16px;flex-wrap:wrap;padding:12px 20px;background:var(--bg-soft);border-radius:10px;margin-bottom:16px;font-size:13px;color:var(--text-soft);">
-    <span>📦 总下载 <b id="stat-total-count" style="color:var(--text-main);">-</b> 条</span>
-    <span>💾 总大小 <b id="stat-total-bytes" style="color:var(--text-main);">-</b></span>
-    <span>📅 本月 <b id="stat-month-count" style="color:var(--text-main);">-</b></span>
-    <span>📆 今日 <b id="stat-day-count" style="color:var(--text-main);">-</b></span>
-  </div>
-
-  <!-- 设置区(默认折叠) -->
-  <section id="settings-section" style="display:none;">
-    <h2>设置</h2>
-    <div class="btn-row" style="margin-top:0;align-items:center;">
-      <span style="font-size:13px;color:var(--text-main);min-width:80px;">下载目录</span>
-      <input type="text" id="config-dir-input" style="flex:1;">
-      <button class="small secondary" onclick="resetConfigDir()">恢复默认</button>
-    </div>
-    <div class="hint" style="margin-bottom:12px;">路径含 ~ 自动展开。目录不存在会自动创建。</div>
-
-    <div class="btn-row" style="margin-top:0;align-items:center;margin-bottom:6px;">
-      <span style="font-size:13px;color:var(--text-main);min-width:80px;">同时下载数</span>
-      <select id="config-concurrent">
-        <option value="1">1</option>
-        <option value="2">2</option>
-        <option value="3">3</option>
-        <option value="4">4</option>
-      </select>
-      <span style="margin-left:24px;font-size:13px;color:var(--text-main);min-width:80px;">单任务限速</span>
-      <select id="config-ratelimit" style="margin-left:8px;">
-        <option value="0">不限速</option>
-        <option value="1">1 MB/s</option>
-        <option value="2">2 MB/s</option>
-        <option value="5">5 MB/s</option>
-        <option value="10">10 MB/s</option>
-        <option value="20">20 MB/s</option>
-      </select>
-    </div>
-    <div class="hint" style="margin-bottom:12px;">并发和限速只影响后续启动的任务。</div>
-
-    <div class="btn-row" style="margin-top:0;align-items:center;">
-      <span style="font-size:13px;color:var(--text-main);min-width:80px;">主题</span>
-      <select id="config-theme">
-        <option value="auto">跟随系统</option>
-        <option value="light">浅色</option>
-        <option value="dark">深色</option>
-      </select>
+      <button class="small secondary icon-btn" id="theme-btn" onclick="toggleTheme()" title="主题:浅色/深色/跟随系统"></button>
     </div>
 
-    <div class="btn-row" style="margin-top:0;align-items:center;flex-wrap:wrap;">
-      <span style="font-size:13px;color:var(--text-main);min-width:80px;">下载附件</span>
-      <label style="font-size:13px;"><input type="checkbox" id="config-save-danmaku"> 保存弹幕(.xml)</label>
-      <label style="font-size:13px;"><input type="checkbox" id="config-save-subtitle"> 保存字幕(srt)</label>
-      <label style="font-size:13px;"><input type="checkbox" id="config-save-cover"> 保存封面</label>
-    </div>
-
-    <div class="btn-row" style="margin-top:0;align-items:center;flex-wrap:wrap;">
-      <span style="font-size:13px;color:var(--text-main);min-width:80px;">归档/通知</span>
-      <label style="font-size:13px;"><input type="checkbox" id="config-sort-by-up"> 按 UP 主建子目录</label>
-      <label style="font-size:13px;"><input type="checkbox" id="config-notify"> 完成后系统通知</label>
-      <span style="margin-left:24px;font-size:13px;color:var(--text-main);">追更检查间隔</span>
-      <select id="config-auto-interval" style="margin-left:8px;max-width:140px;">
-        <option value="10">10 分钟</option>
-        <option value="30">30 分钟</option>
-        <option value="60">1 小时</option>
-        <option value="120">2 小时</option>
-        <option value="360">6 小时</option>
-      </select>
-    </div>
-    <div class="hint" style="margin-bottom:12px;">追更只下载 UP 清单里开启了「自动追更」的 UP;间隔刻意较长(协议"自动程序"条款,低频串行更安全)。</div>
-
-    <div class="btn-row" style="margin-top:0;align-items:center;">
-      <span style="font-size:13px;color:var(--text-main);min-width:80px;"></span>
-      <button onclick="saveAllConfig()">保存设置</button>
-    </div>
-  </section>
-
-  <!-- 登录区(登录成功后隐藏) -->
-  <section id="login-section">
-    <h2>登录</h2>
-    <div class="tabs">
-      <div class="tab active" data-tab="qrcode">扫码登录</div>
-      <div class="tab" data-tab="browser">使用 Edge</div>
-      <div class="tab" data-tab="cookie">cookies.txt</div>
-    </div>
-
-    <div class="tab-panel active" id="panel-qrcode">
-      <div id="qrcode-img"></div>
-      <div id="qr-status"></div>
-      <div class="btn-row">
-        <button onclick="showQrcode()">显示二维码</button>
+    <!-- 登录(登录成功后隐藏) -->
+    <section id="login-section">
+      <div class="card-title">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="11" width="18" height="11" rx="2" ry="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></svg>
+        登录
       </div>
-      <div class="hint">用手机 B 站 App 扫码确认即可。一次登录长期有效。</div>
-    </div>
+      <div class="tabs">
+        <div class="tab active" data-tab="qrcode">扫码登录</div>
+        <div class="tab" data-tab="browser">使用 Edge</div>
+        <div class="tab" data-tab="cookie">cookies.txt</div>
+      </div>
 
-    <div class="tab-panel" id="panel-browser">
-      <p style="font-size:14px;margin-bottom:10px;">直接读取你 Edge 浏览器中已有的 B 站登录态,无需再次登录。</p>
-      <div class="btn-row">
-        <button onclick="useBrowser()">使用 Edge 登录态</button>
-      </div>
-      <div class="hint">前提:你已在 Edge 里登录过 bilibili.com。</div>
-    </div>
-
-    <div class="tab-panel" id="panel-cookie">
-      <textarea id="cookie-txt-input" placeholder="粘贴 cookies.txt 内容(Netscape 格式,需含 SESSDATA)..."></textarea>
-      <div class="btn-row">
-        <button onclick="uploadCookieTxt()">导入 cookies.txt</button>
-      </div>
-      <div class="hint">用浏览器扩展 "Get cookies.txt" 导出后粘贴到这里。</div>
-    </div>
-  </section>
-
-  <!-- 解析+下载区 -->
-  <section>
-    <h2>下载视频</h2>
-    <div class="tabs" style="margin-bottom:12px;">
-      <div class="tab active" data-dlmode="single">单个视频</div>
-      <div class="tab" data-dlmode="batch">批量下载</div>
-    </div>
-
-    <!-- 单视频 -->
-    <div id="dl-single">
-      <div class="url-row">
-        <input type="text" id="url-input" placeholder="粘贴 B 站视频地址,如 https://www.bilibili.com/video/BVxxxxx">
-        <button id="parse-btn" onclick="parseVideo()">解析</button>
-      </div>
-      <div id="parse-result"></div>
-    </div>
-
-    <!-- 批量 -->
-    <div id="dl-batch" style="display:none;">
-      <textarea id="batch-input" placeholder="支持三种批量:&#10;① 多个视频链接,每行一个&#10;② 一个收藏夹链接(space.bilibili.com/xxx/favlist?fid=xx 或 bilibili.com/medialist/detail/mlxx)&#10;③ 一个合集/分P视频链接&#10;&#10;粘贴后点'解析',勾选要下的,选清晰度,点'批量下载'"></textarea>
-      <div class="btn-row">
-        <button id="batch-parse-btn" onclick="batchParse()">解析</button>
-      </div>
-      <div id="batch-result"></div>
-    </div>
-  </section>
-
-  <!-- 我的B站 内容浏览 -->
-  <section id="library-section">
-    <h2>我的B站</h2>
-    <div class="tabs" style="margin-bottom:12px;">
-      <div class="tab active" data-lib="history">观看历史</div>
-      <div class="tab" data-lib="follow">关注更新</div>
-      <div class="tab" data-lib="up">UP 清单</div>
-      <div class="tab" data-lib="fav">收藏夹</div>
-      <div class="tab" data-lib="later">稍后再看</div>
-    </div>
-
-    <!-- A4: 收藏夹浏览 -->
-    <div id="lib-fav" style="display:none;">
-      <div id="fav-folder-list">
-        <div class="empty">加载中...</div>
-      </div>
-      <div id="fav-content-panel" style="display:none;margin-top:10px;">
-        <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-          <button class="small secondary" onclick="favBack()">← 返回收藏夹</button>
-          <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
-          <span id="fav-meta" style="color:var(--text-mute);font-size:12px;margin-left:auto;"></span>
-        </div>
-        <div id="fav-content-list" style="display:none;"></div>
-      </div>
-    </div>
-
-    <!-- A5: 稍后再看 -->
-    <div id="lib-later" style="display:none;">
-      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-        <button onclick="loadWatchlater()">刷新</button>
-        <span id="later-meta" style="color:var(--text-mute);font-size:12px;"></span>
-      </div>
-      <div id="later-list" style="display:none;"></div>
-    </div>
-
-    <!-- A3: UP 清单管理 -->
-    <div id="lib-up" style="display:none;">
-      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-        <input type="text" id="up-add-input" placeholder="粘贴 B 站主页链接或 mid,如 space.bilibili.com/12345" style="flex:1;">
-        <button onclick="upAdd()">添加</button>
-        <button class="small secondary" onclick="upListRender()">管理清单</button>
-      </div>
-      <div id="up-list-panel" style="display:none;margin-bottom:10px;padding:10px;background:var(--bg-soft);border-radius:8px;"></div>
-      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-        <button onclick="upRefresh()">刷新看新增</button>
-        <button class="small secondary" onclick="upShowAll()">📜 查看历史(本地)</button>
-        <span id="up-meta" style="color:var(--text-mute);font-size:12px;"></span>
-      </div>
-      <div id="up-list" style="display:none;"></div>
-    </div>
-
-    <!-- 历史 / 关注更新 共用列表 -->
-    <div id="lib-history">
-      <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-        <button onclick="refreshLib()">刷新</button>
-        <input type="text" id="lib-search" placeholder="🔍 按标题/UP主过滤" oninput="applyLibFilter()" style="flex:1;max-width:280px;padding:6px 10px;">
-        <button class="small secondary" id="lib-view-btn" onclick="toggleLibView()">📋 列表</button>
-        <span id="history-meta" style="color:var(--text-mute);font-size:12px;"></span>
-      </div>
-      <!-- 关注 tab 专用: 强制刷新(跳过缓存) -->
-      <div class="btn-row" id="follow-force-row" style="display:none;margin-top:0;margin-bottom:10px;">
-        <span style="font-size:12px;color:var(--text-mute);">缓存可能过期,点这里</span>
-        <button class="small secondary" onclick="loadFollow(true)">⚡ 强制刷新(串行防限流,约需 30-60 秒)</button>
-      </div>
-      <div id="history-list" style="display:none;"></div>
-      <div id="history-more" style="display:none;"></div>
-      <div id="lib-pager" style="display:none;"></div>
-      <div id="history-actions" style="display:none;margin-top:10px;">
+      <div class="tab-panel active" id="panel-qrcode">
+        <div id="qrcode-img"></div>
+        <div id="qr-status"></div>
         <div class="btn-row">
-          <button class="small secondary" onclick="libToggleAll(true)">全选</button>
-          <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
-          <span style="color:var(--text-mute);font-size:12px;">已选 <b id="lib-count">0</b> 项</span>
-          <select id="lib-quality" style="margin-left:auto;max-width:160px;">
-            <option value="">最高画质(自动)</option>
-            <option value="1080P">1080P</option>
-            <option value="720P">720P</option>
-            <option value="480P">480P</option>
-            <option value="360P">360P</option>
-            <option value="音频">🎵 仅音频</option>
-          </select>
-          <button onclick="libDownload()">下载选中</button>
+          <button onclick="showQrcode()">显示二维码</button>
         </div>
+        <div class="hint">用手机 B 站 App 扫码确认即可。一次登录长期有效。</div>
       </div>
-    </div>
-  </section>
 
-  <!-- 任务队列区 -->
-  <section>
-    <h2>下载队列</h2>
-    <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
-      <button class="small secondary" onclick="deleteSelectedTasks()">删除选中</button>
-      <button class="small danger" onclick="clearAllRecords()">清除所有记录</button>
-      <span style="color:var(--text-mute);font-size:12px;margin-left:auto;">勾选后可批量删除</span>
-    </div>
-    <div id="queue-list"></div>
-  </section>
-
-  <!-- 删除选择弹窗 -->
-  <div id="del-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;align-items:center;justify-content:center;">
-    <div style="background:var(--bg-card);border-radius:10px;padding:20px;width:320px;">
-      <div id="del-modal-title" style="font-weight:600;margin-bottom:14px;"></div>
-      <div class="btn-row" style="margin-top:0;flex-direction:column;align-items:stretch;">
-        <button onclick="delChoice(false)">只删除下载记录</button>
-        <button class="danger" onclick="delChoice(true)">删除记录 + 已下载文件</button>
-        <button class="secondary" onclick="closeDelModal()">取消</button>
+      <div class="tab-panel" id="panel-browser">
+        <p style="font-size:14px;margin-bottom:10px;">直接读取你 Edge 浏览器中已有的 B 站登录态,无需再次登录。</p>
+        <div class="btn-row">
+          <button onclick="useBrowser()">使用 Edge 登录态</button>
+        </div>
+        <div class="hint">前提:你已在 Edge 里登录过 bilibili.com。</div>
       </div>
+
+      <div class="tab-panel" id="panel-cookie">
+        <textarea id="cookie-txt-input" placeholder="粘贴 cookies.txt 内容(Netscape 格式,需含 SESSDATA)..."></textarea>
+        <div class="btn-row">
+          <button onclick="uploadCookieTxt()">导入 cookies.txt</button>
+        </div>
+        <div class="hint">用浏览器扩展 "Get cookies.txt" 导出后粘贴到这里。</div>
+      </div>
+    </section>
+
+    <!-- ===== 页面:下载记录 ===== -->
+    <div class="page active" data-page="downloads">
+
+      <section>
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+          新建下载
+        </div>
+        <textarea id="dl-input" placeholder="粘贴链接,自动识别:&#10;· 单个视频链接 → 选清晰度下载&#10;· 多个链接(每行一个)/ 收藏夹 / 合集 / UP 主页链接 → 批量勾选下载"></textarea>
+        <div class="btn-row">
+          <button id="parse-btn" onclick="smartParse()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+            解析
+          </button>
+        </div>
+        <div id="parse-result"></div>
+        <div id="batch-result"></div>
+      </section>
+
+      <section>
+        <div class="stats-bar">
+          <span>总下载 <b id="stat-total-count">-</b> 条</span>
+          <span>总大小 <b id="stat-total-bytes">-</b></span>
+          <span>本月 <b id="stat-month-count">-</b></span>
+          <span>今日 <b id="stat-day-count">-</b></span>
+        </div>
+      </section>
+
+      <section>
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/></svg>
+          下载队列
+        </div>
+        <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+          <button class="small secondary" onclick="deleteSelectedTasks()">删除选中</button>
+          <button class="small danger" onclick="clearAllRecords()">清除所有记录</button>
+          <span style="color:var(--text-mute);font-size:12px;margin-left:auto;">勾选后可批量删除</span>
+        </div>
+        <div id="queue-list"></div>
+      </section>
+
+    </div>
+
+    <!-- ===== 页面:观看历史 ===== -->
+    <div class="page" data-page="history">
+      <section>
+        <div class="lib-toolbar">
+          <button class="small secondary" onclick="refreshLib()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            刷新
+          </button>
+          <input type="text" class="lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
+          <button class="small secondary icon-btn view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          <span class="lib-meta" id="meta-history"></span>
+        </div>
+        <div id="list-history" class="lib-list"></div>
+        <div id="history-more" style="display:none;"></div>
+        <div id="pager-history" style="display:none;"></div>
+        <div id="actions-history" style="display:none;margin-top:10px;">
+          <div class="btn-row">
+            <button class="small secondary" onclick="libToggleAll(true)">全选</button>
+            <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
+            <span style="color:var(--text-mute);font-size:12px;">已选 <b class="lib-count">0</b> 项</span>
+            <select class="lib-quality" style="margin-left:auto;max-width:160px;">
+              <option value="">最高画质(自动)</option>
+              <option value="1080P">1080P</option>
+              <option value="720P">720P</option>
+              <option value="480P">480P</option>
+              <option value="360P">360P</option>
+              <option value="音频">仅音频</option>
+            </select>
+            <button onclick="libDownload()">下载选中</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== 页面:关注账号(手动指定的 UP 清单) ===== -->
+    <div class="page" data-page="follows">
+      <section>
+        <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+          <input type="text" id="up-add-input" placeholder="粘贴 B 站主页链接或 mid,如 space.bilibili.com/12345" style="flex:1;">
+          <button onclick="upAdd()">添加</button>
+          <button class="small secondary" onclick="upListRender()">管理清单</button>
+        </div>
+        <div id="up-list-panel" style="display:none;margin-bottom:10px;padding:10px;background:var(--bg-soft);border-radius:8px;"></div>
+        <div class="lib-toolbar">
+          <button class="small secondary" onclick="refreshLib()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            刷新看新增
+          </button>
+          <button class="small secondary" onclick="upShowAll()">查看历史(本地)</button>
+          <input type="text" class="lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
+          <button class="small secondary icon-btn view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          <span class="lib-meta" id="meta-follows"></span>
+        </div>
+        <div id="list-follows" class="lib-list"></div>
+        <div id="pager-follows" style="display:none;"></div>
+        <div id="actions-follows" style="display:none;margin-top:10px;">
+          <div class="btn-row">
+            <button class="small secondary" onclick="libToggleAll(true)">全选</button>
+            <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
+            <span style="color:var(--text-mute);font-size:12px;">已选 <b class="lib-count">0</b> 项</span>
+            <select class="lib-quality" style="margin-left:auto;max-width:160px;">
+              <option value="">最高画质(自动)</option>
+              <option value="1080P">1080P</option>
+              <option value="720P">720P</option>
+              <option value="480P">480P</option>
+              <option value="360P">360P</option>
+              <option value="音频">仅音频</option>
+            </select>
+            <button onclick="libDownload()">下载选中</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== 页面:更新推送(B 站关注的 UP) ===== -->
+    <div class="page" data-page="feed">
+      <section>
+        <div class="btn-row" id="follow-force-row" style="margin-top:0;margin-bottom:10px;">
+          <span style="font-size:12px;color:var(--text-mute);">缓存可能过期,点这里</span>
+          <button class="small secondary" onclick="loadFollow(true)">强制刷新(串行防限流,约需 30-60 秒)</button>
+        </div>
+        <div class="lib-toolbar">
+          <button class="small secondary" onclick="refreshLib()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            刷新
+          </button>
+          <input type="text" class="lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
+          <button class="small secondary icon-btn view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          <span class="lib-meta" id="meta-feed"></span>
+        </div>
+        <div id="list-feed" class="lib-list"></div>
+        <div id="pager-feed" style="display:none;"></div>
+        <div id="actions-feed" style="display:none;margin-top:10px;">
+          <div class="btn-row">
+            <button class="small secondary" onclick="libToggleAll(true)">全选</button>
+            <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
+            <span style="color:var(--text-mute);font-size:12px;">已选 <b class="lib-count">0</b> 项</span>
+            <select class="lib-quality" style="margin-left:auto;max-width:160px;">
+              <option value="">最高画质(自动)</option>
+              <option value="1080P">1080P</option>
+              <option value="720P">720P</option>
+              <option value="480P">480P</option>
+              <option value="360P">360P</option>
+              <option value="音频">仅音频</option>
+            </select>
+            <button onclick="libDownload()">下载选中</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== 页面:收藏夹 ===== -->
+    <div class="page" data-page="fav">
+      <section>
+        <div id="fav-folder-list"></div>
+        <div id="fav-content-panel" style="display:none;">
+          <div class="btn-row" style="margin-top:0;margin-bottom:10px;">
+            <button class="small secondary" onclick="favBack()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              返回收藏夹
+            </button>
+            <span id="fav-current-title" style="font-weight:600;font-size:14px;"></span>
+          </div>
+          <div class="lib-toolbar">
+            <button class="small secondary" onclick="favRefresh()">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+              刷新
+            </button>
+            <input type="text" class="lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
+            <button class="small secondary icon-btn view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+            <span class="lib-meta" id="meta-fav"></span>
+          </div>
+          <div id="list-fav" class="lib-list"></div>
+          <div id="pager-fav" style="display:none;"></div>
+          <div id="actions-fav" style="display:none;margin-top:10px;">
+            <div class="btn-row">
+              <button class="small secondary" onclick="libToggleAll(true)">全选</button>
+              <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
+              <span style="color:var(--text-mute);font-size:12px;">已选 <b class="lib-count">0</b> 项</span>
+              <select class="lib-quality" style="margin-left:auto;max-width:160px;">
+                <option value="">最高画质(自动)</option>
+                <option value="1080P">1080P</option>
+                <option value="720P">720P</option>
+                <option value="480P">480P</option>
+                <option value="360P">360P</option>
+                <option value="音频">仅音频</option>
+              </select>
+              <button onclick="libDownload()">下载选中</button>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== 页面:稍后再看 ===== -->
+    <div class="page" data-page="later">
+      <section>
+        <div class="lib-toolbar">
+          <button class="small secondary" onclick="refreshLib()">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            刷新
+          </button>
+          <input type="text" class="lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
+          <button class="small secondary icon-btn view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          <span class="lib-meta" id="meta-later"></span>
+        </div>
+        <div id="list-later" class="lib-list"></div>
+        <div id="pager-later" style="display:none;"></div>
+        <div id="actions-later" style="display:none;margin-top:10px;">
+          <div class="btn-row">
+            <button class="small secondary" onclick="libToggleAll(true)">全选</button>
+            <button class="small secondary" onclick="libToggleAll(false)">全不选</button>
+            <span style="color:var(--text-mute);font-size:12px;">已选 <b class="lib-count">0</b> 项</span>
+            <select class="lib-quality" style="margin-left:auto;max-width:160px;">
+              <option value="">最高画质(自动)</option>
+              <option value="1080P">1080P</option>
+              <option value="720P">720P</option>
+              <option value="480P">480P</option>
+              <option value="360P">360P</option>
+              <option value="音频">仅音频</option>
+            </select>
+            <button onclick="libDownload()">下载选中</button>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <!-- ===== 页面:设置 ===== -->
+    <div class="page" data-page="settings">
+      <section>
+        <div class="card-title">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
+          设置
+        </div>
+        <div class="btn-row" style="margin-top:0;align-items:center;">
+          <span style="font-size:13px;color:var(--text-main);min-width:80px;">下载目录</span>
+          <input type="text" id="config-dir-input" style="flex:1;">
+          <button class="small secondary" onclick="resetConfigDir()">恢复默认</button>
+        </div>
+        <div class="hint" style="margin-bottom:12px;">路径含 ~ 自动展开。目录不存在会自动创建。</div>
+
+        <div class="btn-row" style="margin-top:0;align-items:center;margin-bottom:6px;">
+          <span style="font-size:13px;color:var(--text-main);min-width:80px;">同时下载数</span>
+          <select id="config-concurrent">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+          <span style="margin-left:24px;font-size:13px;color:var(--text-main);min-width:80px;">单任务限速</span>
+          <select id="config-ratelimit" style="margin-left:8px;">
+            <option value="0">不限速</option>
+            <option value="1">1 MB/s</option>
+            <option value="2">2 MB/s</option>
+            <option value="5">5 MB/s</option>
+            <option value="10">10 MB/s</option>
+            <option value="20">20 MB/s</option>
+          </select>
+        </div>
+        <div class="hint" style="margin-bottom:12px;">并发和限速只影响后续启动的任务。</div>
+
+        <div class="btn-row" style="margin-top:0;align-items:center;">
+          <span style="font-size:13px;color:var(--text-main);min-width:80px;">主题</span>
+          <select id="config-theme">
+            <option value="auto">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
+
+        <div class="btn-row" style="margin-top:0;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:13px;color:var(--text-main);min-width:80px;">下载附件</span>
+          <label style="font-size:13px;"><input type="checkbox" id="config-save-danmaku"> 保存弹幕(.xml)</label>
+          <label style="font-size:13px;"><input type="checkbox" id="config-save-subtitle"> 保存字幕(srt)</label>
+          <label style="font-size:13px;"><input type="checkbox" id="config-save-cover"> 保存封面</label>
+        </div>
+
+        <div class="btn-row" style="margin-top:0;align-items:center;flex-wrap:wrap;">
+          <span style="font-size:13px;color:var(--text-main);min-width:80px;">归档/通知</span>
+          <label style="font-size:13px;"><input type="checkbox" id="config-sort-by-up"> 按 UP 主建子目录</label>
+          <label style="font-size:13px;"><input type="checkbox" id="config-notify"> 完成后系统通知</label>
+          <span style="margin-left:24px;font-size:13px;color:var(--text-main);">追更检查间隔</span>
+          <select id="config-auto-interval" style="margin-left:8px;max-width:140px;">
+            <option value="10">10 分钟</option>
+            <option value="30">30 分钟</option>
+            <option value="60">1 小时</option>
+            <option value="120">2 小时</option>
+            <option value="360">6 小时</option>
+          </select>
+        </div>
+        <div class="hint" style="margin-bottom:12px;">追更只下载关注账号里开启了「自动追更」的 UP;间隔刻意较长(协议"自动程序"条款,低频串行更安全)。</div>
+
+        <div class="btn-row" style="margin-top:0;align-items:center;">
+          <span style="font-size:13px;color:var(--text-main);min-width:80px;"></span>
+          <button onclick="saveAllConfig()">保存设置</button>
+        </div>
+      </section>
+    </div>
+
+  </main>
+</div>
+
+<!-- 删除选择弹窗 -->
+<div id="del-modal" style="display:none;position:fixed;inset:0;background:rgba(0,0,0,.45);z-index:99;align-items:center;justify-content:center;">
+  <div style="background:var(--bg-card);border-radius:10px;padding:20px;width:320px;">
+    <div id="del-modal-title" style="font-weight:600;margin-bottom:14px;"></div>
+    <div class="btn-row" style="margin-top:0;flex-direction:column;align-items:stretch;">
+      <button onclick="delChoice(false)">只删除下载记录</button>
+      <button class="danger" onclick="delChoice(true)">删除记录 + 已下载文件</button>
+      <button class="secondary" onclick="closeDelModal()">取消</button>
     </div>
   </div>
+</div>
 
 <script>
 const API = (p) => p;  // 同源
@@ -440,7 +620,20 @@ let _qrPollTimer = null;
 let _activeSSE = {};
 let DL_DIR = '~/Downloads/bilibili';
 
-/* ---------- tab 切换 ---------- */
+/* ---------- SVG 图标(动态渲染处使用;静态处直接内联) ---------- */
+const _I = (p) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${p}</svg>`;
+const ICONS = {
+  refresh: _I('<polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>'),
+  list: _I('<line x1="8" y1="6" x2="21" y2="6"/><line x1="8" y1="12" x2="21" y2="12"/><line x1="8" y1="18" x2="21" y2="18"/><line x1="3" y1="6" x2="3.01" y2="6"/><line x1="3" y1="12" x2="3.01" y2="12"/><line x1="3" y1="18" x2="3.01" y2="18"/>'),
+  grid: _I('<rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/>'),
+  sun: _I('<circle cx="12" cy="12" r="5"/><line x1="12" y1="1" x2="12" y2="3"/><line x1="12" y1="21" x2="12" y2="23"/><line x1="4.22" y1="4.22" x2="5.64" y2="5.64"/><line x1="18.36" y1="18.36" x2="19.78" y2="19.78"/><line x1="1" y1="12" x2="3" y2="12"/><line x1="21" y1="12" x2="23" y2="12"/><line x1="4.22" y1="19.78" x2="5.64" y2="18.36"/><line x1="18.36" y1="5.64" x2="19.78" y2="4.22"/>'),
+  moon: _I('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
+  check: _I('<polyline points="20 6 9 17 4 12"/>'),
+  chevron: _I('<polyline points="9 18 15 12 9 6"/>'),
+};
+const icon = (name) => ICONS[name] || '';
+
+/* ---------- 登录 tabs ---------- */
 document.querySelectorAll('.tab').forEach(t => {
   t.addEventListener('click', () => {
     document.querySelectorAll('.tab').forEach(x => x.classList.remove('active'));
@@ -450,6 +643,36 @@ document.querySelectorAll('.tab').forEach(t => {
     if (t.dataset.tab !== 'qrcode' && _qrPollTimer) { clearInterval(_qrPollTimer); _qrPollTimer = null; }
   });
 });
+
+/* ---------- 页面路由(侧边栏) ---------- */
+const LIB_PAGES = ['history', 'follows', 'feed', 'fav', 'later'];
+let _libMode = 'history';
+
+function goPage(name) {
+  document.querySelectorAll('.nav-item').forEach(x => x.classList.toggle('active', x.dataset.page === name));
+  document.querySelectorAll('.page').forEach(p => p.classList.toggle('active', p.dataset.page === name));
+  if (LIB_PAGES.includes(name)) {
+    _libMode = name;
+    // 进入列表页:清空该页搜索与勾选,避免串数据
+    _libItems = [];
+    _libChecked.clear();
+    _libPage = 1;
+    if (name === 'fav') _favCurrent = null;
+    const pg = document.querySelector(`.page[data-page="${name}"]`);
+    const s = pg && pg.querySelector('.lib-search');
+    if (s) s.value = '';
+    const d = libDom();
+    if (d.pager) d.pager.style.display = 'none';
+    if (d.actions) d.actions.style.display = 'none';
+    updateHistoryMore();
+    refreshLib();
+  } else if (name === 'downloads') {
+    loadTasks();
+    loadStats();
+  } else if (name === 'settings') {
+    loadConfigIntoUI();
+  }
+}
 
 /* ---------- 登录状态 ---------- */
 let _loggedIn = false;  // 最近一次 refreshLogin 的结果(init 等处复用,免重复请求)
@@ -462,10 +685,9 @@ async function refreshLogin() {
     const loginSection = document.getElementById('login-section');
     if (r.logged_in) {
       const vip = r.vip ? ' [大会员]' : '';
-      badge.innerHTML = '✓ 已登录 ' + escapeHtml(r.uname) + vip
+      badge.innerHTML = icon('check') + ' 已登录 ' + escapeHtml(r.uname) + vip
         + ' <a href="#" onclick="logout();return false;" style="color:inherit;text-decoration:underline;font-size:12px;margin-left:6px;">退出</a>';
       badge.className = 'login-badge ok' + (r.vip ? ' vip' : '');
-      // 登录成功 → 隐藏登录区,直接展示下载区
       loginSection.style.display = 'none';
     } else {
       badge.textContent = '未登录';
@@ -479,7 +701,6 @@ async function logout() {
   if (!confirm('确定退出登录?')) return;
   await fetch(API('/api/login/logout'), { method: 'POST' });
   await refreshLogin();
-  // 清空已显示的二维码
   document.getElementById('qrcode-img').innerHTML = '';
   document.getElementById('qr-status').textContent = '';
 }
@@ -493,14 +714,13 @@ async function showQrcode() {
   try {
     const r = await (await fetch(API('/api/login/qrcode'))).json();
     if (!r.ok) throw new Error(r.error || '生成失败');
-    // 本地生成二维码图片(#9),带 key 防缓存
     imgBox.innerHTML = `<img src="${API('/api/login/qrcode-image')}?k=${encodeURIComponent(r.qrcode_key)}" width="240" height="240" alt="二维码">`;
     statusBox.textContent = '请用手机 B 站 App 扫码';
     if (_qrPollTimer) clearInterval(_qrPollTimer);
     _qrPollTimer = setInterval(() => pollLogin(r.qrcode_key), 2000);
   } catch (e) {
     imgBox.innerHTML = '';
-    statusBox.textContent = '✗ ' + e.message;
+    statusBox.textContent = e.message;
   }
 }
 
@@ -512,13 +732,13 @@ async function pollLogin(key) {
     if (r.status === 'success') {
       clearInterval(_qrPollTimer); _qrPollTimer = null;
       imgBox.innerHTML = '';
-      statusBox.innerHTML = '✓ 登录成功!';
+      statusBox.innerHTML = icon('check') + ' 登录成功!';
       await refreshLogin();
     } else if (r.status === 'scanned') {
       statusBox.textContent = '已扫码,请在手机上点击确认';
     } else if (r.status === 'expired') {
       clearInterval(_qrPollTimer); _qrPollTimer = null;
-      statusBox.textContent = '✗ 二维码已失效,请重新生成';
+      statusBox.textContent = '二维码已失效,请重新生成';
     } else {
       statusBox.textContent = '等待扫码...';
     }
@@ -543,23 +763,33 @@ async function uploadCookieTxt() {
   } catch (e) { alert('导入失败: ' + e.message); }
 }
 
-/* ---------- 解析 ---------- */
-async function parseVideo() {
-  const url = document.getElementById('url-input').value.trim();
-  if (!url) { alert('请输入视频地址'); return; }
+/* ---------- 解析:单视频/批量自动判断 ---------- */
+let _singleUrl = '';  // 单视频解析时记住 url(开始下载用)
+
+async function smartParse() {
+  const text = document.getElementById('dl-input').value.trim();
+  if (!text) { alert('请粘贴链接'); return; }
+  const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
+  // 多行,或单行但是收藏夹/合集/UP主页/稍后再看这类列表链接 → 批量;否则单视频
+  const isList = lines.length > 1 || /favlist|medialist|watchlater|space\.bilibili/i.test(lines[0]);
+  if (isList) batchParse(lines); else parseVideo(lines[0]);
+}
+
+async function parseVideo(url) {
   const btn = document.getElementById('parse-btn');
   const box = document.getElementById('parse-result');
-  // #6 解析时禁用按钮 + spinner
   btn.disabled = true;
   box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中...</div>';
+  document.getElementById('batch-result').innerHTML = '';
   try {
     const r = await (await fetch(API('/api/parse'), {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({ url })
     })).json();
     if (!r.ok) throw new Error(r.error || '解析失败');
+    _singleUrl = url;
     renderParseResult(r.info, url, r.logged_in);
   } catch (e) {
-    box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    box.innerHTML = '<div class="empty">' + e.message + '</div>';
   } finally {
     btn.disabled = false;
   }
@@ -568,14 +798,12 @@ async function parseVideo() {
 function renderParseResult(info, url, loggedIn) {
   const box = document.getElementById('parse-result');
 
-  // #2 未登录提示
   let warnHtml = '';
   if (!loggedIn) {
-    warnHtml = '<div class="warn">⚠ 未登录,可能只能下载公开画质。如需 1080P+/4K 大会员画质,请先登录。</div>';
+    warnHtml = '<div class="warn">未登录,可能只能下载公开画质。如需 1080P+/4K 大会员画质,请先登录。</div>';
   }
 
   if (info.is_multi_part && info.parts && info.parts.length > 0) {
-    // #3 多 P:先选分 P
     const partOptions = info.parts.map(p =>
       `<option value="${p.page}">P${p.page} · ${escapeHtml(p.title)} (${formatDuration(p.duration)})</option>`
     ).join('');
@@ -583,7 +811,7 @@ function renderParseResult(info, url, loggedIn) {
       ${warnHtml}
       <div class="video-card">
         <div class="video-info">
-          <div class="vt">${escapeHtml(info.title)} <span style="color:#00a1d6;font-size:13px;">(共 ${info.parts.length} P)</span></div>
+          <div class="vt">${escapeHtml(info.title)} <span style="color:var(--accent);font-size:13px;">(共 ${info.parts.length} P)</span></div>
           <div class="vm">UP主:${escapeHtml(info.uploader || '-')}</div>
           <div class="btn-row">
             <select id="part-select" onchange="loadPartFormats('${escapeAttr(url)}')">${partOptions}</select>
@@ -591,11 +819,10 @@ function renderParseResult(info, url, loggedIn) {
           <div id="part-formats" style="margin-top:10px;"><div class="hint"><span class="spinner"></span>加载清晰度...</div></div>
         </div>
       </div>`;
-    loadPartFormats(url);  // 默认加载 P1
+    loadPartFormats(url);
     return;
   }
 
-  // 单 P
   box.innerHTML = `
     ${warnHtml}
     <div class="video-card">
@@ -625,7 +852,7 @@ async function loadPartFormats(url) {
       ${qualitySelectHtml(r.info.formats, r.info.best_label)}
       <div class="btn-row"><button onclick="startDownload()">开始下载</button></div>`;
   } catch (e) {
-    fbox.innerHTML = '<div class="hint">✗ ' + e.message + '</div>';
+    fbox.innerHTML = '<div class="hint">' + e.message + '</div>';
   }
 }
 
@@ -633,15 +860,13 @@ function qualitySelectHtml(formats, bestLabel) {
   const videoOnly = formats.filter(f => f.kind === 'video' || f.kind === 'av');
   let options = videoOnly.map(f => {
     const sel = (f.label === bestLabel) ? 'selected' : '';
-    // #10 显示预估大小
     const sizeTxt = f.size_mb ? ` (${f.size_mb} MB)` : '';
     return `<option value="${f.label}" ${sel}>${f.label}${sizeTxt}</option>`;
   }).join('');
-  // 仅音频(有独立音频轨时可选)
   const audio = formats.find(f => f.kind === 'audio');
   if (audio) {
     const sizeTxt = audio.size_mb ? ` (${audio.size_mb} MB)` : '';
-    options += `<option value="音频">🎵 仅音频${sizeTxt}</option>`;
+    options += `<option value="音频">仅音频${sizeTxt}</option>`;
   }
   if (!options) return '<div class="hint">无可用清晰度</div>';
   return `<div class="btn-row"><select id="quality-select">${options}</select></div>`;
@@ -649,7 +874,7 @@ function qualitySelectHtml(formats, bestLabel) {
 
 /* ---------- 下载 ---------- */
 async function startDownload() {
-  const url = document.getElementById('url-input').value.trim();
+  const url = _singleUrl;
   const label = document.getElementById('quality-select')?.value || '';
   const partSel = document.getElementById('part-select');
   const page = partSel ? parseInt(partSel.value) : 1;
@@ -660,49 +885,35 @@ async function startDownload() {
       body: JSON.stringify({ url, label, page })
     })).json();
     if (!r.ok) {
-      // #7 重复下载拦截:已有同清晰度在跑
       if (r.task_id) {
-        alert(r.error + ',已跳转查看该任务');
+        alert(r.error + ',请在「下载记录」查看该任务');
       } else {
         alert(r.error || '启动下载失败');
       }
       return;
     }
     subscribeProgress(r.task_id);
+    goPage('downloads');
   } catch (e) {
     alert(e.message);
   }
 }
 
 /* ---------- 批量下载 ---------- */
-// 单/批量 切换
-document.querySelectorAll('.tab[data-dlmode]').forEach(t => {
-  t.addEventListener('click', () => {
-    document.querySelectorAll('.tab[data-dlmode]').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    const isBatch = t.dataset.dlmode === 'batch';
-    document.getElementById('dl-single').style.display = isBatch ? 'none' : '';
-    document.getElementById('dl-batch').style.display = isBatch ? '' : 'none';
-  });
-});
-
 let _batchItems = [];  // 解析出的批量项
 
-async function batchParse() {
-  const text = document.getElementById('batch-input').value.trim();
-  if (!text) { alert('请粘贴链接'); return; }
+async function batchParse(lines) {
   const box = document.getElementById('batch-result');
-  const btn = document.getElementById('batch-parse-btn');
+  const btn = document.getElementById('parse-btn');
   btn.disabled = true;
+  document.getElementById('parse-result').innerHTML = '';
   box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中...(收藏夹/合集可能需要一点时间)</div>';
 
-  // 判断:单行且是收藏夹/合集链接 → url 模式;否则多链接模式
-  const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
-  const isSingleFav = lines.length === 1 && /favlist|medialist|watchlater|space\.bilibili/i.test(lines[0]);
+  const isSingleList = lines.length === 1;
 
   try {
     let r;
-    if (isSingleFav) {
+    if (isSingleList) {
       r = await (await fetch(API('/api/batch/parse'), {
         method: 'POST', headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({ url: lines[0] })
@@ -715,9 +926,9 @@ async function batchParse() {
     }
     if (!r.ok) throw new Error(r.error || '解析失败');
     _batchItems = r.items || [];
-    renderBatchList(r.title || (isSingleFav ? '收藏夹/合集' : '多链接'));
+    renderBatchList(r.title || (isSingleList ? '收藏夹/合集' : '多链接'));
   } catch (e) {
-    box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    box.innerHTML = '<div class="empty">' + e.message + '</div>';
   } finally {
     btn.disabled = false;
   }
@@ -729,7 +940,6 @@ function renderBatchList(title) {
     box.innerHTML = '<div class="empty">未解析出任何视频</div>';
     return;
   }
-  // 勾选列表 + 全选/全不选 + 清晰度选择 + 批量下载按钮
   const itemRows = _batchItems.map((it, i) => `
     <label style="display:flex;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--border-soft);cursor:pointer;">
       <input type="checkbox" data-bidx="${i}" checked>
@@ -754,12 +964,11 @@ function renderBatchList(title) {
         <option value="720P">720P</option>
         <option value="480P">480P</option>
         <option value="360P">360P</option>
-        <option value="音频">🎵 仅音频</option>
+        <option value="音频">仅音频</option>
       </select>
       <button onclick="batchDownload()">批量下载</button>
     </div>
-    <div class="hint">批量下载最多 2 个同时进行,其余排队;已下载过的项会自动跳过。</div>`;
-  // 更新计数 + 监听勾选变化
+    <div class="hint">批量下载按设置的并发数同时进行,其余排队;已下载过的项会自动跳过。</div>`;
   document.querySelectorAll('input[data-bidx]').forEach(cb => cb.addEventListener('change', updateBatchCount));
   updateBatchCount();
 }
@@ -794,27 +1003,33 @@ async function batchDownload() {
     })).json();
     if (!r.ok) throw new Error(r.error || '启动失败');
     alert(`已加入 ${r.count} 个下载任务${skipped ? `(跳过 ${skipped} 个已下载)` : ''}`);
-    // 订阅所有新任务进度
     r.task_ids.forEach(subscribeProgress);
   } catch (e) {
     alert(e.message);
   }
 }
 
-/* ---------- 我的B站:观看历史 ---------- */
-let _libItems = [];  // 全量数据(历史/收藏夹通用)
-let _libPage = 1;          // 当前页码
-let _libPageSize = 20;     // 每页条数
+/* ---------- 列表页公共(分页/搜索/渲染) ---------- */
+let _libItems = [];       // 当前页全量数据
+let _libPage = 1;         // 当前页码
+let _libPageSize = 20;    // 每页条数
 
-/* 带 _libItems 原始索引的项(勾选状态按原始索引跟踪,渲染免 indexOf 反查) */
 const withIdx = (arr) => arr.map((it, idx) => ({ it, idx }));
 
-/* 分页渲染:从 _libItems 中取当前页,渲染到 history-list + 更新分页器 */
+/* 当前列表页对应的 DOM(按 _libMode 命名:list-<mode> / meta-<mode> / ...) */
+function libDom() {
+  const m = _libMode;
+  return {
+    list: document.getElementById('list-' + m),
+    meta: document.getElementById('meta-' + m),
+    pager: document.getElementById('pager-' + m),
+    actions: document.getElementById('actions-' + m),
+  };
+}
+
 function renderPage() {
-  const list = document.getElementById('history-list');
-  const meta = document.getElementById('history-meta');
-  list.style.display = '';
-  // 搜索过滤(如果有)
+  const d = libDom();
+  if (!d.list) return;
   const q = getLibSearchQuery();
   let filtered = _libItems;
   if (q) {
@@ -831,43 +1046,38 @@ function renderPage() {
   filtered.forEach((it, idx) => {
     if (idx >= start && idx < start + _libPageSize) pagePairs.push({ it, idx });
   });
-  renderLibList(pagePairs, list);
-  // meta
-  const baseText = `共 ${_libItems.length} 条`;
-  meta.textContent = q ? `${baseText} · 过滤 ${filtered.length}/${_libItems.length} · 第${_libPage}/${totalPages}页` : `${baseText} · 第${_libPage}/${totalPages}页`;
-  meta.dataset.base = baseText;
-  // 分页器
+  renderLibList(pagePairs, d.list);
+  if (d.meta) {
+    const baseText = `共 ${_libItems.length} 条`;
+    d.meta.textContent = q
+      ? `${baseText} · 过滤 ${filtered.length}/${_libItems.length} · 第${_libPage}/${totalPages}页`
+      : `${baseText} · 第${_libPage}/${totalPages}页`;
+  }
   renderPaginator(totalPages, filtered.length);
-  document.getElementById('history-actions').style.display = pagePairs.length ? '' : 'none';
+  if (d.actions) d.actions.style.display = pagePairs.length ? '' : 'none';
 }
 
-/* 渲染分页器(页码 + 每页条数) */
 function renderPaginator(totalPages, totalItems) {
-  let pager = document.getElementById('lib-pager');
+  const pager = libDom().pager;
   if (!pager) return;
   if (totalItems <= _libPageSize && _libPage === 1) {
-    // 数据少于一页,不显示分页器
     pager.style.display = 'none';
     return;
   }
   pager.style.display = '';
   let html = `<div class="btn-row" style="margin-top:10px;justify-content:center;">`;
-  // 上一页
-  html += `<button class="small secondary" ${_libPage <= 1 ? 'disabled' : ''} onclick="goPage(${_libPage - 1})">‹ 上一页</button>`;
-  // 页码(最多显示 7 个)
+  html += `<button class="small secondary" ${_libPage <= 1 ? 'disabled' : ''} onclick="goLibPage(${_libPage - 1})">上一页</button>`;
   const maxShow = 7;
   let s = Math.max(1, _libPage - 3);
   let e = Math.min(totalPages, s + maxShow - 1);
   s = Math.max(1, e - maxShow + 1);
-  if (s > 1) html += `<button class="small secondary" onclick="goPage(1)">1</button><span style="color:var(--text-mute);">…</span>`;
+  if (s > 1) html += `<button class="small secondary" onclick="goLibPage(1)">1</button><span style="color:var(--text-mute);">…</span>`;
   for (let i = s; i <= e; i++) {
-    html += `<button class="small ${i === _libPage ? '' : 'secondary'}" ${i === _libPage ? 'disabled' : ''} onclick="goPage(${i})">${i}</button>`;
+    html += `<button class="small ${i === _libPage ? '' : 'secondary'}" ${i === _libPage ? 'disabled' : ''} onclick="goLibPage(${i})">${i}</button>`;
   }
-  if (e < totalPages) html += `<span style="color:var(--text-mute);">…</span><button class="small secondary" onclick="goPage(${totalPages})">${totalPages}</button>`;
-  // 下一页
-  html += `<button class="small secondary" ${_libPage >= totalPages ? 'disabled' : ''} onclick="goPage(${_libPage + 1})">下一页 ›</button>`;
-  // 每页条数
-  html += `<select id="lib-page-size" onchange="changePageSize(this.value)" style="margin-left:16px;">`;
+  if (e < totalPages) html += `<span style="color:var(--text-mute);">…</span><button class="small secondary" onclick="goLibPage(${totalPages})">${totalPages}</button>`;
+  html += `<button class="small secondary" ${_libPage >= totalPages ? 'disabled' : ''} onclick="goLibPage(${_libPage + 1})">下一页</button>`;
+  html += `<select class="lib-page-size" onchange="changePageSize(this.value)" style="margin-left:16px;">`;
   [10, 20, 50, 100].forEach(n => {
     html += `<option value="${n}" ${n === _libPageSize ? 'selected' : ''}>${n}条/页</option>`;
   });
@@ -875,11 +1085,11 @@ function renderPaginator(totalPages, totalItems) {
   pager.innerHTML = html;
 }
 
-function goPage(p) {
+function goLibPage(p) {
   _libPage = p;
   renderPage();
-  // 滚动到列表顶部
-  document.getElementById('history-list').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const d = libDom();
+  if (d.list) d.list.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
 function changePageSize(n) {
@@ -888,16 +1098,14 @@ function changePageSize(n) {
   renderPage();
 }
 
-/* 观看历史:服务端分页(B站每页上限 100 条),逐页追加,不再一次拉完 */
-let _histServerPage = 0;   // 已拉取的 B 站服务端历史页码
+/* ---------- 观看历史 ---------- */
+let _histServerPage = 0;
 let _histHasMore = false;
 
 async function loadHistory() {
-  const list = document.getElementById('history-list');
-  const meta = document.getElementById('history-meta');
-  list.style.display = '';
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
-  meta.textContent = '';
+  const d = libDom();
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
+  d.meta.textContent = '';
   _libItems = [];
   _libChecked.clear();
   _libPage = 1;
@@ -915,14 +1123,13 @@ async function fetchHistoryPage() {
     if (_histServerPage === 1) {
       _libItems = items;
     } else {
-      // 翻页间隙可能产生新观看记录,按 bvid 去重
       const seen = new Set(_libItems.map(it => it.bvid));
       _libItems = _libItems.concat(items.filter(it => !seen.has(it.bvid)));
     }
     renderPage();
   } catch (e) {
-    document.getElementById('history-list').innerHTML =
-      `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadHistory()">重试</button></div>`;
+    libDom().list.innerHTML =
+      `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
     _histHasMore = false;
   }
   updateHistoryMore();
@@ -934,7 +1141,7 @@ function updateHistoryMore() {
   if (_libMode === 'history' && _histHasMore) {
     box.style.display = '';
     box.innerHTML = `<div class="btn-row" style="margin-top:6px;justify-content:center;">
-      <button class="small secondary" onclick="loadMoreHistory()">加载更早的历史 ↓</button>
+      <button class="small secondary" onclick="loadMoreHistory()">加载更早的历史</button>
     </div>`;
   } else {
     box.style.display = 'none';
@@ -947,86 +1154,47 @@ async function loadMoreHistory() {
   await fetchHistoryPage();
 }
 
-/* ---------- 我的B站:关注更新 (A2) + UP清单 (A3) ---------- */
-let _libMode = 'history';
-
-// 标签切换
-document.querySelectorAll('.tab[data-lib]').forEach(t => {
-  t.addEventListener('click', () => {
-    document.querySelectorAll('.tab[data-lib]').forEach(x => x.classList.remove('active'));
-    t.classList.add('active');
-    _libMode = t.dataset.lib;
-    const isSimple = (_libMode === 'history' || _libMode === 'follow' || _libMode === 'later');
-    document.getElementById('lib-history').style.display = isSimple ? '' : 'none';
-    document.getElementById('lib-up').style.display = _libMode === 'up' ? '' : 'none';
-    document.getElementById('lib-fav').style.display = _libMode === 'fav' ? '' : 'none';
-    document.getElementById('lib-later').style.display = _libMode === 'later' ? '' : 'none';
-    // 切 tab 时清空搜索框和过滤态
-    const s = document.getElementById('lib-search');
-    if (s) s.value = '';
-    const metaEl = document.getElementById('history-meta');
-    if (metaEl) delete metaEl.dataset.base;
-    // 清空共享数据,避免上个 tab 的数据串到新 tab(防 R-串数据 bug)
-    _libItems = [];
-    _libChecked.clear();
-    // 隐藏所有列表容器(由各 loadX 函数按需显示)
-    ['history-list', 'history-more', 'later-list', 'fav-content-list', 'up-list'].forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.style.display = 'none';
-    });
-    document.getElementById('history-actions').style.display = 'none';
-    // 关注 tab 专用: 显示「强制刷新」按钮
-    document.getElementById('follow-force-row').style.display =
-      _libMode === 'follow' ? '' : 'none';
-    refreshLib();
-  });
-});
-
-// force=true 用于「刷新」按钮:跳缓存重抓
-// 关注 tab 专用缓存(避免与 _libItems 串数据)
+/* ---------- 更新推送(B 站关注) ---------- */
 let _followItemsCache = [];
 
 async function loadFollow(force) {
-  const list = document.getElementById('history-list');
-  const meta = document.getElementById('history-meta');
-  list.style.display = '';
-  // 用关注专用缓存即时显示,避免 9 秒 spinner 卡死(且不会用历史的 _libItems)
+  const d = libDom();
   if (!force && _followItemsCache.length > 0) {
     _libItems = _followItemsCache;
-    renderLibList(withIdx(_libItems), list);
-    meta.innerHTML = '<span class="spinner"></span> 后台刷新中...';
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+    renderPage();
+    d.meta.innerHTML = '<span class="spinner"></span> 后台刷新中...';
     fetch(API('/api/follow-updates'))
       .then(r => r.json())
       .then(r => {
         if (r.ok) {
           _followItemsCache = r.items || [];
           _libItems = _followItemsCache;
-          renderLibList(withIdx(_libItems), list);
-          meta.textContent = `共 ${_libItems.length} 条(按时间倒序,后台刷新完成)`;
+          if (_libMode === 'feed') {
+            renderPage();
+            d.meta.textContent = `共 ${_libItems.length} 条(按时间倒序,后台刷新完成)`;
+          }
         }
       })
-      .catch(() => { meta.textContent = '后台刷新失败'; });
+      .catch(() => { if (_libMode === 'feed') d.meta.textContent = '后台刷新失败'; });
     return;
   }
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>正在串行拉取关注 UP 的最新投稿(防限流,30 个 UP 约需 45 秒)...</div>';
-  meta.textContent = '';
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>正在串行拉取关注 UP 的最新投稿(防限流,30 个 UP 约需 45 秒)...</div>';
+  d.meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/follow-updates' + (force ? '?force=true' : '')))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    _followItemsCache = _libItems;  // 存关注专用缓存
-    renderLibList(withIdx(_libItems), list);
-    meta.textContent = `共 ${_libItems.length} 条(按时间倒序)`;
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+    _followItemsCache = _libItems;
+    renderPage();
+    d.meta.textContent = `共 ${_libItems.length} 条(按时间倒序)`;
   } catch (e) {
-    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadFollow()">重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadFollow()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
-/* ---------- A4: 收藏夹 ---------- */
+/* ---------- 收藏夹 ---------- */
 let _favFolders = [];
-let _favCurrent = null;  // 当前进入的收藏夹 fid
+let _favCurrent = null;
 
 async function favLoadFolders() {
   const box = document.getElementById('fav-folder-list');
@@ -1043,20 +1211,20 @@ async function favLoadFolders() {
     }
     box.innerHTML = `<div class="btn-row" style="margin-top:0;margin-bottom:10px;">
       <span style="color:var(--text-mute);font-size:12px;">共 ${_favFolders.length} 个收藏夹</span>
-      <button class="small secondary" onclick="favLoadFolders()">↻ 刷新</button>
+      <button class="small secondary" onclick="favLoadFolders()">${icon('refresh')} 刷新</button>
     </div>
     <div style="border:1px solid var(--border-card);border-radius:6px;overflow:hidden;">` +
       _favFolders.map(f => `
         <div onclick="favEnter(${f.fid})" style="display:flex;align-items:center;gap:10px;padding:10px;border-bottom:1px solid var(--border-soft);cursor:pointer;transition:background .1s;" onmouseover="this.style.background='var(--accent-soft)'" onmouseout="this.style.background=''">
-          <div style="width:32px;height:32px;background:#00a1d6;color:#fff;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;">${escapeHtml((f.title || '?').slice(0,1))}</div>
+          <div style="width:32px;height:32px;background:var(--accent);color:#fff;border-radius:6px;display:flex;align-items:center;justify-content:center;font-size:14px;font-weight:600;">${escapeHtml((f.title || '?').slice(0,1))}</div>
           <div style="flex:1;">
             <div style="font-weight:600;font-size:14px;">${escapeHtml(f.title)}</div>
             <div style="font-size:12px;color:var(--text-mute);">${f.media_count || 0} 个视频</div>
           </div>
-          <span style="color:var(--text-mute);">›</span>
+          <span style="color:var(--text-mute);display:inline-flex;">${icon('chevron')}</span>
         </div>`).join('') + '</div>';
   } catch (e) {
-    box.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    box.innerHTML = `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
@@ -1068,23 +1236,19 @@ async function favEnter(fid) {
   const panel = document.getElementById('fav-content-panel');
   panel.style.display = '';
   document.getElementById('fav-current-title').textContent = folder.title;
-  document.getElementById('fav-meta').textContent = '';
-  const list = document.getElementById('fav-content-list');
-  if (!list) {
-    console.error('fav-content-list 元素不存在');
-    return;
-  }
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
-  list.style.display = '';
+  const d = libDom();
+  d.meta.textContent = '';
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
   try {
     const r = await (await fetch(API(`/api/fav-content?fid=${fid}`))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(withIdx(_libItems), list);
-    document.getElementById('fav-meta').textContent = `共 ${_libItems.length} 条`;
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
+    _libChecked.clear();
+    _libPage = 1;
+    renderPage();
+    d.meta.textContent = `共 ${_libItems.length} 条`;
   } catch (e) {
-    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="favEnter(${fid})">↻ 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="favEnter(${fid})">${icon('refresh')} 重试</button></div>`;
   }
 }
 
@@ -1092,9 +1256,15 @@ function favBack() {
   _favCurrent = null;
   document.getElementById('fav-content-panel').style.display = 'none';
   document.getElementById('fav-folder-list').style.display = '';
-  // 重新加载列表以确保计数最新
   favLoadFolders();
 }
+
+function favRefresh() {
+  if (_favCurrent) favEnter(_favCurrent);
+  else favLoadFolders();
+}
+
+/* ---------- 关注账号(手动 UP 清单) ---------- */
 async function upAdd() {
   const input = document.getElementById('up-add-input');
   const v = input.value.trim();
@@ -1115,8 +1285,8 @@ async function upListRender() {
   const panel = document.getElementById('up-list-panel');
   const r = await (await fetch(API('/api/up-list'))).json();
   if (!r.ok || r.ups.length === 0) {
-    panel.style.display = 'none';
-    if (r.ups.length === 0) { panel.style.display = ''; panel.innerHTML = '<div style="color:var(--text-mute);">清单为空。粘贴主页链接或 mid 加 UP。</div>'; }
+    panel.style.display = '';
+    panel.innerHTML = '<div style="color:var(--text-mute);font-size:13px;">清单为空。粘贴主页链接或 mid 加 UP。</div>';
     return;
   }
   panel.style.display = '';
@@ -1141,7 +1311,7 @@ async function upToggleAuto(mid, auto) {
       body: JSON.stringify({ mid, auto })
     })).json();
     if (!r.ok) { alert('切换失败'); upListRender(); return; }
-    if (auto) alert(`已开启自动追更。新投稿会按设置的间隔自动入队下载(串行低速,不会立刻看到;队列区可见)。`);
+    if (auto) alert('已开启自动追更。新投稿会按设置的间隔自动入队下载(串行低速,队列页可见)。');
     upListRender();
   } catch (e) { alert(e.message); }
 }
@@ -1156,101 +1326,80 @@ async function upRemove(mid) {
 }
 
 async function upRefresh() {
-  const list = document.getElementById('up-list');
-  const meta = document.getElementById('up-meta');
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>串行拉取清单 UP 的最新视频(防限流,UP 多时约需数十秒)...</div>';
-  list.style.display = '';
-  meta.textContent = '';
+  const d = libDom();
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>串行拉取清单 UP 的最新视频(防限流,UP 多时约需数十秒)...</div>';
+  d.meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/up-updates'))).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
     _libItems = r.items || [];
-    renderLibList(withIdx(_libItems), list);
-    meta.textContent = r.ups.length === 0 ? '清单为空,先添加 UP'
+    renderPage();
+    d.meta.textContent = r.ups.length === 0 ? '清单为空,先添加 UP'
       : `共 ${_libItems.length} 条新增(对比上次刷新)`;
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = '<div class="empty">✗ ' + e.message + '</div>';
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="upRefresh()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
 async function upShowAll() {
-  const list = document.getElementById('up-list');
-  const meta = document.getElementById('up-meta');
-  list.style.display = '';
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>读取本地历史...</div>';
-  meta.textContent = '';
+  const d = libDom();
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>读取本地历史...</div>';
+  d.meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/up-history'))).json();
     if (!r.ok) throw new Error(r.error || '读取失败');
     _libItems = r.items || [];
-    renderLibList(withIdx(_libItems), list);
-    meta.textContent = _libItems.length
+    renderPage();
+    d.meta.textContent = _libItems.length
       ? `共 ${_libItems.length} 条(本地历史,上限 100 条)`
       : '历史为空——点「刷新看新增」后,发现的视频会存在这里';
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
   } catch (e) {
-    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="upShowAll()">重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="upShowAll()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
-/* ---------- A5: 稍后再看 ---------- */
+/* ---------- 稍后再看 ---------- */
+async function loadWatchlater() {
+  const d = libDom();
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
+  d.meta.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/watchlater'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    renderPage();
+    d.meta.textContent = `共 ${_libItems.length} 条`;
+  } catch (e) {
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
+  }
+}
+
+/* 各页面进入时的加载分发 */
 function refreshLib() {
-  if (_libMode === 'follow') loadFollow();
-  else if (_libMode === 'up') upRefresh();
+  if (_libMode === 'feed') loadFollow();
+  else if (_libMode === 'follows') { upListRender(); upRefresh(); }
   else if (_libMode === 'fav') favLoadFolders();
   else if (_libMode === 'later') loadWatchlater();
   else loadHistory();
 }
 
-async function loadWatchlater() {
-  const list = document.getElementById('later-list');
-  const meta = document.getElementById('later-meta');
-  list.style.display = '';
-  list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
-  list.style.display = '';
-  meta.textContent = '';
-  try {
-    const r = await (await fetch(API('/api/watchlater'))).json();
-    if (!r.ok) throw new Error(r.error || '加载失败');
-    _libItems = r.items || [];
-    renderLibList(withIdx(_libItems), list);
-    meta.textContent = `共 ${_libItems.length} 条`;
-    document.getElementById('history-actions').style.display = _libItems.length ? '' : 'none';
-  } catch (e) {
-    list.innerHTML = `<div class="empty">✗ ${e.message}<br><button class="small secondary" style="margin-top:8px;" onclick="loadWatchlater()">重试</button></div>`;
-  }
-}
-
+/* ---------- 列表项渲染 ---------- */
 function renderLibList(pairs, container) {
   // pairs: [{it, idx}] — idx 是 _libItems 的原始索引,勾选状态按它跟踪
   if (pairs.length === 0) {
-    // 区分"没数据"和"搜索无结果":搜索框空 = 列表本来就空
-    const q = (document.getElementById('lib-search')?.value || '').trim();
+    const q = getLibSearchQuery();
     const isFiltering = q.length > 0;
-    // 根据容器 id 推断该调哪个 loadX
-    const retryMap = {
-      'history-list': 'loadHistory',
-      'fav-content-list': 'favEnter()',
-      'fav-folder-list': 'favLoadFolders',
-      'later-list': 'loadWatchlater',
-      'up-list': 'upRefresh',
-    };
-    // 特殊:history-list 可能是关注 tab,需要按 _libMode 区分
-    let retryFn = retryMap[container.id] || 'loadHistory';
-    if (container.id === 'history-list' && _libMode === 'follow') retryFn = 'loadFollow';
-    if (container.id === 'fav-content-list') {
-      // favEnter 需要 fid 参数,这里只能提示用户回到收藏夹列表
-      retryFn = 'favLoadFolders';
-    }
+    const retryMap = { history: 'loadHistory', feed: 'loadFollow', follows: 'upRefresh',
+                       fav: 'favLoadFolders', later: 'loadWatchlater' };
+    const retryFn = retryMap[_libMode] || 'loadHistory';
     const hint = isFiltering
       ? '没有匹配结果(试试其他关键词)'
       : '暂无内容(可能 B 站限流或账号无数据,点下方重试)';
-    container.innerHTML = `<div class="empty">${hint}<br><button class="small secondary" style="margin-top:8px;" onclick="${retryFn}()">↻ 重新加载</button></div>`;
+    container.innerHTML = `<div class="empty">${hint}<br><button class="small secondary" style="margin-top:8px;" onclick="${retryFn}()">${icon('refresh')} 重新加载</button></div>`;
     return;
   }
   const isGrid = _libView === 'grid';
-  container.className = isGrid ? 'lib-grid' : '';
+  container.className = 'lib-list' + (isGrid ? ' lib-grid' : '');
   container.innerHTML = pairs.map(({ it, idx: origIdx }) => {
     const checked = origIdx >= 0 && _libChecked.has(origIdx) ? 'checked' : '';
     const badgeHtml = isUrlDownloaded(it.url)
@@ -1260,13 +1409,12 @@ function renderLibList(pairs, container) {
     const progressHtml = showProgress
       ? `<div style="margin-top:4px;display:flex;align-items:center;gap:6px;">
            <div style="flex:1;background:var(--bg-muted);height:5px;border-radius:3px;overflow:hidden;">
-             <div style="background:#00a1d6;height:100%;width:${Math.min(pct, 100)}%;transition:width .3s;"></div>
+             <div style="background:var(--accent);height:100%;width:${Math.min(pct, 100)}%;transition:width .3s;"></div>
            </div>
-           <span style="font-size:11px;color:#00a1d6;font-weight:600;min-width:50px;text-align:right;">${pct}%</span>
+           <span style="font-size:11px;color:var(--accent);font-weight:600;min-width:50px;text-align:right;">${pct}%</span>
          </div>`
       : '';
     if (isGrid) {
-      // 网格:封面在上,标题/UP 叠在下方,复选框叠右上角
       return `
       <label class="video-item" style="position:relative;">
         <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)" class="vi-check">
@@ -1278,7 +1426,6 @@ function renderLibList(pairs, container) {
         ${progressHtml}
       </label>`;
     }
-    // 列表(默认)
     return `
     <label style="display:flex;gap:10px;align-items:center;padding:8px;border-bottom:1px solid var(--border-soft);cursor:pointer;">
       <input type="checkbox" data-libidx="${origIdx}" ${checked} onchange="toggleLibCheck(${origIdx}, this.checked)">
@@ -1296,12 +1443,13 @@ function renderLibList(pairs, container) {
   updateLibCount();
 }
 
-/* ---------- C2: 列表/网格视图切换 ---------- */
+/* ---------- 列表/网格视图切换 ---------- */
 let _libView = localStorage.getItem('bd_lib_view') || 'list';
 
 function updateLibViewBtn() {
-  const btn = document.getElementById('lib-view-btn');
-  if (btn) btn.textContent = _libView === 'grid' ? '🟦 网格' : '📋 列表';
+  document.querySelectorAll('.view-btn').forEach(btn => {
+    btn.innerHTML = _libView === 'grid' ? icon('grid') : icon('list');
+  });
 }
 
 function toggleLibView() {
@@ -1311,10 +1459,8 @@ function toggleLibView() {
   applyLibFilter();
 }
 
-updateLibViewBtn();
-
-/* ---------- B5: 搜索过滤 ---------- */
-const _libChecked = new Set();  // _libItems 原始索引的勾选集合(跨重渲染保持)
+/* ---------- 搜索过滤 ---------- */
+const _libChecked = new Set();
 
 function toggleLibCheck(origIdx, checked) {
   if (checked) _libChecked.add(origIdx); else _libChecked.delete(origIdx);
@@ -1322,36 +1468,38 @@ function toggleLibCheck(origIdx, checked) {
 }
 
 function getLibSearchQuery() {
-  const el = document.getElementById('lib-search');
+  const pg = document.querySelector('.page.active');
+  const el = pg && pg.querySelector('.lib-search');
   return el ? el.value.trim().toLowerCase() : '';
 }
 
 function applyLibFilter() {
-  // 搜索过滤时重置到第1页,用 renderPage 统一渲染(分页+过滤)
   _libPage = 1;
   renderPage();
 }
 
 function libToggleAll(checked) {
-  // 只对当前可见(过滤后)的项生效
-  const boxes = document.querySelectorAll('#history-list input[data-libidx]');
-  boxes.forEach(cb => {
+  document.querySelectorAll('.page.active input[data-libidx]').forEach(cb => {
     const idx = parseInt(cb.dataset.libidx);
     cb.checked = checked;
     if (checked) _libChecked.add(idx); else _libChecked.delete(idx);
   });
   updateLibCount();
 }
+
 function updateLibCount() {
-  const n = document.querySelectorAll('input[data-libidx]:checked').length;
-  const el = document.getElementById('lib-count');
+  const n = document.querySelectorAll('.page.active input[data-libidx]:checked').length;
+  const pg = document.querySelector('.page.active');
+  const el = pg && pg.querySelector('.lib-count');
   if (el) el.textContent = n;
 }
 
 async function libDownload() {
-  const checked = [...document.querySelectorAll('input[data-libidx]:checked')];
+  const checked = [...document.querySelectorAll('.page.active input[data-libidx]:checked')];
   if (checked.length === 0) { alert('请至少勾选一项'); return; }
-  const label = document.getElementById('lib-quality').value;
+  const pg = document.querySelector('.page.active');
+  const qSel = pg && pg.querySelector('.lib-quality');
+  const label = qSel ? qSel.value : '';
   let items = checked.map(cb => {
     const it = _libItems[parseInt(cb.dataset.libidx)];
     return { url: it.url, title: it.title, page: 1 };
@@ -1367,6 +1515,7 @@ async function libDownload() {
     if (!r.ok) throw new Error(r.error || '启动失败');
     alert(`已加入 ${r.count} 个下载任务${skipped ? `(跳过 ${skipped} 个已下载)` : ''}`);
     r.task_ids.forEach(subscribeProgress);
+    goPage('downloads');
   } catch (e) { alert(e.message); }
 }
 
@@ -1387,12 +1536,11 @@ function subscribeProgress(taskId, retries) {
   const es = new EventSource(API('/api/progress/' + taskId));
   _activeSSE[taskId] = es;
   es.onmessage = (ev) => {
-    retries = 0;  // 收到消息说明连接正常,重置重试计数
+    retries = 0;
     const t = JSON.parse(ev.data);
     renderTask(t);
     if (t.status === 'done') {
-      loadStats();   // C3: 完成后刷新统计
-      // 刷新已下载角标(列表项可能因此显示"已下载")
+      loadStats();
       loadTasks().then(() => refreshLibBadges());
     }
     if (['done', 'failed', 'cancelled'].includes(t.status)) {
@@ -1401,7 +1549,6 @@ function subscribeProgress(taskId, retries) {
   };
   es.onerror = () => {
     es.close(); delete _activeSSE[taskId];
-    // 断线重连:后端重启/网络抖动时,最多重试 3 次,间隔递增
     if (retries < 3) {
       setTimeout(() => subscribeProgress(taskId, retries + 1), 2000 * (retries + 1));
     }
@@ -1425,7 +1572,7 @@ function renderTask(t) {
     cancelled: '已取消', interrupted: '已中断'
   };
   const speedTxt = t.speed > 1024 ? (t.speed / 1024).toFixed(1) + ' MB/s' : (t.speed || 0).toFixed(0) + ' KB/s';
-  const partTag = t.page && t.page > 1 ? ` <span style="color:#00a1d6;">P${t.page}</span>` : '';
+  const partTag = t.page && t.page > 1 ? ` <span style="color:var(--accent);">P${t.page}</span>` : '';
   let progInner = '';
   let actions = '';
   if (t.status === 'downloading') {
@@ -1436,16 +1583,14 @@ function renderTask(t) {
       </div>
       <div class="ti-actions"><button class="small danger" onclick="cancelTask('${t.task_id}')">取消</button></div>`;
   } else if (t.status === 'merging') {
-    // #5 合并阶段动画
     progInner = `<div class="merging-anim"><span class="spinner"></span>正在用 ffmpeg 合并音视频...</div>`;
   } else if (t.status === 'retrying') {
-    // B1 重试中
     progInner = `<div class="merging-anim"><span class="spinner"></span>${escapeHtml(t.error || '正在重试...')}</div>`;
     actions = `<div class="ti-actions"><button class="small danger" onclick="cancelTask('${t.task_id}')">取消</button></div>`;
   } else if (t.status === 'cancelling') {
     progInner = `<div class="hint">正在取消...</div>`;
   } else if (t.status === 'done') {
-    progInner = `<div class="hint">✓ 已保存到 ${escapeHtml(DL_DIR)}</div>`;
+    progInner = `<div class="hint">已保存到 ${escapeHtml(DL_DIR)}</div>`;
     actions = `<div class="ti-actions"><button class="small secondary" onclick="openFolder()">在 Finder 中显示</button></div>`;
   } else if (t.status === 'failed') {
     progInner = `<div class="ti-err">${escapeHtml(t.error || '下载失败')}</div>`;
@@ -1479,7 +1624,7 @@ async function cancelTask(taskId) {
 }
 
 /* ---------- 队列删除 ---------- */
-let _delPending = null;  // {ids, isClearAll}
+let _delPending = null;
 
 function deleteSelectedTasks() {
   const ids = [..._queueChecked];
@@ -1513,7 +1658,6 @@ async function delChoice(deleteFile) {
       method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
     })).json();
     if (!r.ok) throw new Error(r.error || '删除失败');
-    // 清掉已删任务的勾选态
     p.ids.forEach(id => _queueChecked.delete(id));
     await loadTasks();
   } catch (e) { alert(e.message); }
@@ -1537,13 +1681,10 @@ function escapeHtml(s) {
 }
 function escapeAttr(s) { return escapeHtml(s); }
 
-/* ---------- 设置 ---------- */
-/* ---------- C1: 主题(浅/深/跟随系统) ---------- */
+/* ---------- 主题 ---------- */
 function applyTheme(theme) {
-  // theme: 'light' | 'dark' | 'auto'
   if (theme === 'auto') {
     document.body.classList.remove('dark');
-    // 跟随系统
     const sysDark = window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches;
     if (sysDark) document.body.classList.add('dark');
   } else if (theme === 'dark') {
@@ -1551,30 +1692,22 @@ function applyTheme(theme) {
   } else {
     document.body.classList.remove('dark');
   }
-  // 更新图标
   const btn = document.getElementById('theme-btn');
   if (btn) {
     const isDark = document.body.classList.contains('dark');
-    btn.textContent = isDark ? '☀' : '🌙';
+    btn.innerHTML = isDark ? icon('sun') : icon('moon');
+    btn.title = isDark ? '当前深色,点击切换' : '当前浅色,点击切换';
   }
 }
 
 function toggleTheme() {
-  // 切换按钮:在 auto/light/dark 中循环
   const cur = localStorage.getItem('bd_theme') || 'auto';
   const next = cur === 'light' ? 'dark' : cur === 'dark' ? 'auto' : 'light';
   localStorage.setItem('bd_theme', next);
   applyTheme(next);
 }
 
-function toggleSettings() {
-  const sec = document.getElementById('settings-section');
-  sec.style.display = sec.style.display === 'none' ? '' : 'none';
-  if (sec.style.display !== 'none') loadConfigIntoUI();
-}
-
 function loadConfigIntoUI() {
-  // 从当前内存中的 DL_DIR + 后端 GET 获取全部配置
   fetch(API('/api/config')).then(r => r.json()).then(r => {
     if (!r.ok) return;
     document.getElementById('config-dir-input').value = r.download_dir || DL_DIR;
@@ -1583,7 +1716,6 @@ function loadConfigIntoUI() {
     const theme = r.theme || localStorage.getItem('bd_theme') || 'auto';
     const el = document.getElementById('config-theme');
     if (el) el.value = theme;
-    // 2026-08-15 批次新增项
     const checks = {
       'config-save-danmaku': r.save_danmaku,
       'config-save-subtitle': r.save_subtitle,
@@ -1606,7 +1738,6 @@ async function saveAllConfig() {
   const rl = document.getElementById('config-ratelimit').value;
   const theme = document.getElementById('config-theme').value;
   if (!v) { alert('请填写下载目录'); return; }
-  // theme 存 localStorage(避免每次刷新后端),同时也存 config.json 让后端知道
   localStorage.setItem('bd_theme', theme);
   applyTheme(theme);
   const body = {
@@ -1636,7 +1767,6 @@ async function resetConfigDir() {
   saveAllConfig();
 }
 
-/* ---------- 初始化 ---------- */
 async function loadConfig() {
   try {
     const r = await (await fetch(API('/api/config'))).json();
@@ -1644,7 +1774,7 @@ async function loadConfig() {
   } catch (e) {}
 }
 
-/* ---------- C3: 统计面板 ---------- */
+/* ---------- 统计 ---------- */
 function formatBytes(n) {
   if (!n) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -1663,8 +1793,9 @@ async function loadStats() {
     document.getElementById('stat-day-count').textContent = r.day_count;
   } catch (e) {}
 }
+
 /* ---------- 已下载判定(列表角标 + 批量跳过) ---------- */
-let _doneBvids = new Set();  // 已完成任务的 BV 号集合
+let _doneBvids = new Set();
 
 function bvFromUrl(url) {
   const m = /BV[0-9A-Za-z]{10}/.exec(url || '');
@@ -1676,26 +1807,17 @@ function isUrlDownloaded(url) {
   return !!bv && _doneBvids.has(bv);
 }
 
-/* 下载完成后重渲染当前 lib 列表,让"已下载"角标即时出现 */
+/* 下载完成后重渲染当前列表页,让"已下载"角标即时出现 */
 function refreshLibBadges() {
   if (!_libItems.length) return;
-  const show = (id) => document.getElementById(id);
-  if (_libMode === 'history' || _libMode === 'follow') {
-    if (show('history-list').offsetParent !== null) renderPage();
-  } else if (_libMode === 'later') {
-    if (show('later-list').offsetParent !== null) renderLibList(withIdx(_libItems), show('later-list'));
-  } else if (_libMode === 'up') {
-    if (show('up-list').offsetParent !== null) renderLibList(withIdx(_libItems), show('up-list'));
-  } else if (_libMode === 'fav' && _favCurrent) {
-    if (show('fav-content-list').offsetParent !== null) renderLibList(withIdx(_libItems), show('fav-content-list'));
-  }
+  const active = document.querySelector('.page.active');
+  if (active && active.dataset.page === _libMode) renderPage();
 }
 
 async function loadTasks() {
   try {
     const r = await (await fetch(API('/api/tasks'))).json();
     const tasks = r.tasks || [];
-    // 维护已下载 BV 集合
     _doneBvids = new Set(tasks.filter(t => t.status === 'done')
       .map(t => bvFromUrl(t.url)).filter(Boolean));
     const list = document.getElementById('queue-list');
@@ -1712,16 +1834,13 @@ async function loadTasks() {
 
 (async function init() {
   await loadConfig();
-  // 应用主题: localStorage 优先(即时), 后端配置兜底
   const stored = localStorage.getItem('bd_theme');
   const cfg = await fetch(API('/api/config')).then(r => r.json()).catch(() => null);
   const theme = stored || (cfg && cfg.theme) || 'auto';
   applyTheme(theme);
+  updateLibViewBtn();
   await refreshLogin();
-  await loadTasks();
-  await loadStats();
-  // 打开页面自动刷新观看历史(已登录才加载;复用 refreshLogin 的结果,不再多发一次请求)
-  if (_loggedIn) loadHistory();
+  goPage('downloads');
   // 后台任务(自动追更入队等)靠轮询刷新队列,与 SSE 互为兜底
   setInterval(loadTasks, 30000);
 })();

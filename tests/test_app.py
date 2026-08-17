@@ -256,3 +256,38 @@ def test_frontend_up_history_local():
     html = _tpl()
     assert "/api/up-history" in html
     assert "查看历史(本地)" in html
+
+
+# ---------- 2026-08-17 侧边栏改版 ----------
+
+def test_frontend_sidebar_pages():
+    """左侧菜单栏七个页面:下载记录/观看历史/关注账号/更新推送/收藏夹/稍后再看/设置。"""
+    html = _tpl()
+    for p in ("downloads", "history", "follows", "feed", "fav", "later", "settings"):
+        assert f'data-page="{p}"' in html, f"缺侧边栏页面 {p}"
+    for label in ("下载记录", "观看历史", "关注账号", "更新推送", "收藏夹", "稍后再看", "设置"):
+        assert label in html
+
+
+def test_frontend_no_emoji_icons():
+    """图标全部用内联 SVG,不再用 emoji。"""
+    html = _tpl()
+    for e in ("🌙", "☀", "⚙", "🔍", "📋", "🟦", "📦", "💾", "📅", "📆",
+              "↻", "⚡", "📜", "🎵", "⚠", "✓", "✗", "›", "↓"):
+        assert e not in html, f"仍有 emoji 图标: {e}"
+    assert "<svg" in html, "应有内联 SVG 图标"
+
+
+def test_frontend_single_download_entry():
+    """单视频/批量合并为一个入口,自动判断。"""
+    html = _tpl()
+    assert "data-dlmode" not in html, "不应再有单/批量双 tab"
+    assert "smartParse" in html, "应有统一的解析入口(自动判断单个/批量)"
+
+
+def test_frontend_unified_toolbar():
+    """各列表页工具栏结构统一(刷新+搜索+视图切换同位置)。"""
+    html = _tpl()
+    n = html.count('class="lib-toolbar"')
+    assert n >= 5, f"五个列表页都应有统一工具栏,当前 {n} 处"
+    assert html.count("lib-search") >= 5
