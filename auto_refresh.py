@@ -1,10 +1,11 @@
-"""订阅追更:定时串行拉取 auto=True 的 UP,新增投稿自动入队下载。
+"""订阅追更:定时串行检查 auto=True 的 UP,新增投稿记入「待确认」,用户点下载才入队。
 
 风控与合规边界(2026-08-15 法律评估结论):
 - 自动任务属于 B 站用户协议"自动程序"条款场景,是本工具里风险最高的一块,
-  因此间隔刻意保守:UP 之间 >=3 秒(合规清单建议值),轮询间隔下限 10 分钟
+  因此间隔刻意保守:UP 之间 >=5 秒,轮询间隔下限 10 分钟
   (config.AUTO_REFRESH_MINUTES,UI 不可调破)。
-- 只下载自己账号有权观看的免费内容;限流返回空时不动 last_seen。
+- 检查与下载分离:后台只检查+记录,下载由用户确认触发,自动行为更轻、更可控。
+- 只下载自己账号有权观看的免费内容;限流返回空时不动 last_seen(不丢数据)。
 - 下载内容仅个人存档,不分发。
 """
 import logging
@@ -19,12 +20,12 @@ import up_list
 
 log = logging.getLogger("bd.auto_refresh")
 
-UP_INTERVAL = 3.0  # UP 之间的请求间隔(秒),自动任务不低于 3 秒
+UP_INTERVAL = 5.0  # UP 之间的请求间隔(秒);检查与下载分离后检查更轻,间隔放宽到 5 秒更稳
 
 # 增量拉取参数:B 站 arc/search 不支持按时间过滤,只能按 pubdate 倒序分页。
 # 依据「上次拉取时间」自适应页大小:刚拉过(24h 内)只拉小页,降低单次响应量;
 # 一页全是新视频(爆发更新)时翻页兜底,保证不漏。
-FULL_PS = 20
+FULL_PS = 15
 RECENT_PS = 5
 RECENT_WINDOW = 24 * 3600
 MAX_PAGES = 3
@@ -68,12 +69,16 @@ def fetch_new(mid: int, last: Optional[dict] = None):
 
 
 def refresh_once() -> int:
-    """跑一轮追更:返回本轮新入队的视频数。串行 + 间隔,防账号级风控。"""
+    """跑一轮追更检查:返回本轮新发现的待确认视频数。串行 + 间隔,防账号级风控。
+
+    只记录不下载:新视频进「待确认」列表,等用户在页面点「全部下载」才入队
+    (检查与下载分离——自动检查更轻更不易触发风控,也避免未经确认的自动下载)。
+    """
     with _lock:
         ups = [u for u in up_list.list_ups() if u.get("auto")]
         if not ups:
             return 0
-        queued = 0
+        found = 0
         for i, up in enumerate(ups):
             try:
                 mid = int(up["mid"])
@@ -88,10 +93,10 @@ def refresh_once() -> int:
                         up_list.set_uname(mid, newest["uploader"])
                     up_list.add_history(new)  # 历史记「发现的新增」(含已下载过的)
                     to_dl = [v for v in new if not downloader.is_downloaded(v["url"])]
-                    if to_dl:
-                        downloader.start_batch(to_dl, label="", max_concurrent=1)
-                        queued += len(to_dl)
-                        log.info("追更入队 %s:%d 条", up.get("uname") or mid, len(to_dl))
+                    added = up_list.add_pending([dict(v, uploader_mid=mid) for v in to_dl])
+                    if added:
+                        found += added
+                        log.info("追更待确认 %s:%d 条", up.get("uname") or mid, added)
                     # 处理成功才推进已见;异常/限流留给下一轮重试
                     up_list.mark_seen(mid, newest["bvid"], newest.get("view_at", 0),
                                       newest.get("title", ""), fetched_at=int(time.time()))
@@ -100,7 +105,7 @@ def refresh_once() -> int:
             # 无论本轮结果如何,UP 之间都保持间隔(防风控的关键)
             if i < len(ups) - 1:
                 time.sleep(UP_INTERVAL)
-        return queued
+        return found
 
 
 def start_loop() -> threading.Thread:

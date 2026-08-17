@@ -367,6 +367,36 @@ def up_history():
     return jsonify({"ok": True, "items": up_list.list_history()})
 
 
+@app.route("/api/pending")
+def pending_get():
+    """追更发现、待用户确认下载的新视频列表。纯本地。"""
+    return jsonify({"ok": True, "items": up_list.list_pending()})
+
+
+@app.route("/api/pending", methods=["DELETE"])
+def pending_clear():
+    """忽略全部待确认(本地历史仍保留发现记录)。"""
+    up_list.clear_pending()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/pending/download", methods=["POST"])
+def pending_download():
+    """把待确认视频入队下载(单并发串行),入队的从待确认移除。"""
+    items = up_list.list_pending()
+    if not items:
+        return jsonify({"ok": True, "count": 0, "task_ids": []})
+    dl_items = [{
+        "url": v.get("url"), "title": v.get("title"),
+        "page": v.get("page", 1),
+        "thumbnail": v.get("thumbnail", ""), "uploader": v.get("uploader", ""),
+        "duration": v.get("duration") or 0,
+    } for v in items if v.get("url")]
+    task_ids = downloader.start_batch(dl_items, label="", max_concurrent=1)
+    up_list.clear_pending([v.get("bvid") for v in items])
+    return jsonify({"ok": True, "count": len(task_ids), "task_ids": task_ids})
+
+
 # ---------- A4: 收藏夹浏览 ----------
 @app.route("/api/fav-folders")
 def fav_folders():
@@ -379,12 +409,25 @@ def fav_folders():
 
 @app.route("/api/fav-content")
 def fav_content():
-    fid = int(request.args.get("fid", 0))
-    if not fid:
-        return jsonify({"ok": False, "error": "缺少 fid"}), 400
+    # media_id 是文件夹接口里的 id(长 id);旧前端只传 fid 会拿到空列表
+    media_id = int(request.args.get("media_id", 0) or request.args.get("fid", 0))
+    if not media_id:
+        return jsonify({"ok": False, "error": "缺少 media_id"}), 400
     try:
-        items = auth.fetch_fav_content(fid)
+        items = auth.fetch_fav_content(media_id)
         return jsonify({"ok": True, "items": items})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/followings")
+def followings():
+    """我关注的全部 UP(用于「站点关注」→「关注 UP」视图),附带本地清单已有 mid。"""
+    try:
+        r = auth.fetch_followings_all(force=request.args.get("force") == "true")
+        local = {int(u["mid"]) for u in up_list.list_ups()}
+        return jsonify({"ok": True, "items": r["items"], "total": r["total"],
+                        "local_mids": sorted(local)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

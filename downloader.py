@@ -320,8 +320,16 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
             formats = summary["formats"]
             with _tasks_lock:
                 t = _tasks.get(task_id)
-                if t and not t.get("title"):
-                    t["title"] = summary["title"]
+                if t:
+                    if not t.get("title"):
+                        t["title"] = summary["title"]
+                    # 封面/UP/时长补进任务,供「下载记录」页像观看历史一样渲染卡片
+                    if not t.get("thumbnail"):
+                        t["thumbnail"] = summary.get("thumbnail", "")
+                    if not t.get("uploader"):
+                        t["uploader"] = summary.get("uploader", "")
+                    if not t.get("duration"):
+                        t["duration"] = summary.get("duration") or 0
         except Exception as e:
             with _tasks_lock:
                 t = _tasks.get(task_id)
@@ -432,6 +440,7 @@ def start_download(url: str, label: str, page: int = 1) -> str:
         # parse_video 对多 P 不返回 formats,这里兜底拉第一 P
         if not summary.get("formats"):
             summary = parse_part(url, 1)
+    import time as _t
     task_id = uuid.uuid4().hex[:12]
     with _tasks_lock:
         _tasks[task_id] = {
@@ -439,6 +448,10 @@ def start_download(url: str, label: str, page: int = 1) -> str:
             "status": "queued",
             "progress": 0, "speed": 0, "eta": 0,
             "title": summary["title"], "url": url, "label": label,
+            "thumbnail": summary.get("thumbnail", ""),
+            "uploader": summary.get("uploader", ""),
+            "duration": summary.get("duration") or 0,
+            "created_at": int(_t.time()),
             "page": page, "error": "", "cancel": False,
         }
     th = threading.Thread(target=_run_download,
@@ -467,6 +480,7 @@ def start_batch(items: list[dict], label: str, max_concurrent: int = None) -> li
         finally:
             sem.release()
 
+    import time as _t
     for item in items:
         url = item.get("url", "")
         page = int(item.get("page", 1))
@@ -481,6 +495,10 @@ def start_batch(items: list[dict], label: str, max_concurrent: int = None) -> li
                 "status": "queued",
                 "progress": 0, "speed": 0, "eta": 0,
                 "title": title, "url": url, "label": label,
+                "thumbnail": item.get("thumbnail", ""),
+                "uploader": item.get("uploader", ""),
+                "duration": item.get("duration") or 0,
+                "created_at": int(_t.time()),
                 "page": page, "error": "", "cancel": False,
             }
         th = threading.Thread(target=_batch_run,

@@ -166,3 +166,52 @@ def reset_seen(mid: int) -> None:
         data = _read()
         data["last_seen"].pop(str(mid), None)
         _write(data)
+
+
+PENDING_CAP = 200  # 待确认列表上限,超出裁最旧
+
+
+def add_pending(items: list) -> int:
+    """追更发现的新视频写入「待确认」列表(等用户点下载,不自动下)。
+
+    按 bvid 去重;是否已下载由调用方过滤。返回本轮净新增条数。
+    """
+    if not items:
+        return 0
+    with _lock:
+        data = _read()
+        pend = data.get("pending", [])
+        have = {p.get("bvid") for p in pend}
+        now = int(time.time())
+        added = 0
+        for v in items:
+            bv = v.get("bvid")
+            if not bv or bv in have:
+                continue
+            have.add(bv)
+            entry = dict(v)
+            entry["found_at"] = now
+            pend.append(entry)
+            added += 1
+        if added:
+            data["pending"] = pend[-PENDING_CAP:]
+            _write(data)
+        return added
+
+
+def list_pending() -> list:
+    with _lock:
+        return _read().get("pending", [])
+
+
+def clear_pending(bvids=None) -> None:
+    """清空待确认:bvids 为 None 全清;否则只移除这些(下载入队后调用)。"""
+    with _lock:
+        data = _read()
+        pend = data.get("pending", [])
+        if bvids is None:
+            data["pending"] = []
+        else:
+            drop = set(bvids)
+            data["pending"] = [p for p in pend if p.get("bvid") not in drop]
+        _write(data)

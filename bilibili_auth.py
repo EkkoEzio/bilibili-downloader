@@ -219,6 +219,7 @@ def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
             "bvid": it.get("bvid", ""),
             "title": it.get("title", ""),
             "uploader": owner.get("name", ""),
+            "uploader_mid": owner.get("mid"),
             "duration": dur,
             "watched_seconds": watched,
             "watched_pct": pct,
@@ -258,6 +259,7 @@ def fetch_watchlater() -> list[dict]:
             "bvid": bvid,
             "title": it.get("title", ""),
             "uploader": owner.get("name", ""),
+            "uploader_mid": owner.get("mid"),
             "thumbnail": (it.get("pic") or "").replace("http:", "https:"),
             "duration": it.get("duration", 0),
             "view_at": it.get("tview_at", 0),
@@ -292,32 +294,44 @@ def fetch_fav_folders() -> list[dict]:
     return out
 
 
-def fetch_fav_content(fid: int, ps: int = 30) -> list[dict]:
-    """拉取某个收藏夹内的视频。用 yt-dlp 的 medialist URL,它内部带 WBI+翻页。
+def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20) -> list[dict]:
+    """拉取某个收藏夹内的视频。走 B 站原生 /x/v3/fav/resource/list。
 
-    下载失败(私密收藏夹/风控)返回 [];其他异常向上抛,由路由层报 500。
-    注意:这里只捕获 DownloadError——曾经裸 `except Exception` 把模块级
-    NameError(未 import yt_dlp)也吞掉,导致接口静默永远返回空。
+    media_id 是收藏夹的媒体列表 id(文件夹接口里的 `id` 字段,如 64425947),
+    不是 `fid`(如 644259)——传 fid 接口会返回 code=0 但 medias 为空。
+    旧实现用 yt-dlp 解析 medialist 页面,被风控时静默返回 [],已弃用。
     """
-    try:
-        opts = {"quiet": True, "skip_download": True, "extract_flat": True}
-        opts.update(get_ytdlp_cookie_arg())
-        info = yt_dlp.YoutubeDL(opts).extract_info(
-            f"https://www.bilibili.com/medialist/detail/ml{fid}", download=False)
-    except yt_dlp.utils.DownloadError:
-        return []
-    items = []
-    for e in (info.get("entries") or []):
-        eid = e.get("id") or ""
-        url = e.get("url") or (f"https://www.bilibili.com/video/{eid}" if eid else "")
-        items.append({
-            "bvid": eid,
-            "title": e.get("title", ""),
-            "uploader": e.get("uploader", ""),
-            "thumbnail": (e.get("thumbnails") or [{}])[0].get("url", ""),
-            "duration": e.get("duration") or 0,
-            "url": url,
-        })
+    import time as _time
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取收藏夹内容")
+    items: list[dict] = []
+    for pn in range(1, max_pages + 1):
+        resp = requests.get("https://api.bilibili.com/x/v3/fav/resource/list",
+                            cookies=cj, headers=BROWSER_HEADERS,
+                            params={"media_id": media_id, "pn": pn, "ps": ps,
+                                    "order": "mtime"}, timeout=12)
+        data = _safe_json(resp)
+        if not data or data.get("code") != 0:
+            raise RuntimeError((data or {}).get("message", "获取收藏夹内容失败(可能被风控,稍后再试)"))
+        d = data.get("data") or {}
+        for m in d.get("medias") or []:
+            bvid = m.get("bvid") or ""
+            title = m.get("title") or ""
+            if m.get("attr") != 0:  # 已失效/私密等
+                title = title or "已失效视频"
+            items.append({
+                "bvid": bvid,
+                "title": title,
+                "uploader": ((m.get("upper") or {}).get("name")) or "",
+                "uploader_mid": ((m.get("upper") or {}).get("mid")),
+                "thumbnail": (m.get("cover") or "").replace("http:", "https:"),
+                "duration": m.get("duration") or 0,
+                "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+            })
+        if not d.get("has_more"):
+            break
+        _time.sleep(0.3)  # 大收藏夹翻页防限流
     return items
 
 
@@ -338,6 +352,46 @@ def fetch_followings(page: int = 1, size: int = 50) -> list[dict]:
         raise RuntimeError((data or {}).get("message", "获取失败(可能被风控,稍后再试)"))
     return [{"mid": f.get("mid"), "uname": f.get("uname", ""), "face": f.get("face", "")}
             for f in (data.get("data", {}) or {}).get("list", []) or []]
+
+
+_followings_cache = {"items": [], "total": 0, "ts": 0}
+
+
+def fetch_followings_all(force: bool = False, max_pages: int = 10) -> dict:
+    """拉取我关注的全部 UP(上限 max_pages*50)。10 分钟缓存。
+
+    relation 接口轻量,翻页间隔 0.2s 即可;与 arc/search 的账号级风控不是一类。
+    """
+    import time as _time
+    if not force and _followings_cache["items"] and _time.time() - _followings_cache["ts"] < 600:
+        return {"items": _followings_cache["items"], "total": _followings_cache["total"]}
+    all_items: list[dict] = []
+    total = 0
+    for pn in range(1, max_pages + 1):
+        cj = get_cookiejar()
+        if cj is None:
+            raise RuntimeError("未登录,无法获取关注列表")
+        mid = _my_mid(cj)
+        if not mid:
+            raise RuntimeError("无法获取用户 ID")
+        resp = requests.get("https://api.bilibili.com/x/relation/followings",
+                            cookies=cj, headers=BROWSER_HEADERS,
+                            params={"vmid": mid, "pn": pn, "ps": 50, "order": "desc"},
+                            timeout=12)
+        data = _safe_json(resp)
+        if not data or data.get("code") != 0:
+            raise RuntimeError((data or {}).get("message", "获取失败(可能被风控,稍后再试)"))
+        d = data.get("data") or {}
+        total = d.get("total", 0)
+        page = d.get("list") or []
+        all_items.extend({"mid": f.get("mid"), "uname": f.get("uname", ""),
+                          "face": (f.get("face") or "").replace("http:", "https:")}
+                         for f in page)
+        if len(all_items) >= total or not page:
+            break
+        _time.sleep(0.2)
+    _followings_cache.update(items=all_items, total=total, ts=_time.time())
+    return {"items": all_items, "total": total}
 
 
 _wbi_ie = None
@@ -405,6 +459,7 @@ def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
             "bvid": v.get("bvid", ""),
             "title": v.get("title", ""),
             "uploader": v.get("author", ""),
+            "uploader_mid": mid,
             "thumbnail": (v.get("pic") or "").replace("http:", "https:"),
             "view_at": v.get("created", 0),
             "url": f"https://www.bilibili.com/video/{v.get('bvid','')}",
