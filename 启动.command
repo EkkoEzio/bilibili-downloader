@@ -22,6 +22,23 @@ else
   source .venv/bin/activate
 fi
 
+# 先关闭上次的实例:否则旧进程占着端口,新代码起不来、页面还是旧的
+# (端口与 config.py 的 PORT 保持一致)
+OLD_PID=$(lsof -ti tcp:5050 2>/dev/null)
+if [ -n "$OLD_PID" ]; then
+  echo "检测到正在运行的实例(PID $OLD_PID),正在关闭..."
+  kill $OLD_PID 2>/dev/null
+  for i in 1 2 3 4 5; do
+    lsof -ti tcp:5050 >/dev/null 2>&1 || break
+    sleep 1
+  done
+  if lsof -ti tcp:5050 >/dev/null 2>&1; then
+    echo "实例未正常退出,强制结束。"
+    kill -9 $(lsof -ti tcp:5050) 2>/dev/null
+    sleep 1
+  fi
+fi
+
 # 自动在浏览器打开:等端口就绪再开(冷启动装依赖时 2 秒可能还没起好)
 (
   for i in $(seq 1 60); do

@@ -2,6 +2,7 @@
 import io
 import logging
 import re
+import threading
 import time
 import json
 import subprocess
@@ -11,6 +12,7 @@ from flask import Flask, request, jsonify, render_template, Response, stream_wit
 
 import qrcode
 import auto_refresh
+import pagecache
 import up_list
 import bilibili_auth as auth
 import downloader
@@ -130,6 +132,7 @@ def download():
     url = body.get("url", "").strip()
     label = body.get("label", "")
     page = int(body.get("page", 1))
+    uploader_mid = int(body.get("uploader_mid") or 0)  # 前端解析时拿到就带上
     if not url:
         return jsonify({"ok": False, "error": "请输入 URL"}), 400
     # 重复下载拦截:同 URL+清晰度+分P 且仍在跑
@@ -137,7 +140,7 @@ def download():
     if existing:
         return jsonify({"ok": False, "error": "该视频相同清晰度正在下载中", "task_id": existing}), 409
     try:
-        tid = downloader.start_download(url, label, page)
+        tid = downloader.start_download(url, label, page, uploader_mid=uploader_mid)
         return jsonify({"ok": True, "task_id": tid})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -168,6 +171,17 @@ def tasks_clear():
     delete_file = bool(body.get("delete_file"))
     n = downloader.clear_tasks(delete_file)
     return jsonify({"ok": True, "count": n})
+
+
+@app.route("/api/tasks/clean-invalid", methods=["POST"])
+def tasks_clean_invalid():
+    """删除失败/失效记录:下载失败的任务 + 已完成但本地文件已不存在(被删/改名)的任务。
+    只删记录,不碰文件(失效的本就没有文件)。"""
+    try:
+        r = downloader.clean_invalid_records()
+        return jsonify({"ok": True, **r})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 # ---------- 批量 ----------
@@ -224,7 +238,18 @@ def batch_download():
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
-# ---------- 内容浏览 ----------
+# ---------- 内容浏览(慢数据源统一「缓存优先 + 后台拉新」) ----------
+
+@app.route("/api/cache/<key>")
+def cache_get(key):
+    """读某数据源的上次结果(前端秒显用)。纯本地文件,不打 B 站接口。"""
+    entry = pagecache.load(key)
+    if not entry:
+        return jsonify({"ok": False})
+    return jsonify({"ok": True, "saved_at": entry.get("saved_at"),
+                    "data": entry.get("data")})
+
+
 @app.route("/api/history")
 def history():
     """观看历史。?page=1&size=50"""
@@ -242,6 +267,7 @@ def follow_updates():
     """关注 UP 主最近投稿,合并按时间倒序。?force=true 跳过缓存强制刷新。"""
     try:
         items = auth.fetch_follow_updates(force=request.args.get("force") == "true")
+        pagecache.save("follow_updates", {"ok": True, "items": items})
         return jsonify({"ok": True, "items": items})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -274,7 +300,7 @@ def up_list_get():
 
 @app.route("/api/up-list/add", methods=["POST"])
 def up_list_add():
-    """添加 UP。{input: 'https://space.bilibili.com/12345' 或 '12345'}"""
+    """添加 UP(加入清单 = 之后新投稿自动下载)。{input: 'https://space.bilibili.com/12345' 或 '12345'}"""
     body = request.get_json(silent=True) or {}
     mid = _parse_mid_from_input(body.get("input", ""))
     if not mid:
@@ -290,6 +316,19 @@ def up_list_add():
         if items:
             uname = items[0].get("uploader", "")
     u = up_list.add_up(mid, uname, face)
+    # 打基线:以该 UP 当前最新一条投稿为「已见」,只自动下载加入之后的新投稿。
+    # 拿不到最新投稿时用当前时刻兜底(时间上早于现在的都不会算新增)。
+    now = int(time.time())
+    try:
+        page = auth.fetch_up_videos(mid, ps=1)
+        newest = page[0] if page else None
+    except Exception:
+        newest = None
+    if newest:
+        up_list.mark_seen(mid, newest.get("bvid", ""), newest.get("view_at", 0),
+                          newest.get("title", ""), fetched_at=now)
+    else:
+        up_list.mark_seen(mid, "", now, "", fetched_at=now)
     return jsonify({"ok": True, "up": u})
 
 
@@ -303,14 +342,14 @@ def up_list_remove():
     return jsonify({"ok": ok})
 
 
-@app.route("/api/up-list/set-auto", methods=["POST"])
-def up_list_set_auto():
-    """开关某 UP 的订阅追更。{mid, auto}"""
+@app.route("/api/up-list/set-quality", methods=["POST"])
+def up_list_set_quality():
+    """设置某 UP 新视频自动下载的默认清晰度。{mid, quality};空串=最高画质自动。"""
     body = request.get_json(silent=True) or {}
     mid = body.get("mid")
-    if mid is None or "auto" not in body:
-        return jsonify({"ok": False, "error": "缺少 mid 或 auto"}), 400
-    ok = up_list.set_auto(int(mid), bool(body["auto"]))
+    if mid is None:
+        return jsonify({"ok": False, "error": "缺少 mid"}), 400
+    ok = up_list.set_quality(int(mid), str(body.get("quality", "")))
     return jsonify({"ok": ok})
 
 
@@ -324,77 +363,18 @@ def up_list_reset_seen():
     return jsonify({"ok": True})
 
 
-@app.route("/api/up-updates")
-def up_updates():
-    """拉清单中所有 UP 的新增视频。?include_seen=true 把已见的一起返回(否则只返回增量)。
-
-    风控:与 fetch_follow_updates 同一结论——arc/search 并发会触发 B 站账号级
-    412,必须串行 + UP 间 1.5 秒间隔。增量拉取走 auto_refresh.fetch_new:
-    依据上次拉取时间自适应页大小(刚拉过只拉 5 条),爆发更新翻页兜底。
-    新增写入本地历史(up_list.add_history,上限 100 条),「查看历史」离线可读。
-    """
-    include_seen = request.args.get("include_seen") == "true"
-    ups = up_list.list_ups()
-    if not ups:
-        return jsonify({"ok": True, "items": [], "ups": []})
-
-    results = []
-    now = int(time.time())
-    for i, up in enumerate(ups):
-        mid = int(up["mid"])
-        last = None if include_seen else up_list.get_last_seen(mid)
-        new, newest = auto_refresh.fetch_new(mid, last)
-        if newest:
-            # 存量记录没存到名称的,用视频作者名回填(mid 人记不住)
-            if not up.get("uname") and newest.get("uploader"):
-                up_list.set_uname(mid, newest["uploader"])
-            for v in new:
-                v["uploader_mid"] = mid
-            results.extend(new)
-            if not include_seen:
-                up_list.add_history(new)
-            up_list.mark_seen(mid, newest["bvid"], newest.get("view_at", 0),
-                              newest.get("title", ""), fetched_at=now)
-        if i < len(ups) - 1:
-            time.sleep(1.5)  # 防 arc/search 账号级限流
-    results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
-    return jsonify({"ok": True, "items": results, "ups": ups})
-
-
-@app.route("/api/up-history")
-def up_history():
-    """UP 清单的本地发现历史(上限 100 条)。纯本地,不打 B 站接口。"""
-    return jsonify({"ok": True, "items": up_list.list_history()})
-
-
-@app.route("/api/pending")
-def pending_get():
-    """追更发现、待用户确认下载的新视频列表。纯本地。"""
-    return jsonify({"ok": True, "items": up_list.list_pending()})
-
-
-@app.route("/api/pending", methods=["DELETE"])
-def pending_clear():
-    """忽略全部待确认(本地历史仍保留发现记录)。"""
-    up_list.clear_pending()
+@app.route("/api/up-list/check", methods=["POST"])
+def up_list_check():
+    """手动触发一轮检查(与后台自动下载同一逻辑):清单 UP 的新投稿直接入队下载。
+    串行 + UP 间隔,耗时数十秒,放后台线程跑,前端靠队列轮询看结果。"""
+    def _run():
+        try:
+            n = auto_refresh.refresh_once()
+            log.info("手动检查完成,入队 %d 条", n)
+        except Exception:
+            log.exception("手动检查异常")
+    threading.Thread(target=_run, daemon=True, name="bd-manual-check").start()
     return jsonify({"ok": True})
-
-
-@app.route("/api/pending/download", methods=["POST"])
-def pending_download():
-    """把待确认视频入队下载(单并发串行),入队的从待确认移除。"""
-    items = up_list.list_pending()
-    if not items:
-        return jsonify({"ok": True, "count": 0, "task_ids": []})
-    dl_items = [{
-        "url": v.get("url"), "title": v.get("title"),
-        "page": v.get("page", 1),
-        "thumbnail": v.get("thumbnail", ""), "uploader": v.get("uploader", ""),
-        "duration": v.get("duration") or 0,
-    } for v in items if v.get("url")]
-    task_ids = downloader.start_batch(dl_items, label="", max_concurrent=1)
-    up_list.clear_pending([v.get("bvid") for v in items])
-    return jsonify({"ok": True, "count": len(task_ids), "task_ids": task_ids})
 
 
 # ---------- A4: 收藏夹浏览 ----------
@@ -402,7 +382,32 @@ def pending_download():
 def fav_folders():
     try:
         folders = auth.fetch_fav_folders()
+        pagecache.save("fav_folders", {"ok": True, "folders": folders})
         return jsonify({"ok": True, "folders": folders})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/fav-seasons")
+def fav_seasons():
+    """「我追的合集」列表(B 站收藏页左侧的合集区)。"""
+    try:
+        seasons = auth.fetch_collected_seasons()
+        pagecache.save("fav_seasons", {"ok": True, "seasons": seasons})
+        return jsonify({"ok": True, "seasons": seasons})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.route("/api/season-content")
+def season_content():
+    """合集内的视频列表。?season_id="""
+    season_id = int(request.args.get("season_id", 0) or 0)
+    if not season_id:
+        return jsonify({"ok": False, "error": "缺少 season_id"}), 400
+    try:
+        items = auth.fetch_season_content(season_id)
+        return jsonify({"ok": True, "items": items})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -425,9 +430,11 @@ def followings():
     """我关注的全部 UP(用于「站点关注」→「关注 UP」视图),附带本地清单已有 mid。"""
     try:
         r = auth.fetch_followings_all(force=request.args.get("force") == "true")
-        local = {int(u["mid"]) for u in up_list.list_ups()}
-        return jsonify({"ok": True, "items": r["items"], "total": r["total"],
-                        "local_mids": sorted(local)})
+        local = sorted(int(u["mid"]) for u in up_list.list_ups())
+        body = {"ok": True, "items": r["items"], "total": r["total"],
+                "local_mids": local}
+        pagecache.save("followings", body)
+        return jsonify(body)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
@@ -437,6 +444,7 @@ def watchlater():
     """「稍后再看」列表。"""
     try:
         items = auth.fetch_watchlater()
+        pagecache.save("watchlater", {"ok": True, "items": items})
         return jsonify({"ok": True, "items": items})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -521,12 +529,17 @@ def set_config():
     return jsonify(r)
 
 
-@app.route("/api/open-folder", methods=["POST"])
-def open_folder():
-    """在 Finder 中打开下载目录。"""
+@app.route("/api/task/<task_id>/reveal", methods=["POST"])
+def task_reveal(task_id):
+    """在 Finder 中定位该任务下载到的文件(按 UP 归档时是子目录里的那个)。
+    找不到文件时退回打开下载目录。"""
     try:
+        files = downloader.find_task_files(task_id)
+        if files:
+            subprocess.run(["open", "-R", str(files[0])], check=False)
+            return jsonify({"ok": True, "found": True})
         subprocess.run(["open", str(config.DOWNLOAD_DIR)], check=False)
-        return jsonify({"ok": True})
+        return jsonify({"ok": True, "found": False})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

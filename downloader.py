@@ -92,6 +92,8 @@ def _summarize(info: dict) -> dict:
     return {
         "title": info.get("title", ""),
         "uploader": info.get("uploader", ""),
+        # yt-dlp 对 B 站把 UP 的 mid 放在 uploader_id,下载记录页 UP 名跳转用
+        "uploader_mid": info.get("uploader_id") or "",
         "duration": info.get("duration", 0),
         "thumbnail": info.get("thumbnail", ""),
         "formats": options,
@@ -128,6 +130,7 @@ def parse_video(url: str) -> dict:
         summary = {
             "title": info.get("title", ""),
             "uploader": info.get("uploader", ""),
+            "uploader_mid": info.get("uploader_id") or "",
             "duration": parts[0]["duration"] if parts else 0,
             "thumbnail": info.get("thumbnail", "") or (info["entries"][0].get("thumbnail", "") if info["entries"] else ""),
             "formats": [],      # 多 P 时清晰度要选了 P 再查
@@ -204,6 +207,14 @@ def _sanitize(name: str) -> str:
     for ch in '\\/:*?"<>|':
         name = name.replace(ch, "_")
     return name.strip().rstrip(".") or "video"
+
+
+def _to_mid(v) -> int:
+    """宽松转 mid(yt-dlp 给的是字符串,批量项可能给 int,脏数据给 0)。"""
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _base_opts(fmt_str: str, page: int, task_id: str) -> dict:
@@ -328,6 +339,8 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                         t["thumbnail"] = summary.get("thumbnail", "")
                     if not t.get("uploader"):
                         t["uploader"] = summary.get("uploader", "")
+                    if not t.get("uploader_mid"):
+                        t["uploader_mid"] = _to_mid(summary.get("uploader_mid"))
                     if not t.get("duration"):
                         t["duration"] = summary.get("duration") or 0
         except Exception as e:
@@ -428,10 +441,11 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
     _persist()
 
 
-def start_download(url: str, label: str, page: int = 1) -> str:
+def start_download(url: str, label: str, page: int = 1, uploader_mid: int = 0) -> str:
     """启动异步下载。先解析拿到 formats,再后台下载。返回 task_id。
 
-    page>1 表示多 P 视频的指定分集。
+    page>1 表示多 P 视频的指定分集。uploader_mid 是调用方已知的 UP mid
+    (没传时用解析结果里的 yt-dlp uploader_id)。
     """
     if page > 1:
         summary = parse_part(url, page)
@@ -440,6 +454,8 @@ def start_download(url: str, label: str, page: int = 1) -> str:
         # parse_video 对多 P 不返回 formats,这里兜底拉第一 P
         if not summary.get("formats"):
             summary = parse_part(url, 1)
+    if not uploader_mid:
+        uploader_mid = _to_mid(summary.get("uploader_mid"))
     import time as _t
     task_id = uuid.uuid4().hex[:12]
     with _tasks_lock:
@@ -450,6 +466,7 @@ def start_download(url: str, label: str, page: int = 1) -> str:
             "title": summary["title"], "url": url, "label": label,
             "thumbnail": summary.get("thumbnail", ""),
             "uploader": summary.get("uploader", ""),
+            "uploader_mid": uploader_mid or _to_mid(summary.get("uploader_mid")),
             "duration": summary.get("duration") or 0,
             "created_at": int(_t.time()),
             "page": page, "error": "", "cancel": False,
@@ -497,6 +514,7 @@ def start_batch(items: list[dict], label: str, max_concurrent: int = None) -> li
                 "title": title, "url": url, "label": label,
                 "thumbnail": item.get("thumbnail", ""),
                 "uploader": item.get("uploader", ""),
+                "uploader_mid": _to_mid(item.get("uploader_mid")),
                 "duration": item.get("duration") or 0,
                 "created_at": int(_t.time()),
                 "page": page, "error": "", "cancel": False,
@@ -551,17 +569,31 @@ _ACTIVE = ("queued", "downloading", "merging", "cancelling")
 
 
 def _task_files(t: dict) -> list:
-    """根据任务标题在下载目录找对应文件(yt-dlp 文件名以标题开头)。"""
+    """根据任务标题在下载目录找对应文件(yt-dlp 文件名以标题开头)。
+
+    按 UP 归档(SORT_BY_UP)时文件在「UP名/」子目录,也扫一层子目录。
+    """
     from pathlib import Path
     title = (t.get("title") or "").strip()
     if not title:
         return []
     prefix = title[:30]  # CJK 标题原样保留,30字符(~90B)在截断范围内,足够唯一
     try:
-        return [f for f in config.DOWNLOAD_DIR.iterdir()
-                if f.is_file() and f.name.startswith(prefix)]
+        files = [f for f in config.DOWNLOAD_DIR.iterdir()
+                 if f.is_file() and f.name.startswith(prefix)]
+        for sub in config.DOWNLOAD_DIR.iterdir():
+            if sub.is_dir():
+                files += [f for f in sub.iterdir()
+                          if f.is_file() and f.name.startswith(prefix)]
+        return files
     except Exception:
         return []
+
+
+def find_task_files(task_id: str) -> list:
+    """按 task_id 找已下载文件(「在 Finder 中显示」用)。"""
+    t = get_task(task_id)
+    return _task_files(t) if t else []
 
 
 def delete_tasks(task_ids: list, delete_file: bool) -> int:
@@ -592,3 +624,16 @@ def clear_tasks(delete_file: bool) -> int:
     with _tasks_lock:
         ids = [tid for tid, t in _tasks.items() if t["status"] not in _ACTIVE]
     return delete_tasks(ids, delete_file)
+
+
+def clean_invalid_records() -> dict:
+    """删除「无效」任务记录:下载失败的 + 已完成但本地文件已不存在的(被删/改名/移动)。
+
+    只删记录不删文件(失效任务本就没有可删文件)。磁盘检查放锁外,不阻塞下载线程。
+    """
+    with _tasks_lock:
+        failed_ids = [tid for tid, t in _tasks.items() if t.get("status") == "failed"]
+        done = [dict(t) for tid, t in _tasks.items() if t.get("status") == "done"]
+    invalid_ids = [t["task_id"] for t in done if not _task_files(t)]
+    removed = delete_tasks(failed_ids + invalid_ids, delete_file=False)
+    return {"failed": len(failed_ids), "invalid": len(invalid_ids), "removed": removed}

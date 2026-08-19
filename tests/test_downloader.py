@@ -272,3 +272,38 @@ def test_run_download_success_notify_disabled(monkeypatch, tmp_path):
         assert notified == []
     finally:
         downloader._tasks.pop("ok2", None)
+
+# ---------- 清理失败/失效记录(2026-08-18) ----------
+
+def test_task_files_scans_up_subdirectory(monkeypatch, tmp_path):
+    """按 UP 归档(SORT_BY_UP)时文件在「UP名/」子目录,也要能找到。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    up_dir = tmp_path / "远古野"
+    up_dir.mkdir()
+    (up_dir / "视频标题 part1.mp4").write_bytes(b"x")
+    files = downloader._task_files({"title": "视频标题"})
+    assert len(files) == 1 and files[0].parent == up_dir
+
+
+def test_clean_invalid_records(monkeypatch, tmp_path):
+    """失败 + 文件已不在本地的 done 记录删除;文件还在的 done、进行中的保留。"""
+    persists = []
+    monkeypatch.setattr(downloader, "_persist", lambda: persists.append(1))
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "还在的完成视频.mp4").write_bytes(b"x")
+
+    # 隔离:模块加载时从真实 tasks.json 恢复过存量任务,测试内只用自己的
+    saved = dict(downloader._tasks)
+    downloader._tasks.clear()
+    _mk_task("f1", status="failed", title="失败任务", error="boom")
+    _mk_task("d1", status="done", title="还在的完成视频")
+    _mk_task("d2", status="done", title="文件被删的视频")
+    _mk_task("g1", status="downloading", title="进行中")
+    try:
+        r = downloader.clean_invalid_records()
+        assert r == {"failed": 1, "invalid": 1, "removed": 2}
+        assert set(downloader._tasks) == {"d1", "g1"}, "只留下文件还在的 done 和进行中"
+        assert (tmp_path / "还在的完成视频.mp4").exists(), "清理记录不得删文件"
+    finally:
+        downloader._tasks.clear()
+        downloader._tasks.update(saved)

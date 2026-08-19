@@ -283,7 +283,7 @@ def fetch_fav_folders() -> list[dict]:
     if not data or data.get("code") != 0:
         raise RuntimeError((data or {}).get("message", "获取收藏夹失败"))
     out = []
-    for f in (data.get("data", {}) or {}).get("list", []) or []:
+    for f in (data.get("data") or {}).get("list", []) or []:
         out.append({
             "id": f.get("id"),
             "fid": f.get("fid"),
@@ -292,6 +292,77 @@ def fetch_fav_folders() -> list[dict]:
             "cover": (f.get("cover") or "").replace("http:", "https:"),
         })
     return out
+
+
+def fetch_collected_seasons(max_pages: int = 5) -> list[dict]:
+    """「我追的合集/收藏夹」列表(B 站收藏页左侧栏的合集区)。
+
+    官网调用 /x/v3/fav/folder/collected/list,必须带 platform=web,
+    否则 code=0 但永远返回空列表。item.id 就是 season_id。
+    """
+    import time as _t
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取合集列表")
+    mid = _my_mid(cj)
+    if not mid:
+        raise RuntimeError("无法获取用户 ID")
+    out = []
+    for pn in range(1, max_pages + 1):
+        resp = requests.get("https://api.bilibili.com/x/v3/fav/folder/collected/list",
+                            cookies=cj, headers=BROWSER_HEADERS,
+                            params={"up_mid": mid, "pn": pn, "ps": 20,
+                                    "platform": "web"}, timeout=12)
+        data = _safe_json(resp)
+        if not data or data.get("code") != 0:
+            raise RuntimeError((data or {}).get("message", "获取合集列表失败(可能被风控,稍后再试)"))
+        d = data.get("data") or {}
+        for f in d.get("list") or []:
+            out.append({
+                "id": f.get("id"),
+                "title": f.get("title", ""),
+                "media_count": f.get("media_count", 0),
+                "cover": (f.get("cover") or "").replace("http:", "https:"),
+            })
+        if not d.get("has_more"):
+            break
+        _t.sleep(0.3)
+    return out
+
+
+def fetch_season_content(season_id: int, ps: int = 20, max_pages: int = 30) -> list[dict]:
+    """拉取合集(我追的合集)内的视频。/x/space/fav/season/list,pn 翻页。"""
+    import time as _t
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError("未登录,无法获取合集内容")
+    items: list[dict] = []
+    for pn in range(1, max_pages + 1):
+        resp = requests.get("https://api.bilibili.com/x/space/fav/season/list",
+                            cookies=cj, headers=BROWSER_HEADERS,
+                            params={"season_id": season_id, "pn": pn, "ps": ps}, timeout=12)
+        data = _safe_json(resp)
+        if not data or data.get("code") != 0:
+            raise RuntimeError((data or {}).get("message", "获取合集内容失败(可能被风控,稍后再试)"))
+        d = data.get("data") or {}
+        for m in d.get("medias") or []:
+            bvid = m.get("bvid") or ""
+            title = m.get("title") or ""
+            if m.get("attr"):  # 已失效/下架视频
+                title = title or "已失效视频"
+            items.append({
+                "bvid": bvid,
+                "title": title,
+                "uploader": ((m.get("upper") or {}).get("name")) or "",
+                "uploader_mid": ((m.get("upper") or {}).get("mid")),
+                "thumbnail": (m.get("cover") or "").replace("http:", "https:"),
+                "duration": m.get("duration") or 0,
+                "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+            })
+        if not d.get("has_more"):
+            break
+        _t.sleep(0.3)
+    return items
 
 
 def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20) -> list[dict]:

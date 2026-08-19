@@ -127,8 +127,13 @@
   .content { width: 100%; max-width: 1560px; margin: 0 auto; padding: 0 28px 48px; overflow-y: auto; flex: 1; min-height: 0; }
   .page { display: none; }
   .page.active { display: block; }
-  /* 下载记录页的视频都已下载,勾选无意义,隐藏勾选框 */
-  .page[data-page="downloads"] .vi-check { display: none; }
+
+  /* 下载任务卡(进行中/失败,下载记录页与队列合并后) */
+  .dp-bar { height: 5px; background: var(--bg-muted); border-radius: 3px; overflow: hidden; margin: 6px 0 2px; }
+  .dp-bar i { display: block; height: 100%; background: var(--accent); transition: width .3s; }
+  .dp-meta { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 11.5px; color: var(--text-soft); }
+  .dp-meta .q-label { color: var(--text-mute); }
+  .dp-err { font-size: 11.5px; color: var(--red); margin-top: 3px; word-break: break-all; }
 
   /* 回到顶部 */
   .back-top {
@@ -254,29 +259,8 @@
   .batch-check-row .bc-title { flex: 1; font-size: 13px; word-break: break-all; }
   .batch-check-row .bc-meta { color: var(--text-mute); font-size: 12px; flex-shrink: 0; }
 
-  /* ==================== 任务队列 ==================== */
-  .task-item { padding: 12px 16px; }
-  .task-item + .task-item { border-top: 1px solid var(--border-soft); }
-  .task-item .ti-head { display: flex; align-items: center; gap: 8px; font-size: 13.5px; }
-  .task-item .ti-head .label { font-weight: 600; word-break: break-all; flex: 1; }
-  .task-item .ti-head .label .part-tag { color: var(--accent); font-size: 12px; }
-  .task-item .ti-head .label .q-label { color: var(--text-mute); font-weight: normal; font-size: 12px; }
-  .task-item .ti-body { margin-top: 8px; padding-left: 23px; }
-  .progress-wrap { background: var(--bg-muted); border-radius: 5px; height: 20px; overflow: hidden; position: relative; }
-  .progress-bar { background: var(--accent); height: 100%; transition: width .3s; }
-  .progress-bar.active {
-    background-image: linear-gradient(45deg, rgba(255,255,255,.18) 25%, transparent 25%, transparent 50%, rgba(255,255,255,.18) 50%, rgba(255,255,255,.18) 75%, transparent 75%, transparent);
-    background-size: 20px 20px; animation: progstripes .8s linear infinite;
-  }
-  @keyframes progstripes { from { background-position: 0 0; } to { background-position: 20px 0; } }
-  .progress-text { position: absolute; inset: 0; text-align: center; font-size: 11.5px; color: #fff; line-height: 20px; font-weight: 600; text-shadow: 0 1px 2px rgba(0,0,0,.25); }
-  .task-item .ti-err { color: var(--red); font-size: 12.5px; }
-  .task-item .ti-actions { margin-top: 8px; display: flex; gap: 8px; }
-  .merging-anim { display: flex; align-items: center; gap: 8px; color: var(--amber); font-size: 12.5px; }
-
-  /* 状态标签:色点+文字 */
+  /* ==================== 任务状态标签(下载记录页任务卡) ==================== */
   .status-tag { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text-soft); white-space: nowrap; flex-shrink: 0; }
-  .queue-badge { min-width: 16px; height: 16px; padding: 0 5px; border-radius: 8px; background: var(--accent); color: #fff; font-size: 11px; line-height: 16px; text-align: center; margin-left: 4px; }
   .status-tag::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--text-mute); flex-shrink: 0; }
   .status-tag.downloading::before, .status-tag.merging::before, .status-tag.cancelling::before, .status-tag.retrying::before { background: var(--amber); }
   .status-tag.downloading, .status-tag.merging, .status-tag.retrying { color: var(--amber); }
@@ -304,11 +288,25 @@
   }
   .lib-grid .video-item { margin: 0; }
   .video-item:hover { background: var(--bg-soft); }
-  .thumb-wrap { position: relative; border-radius: 7px; overflow: hidden; background: var(--bg-muted); aspect-ratio: 16/9; }
+  .video-item.checked { background: var(--bg-soft); outline: 1px solid var(--accent); outline-offset: -1px; }
+  .thumb-wrap { position: relative; border-radius: 7px; overflow: hidden; background: var(--bg-muted); aspect-ratio: 16/9; cursor: pointer; }
   .video-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .thumb-dur { position: absolute; right: 5px; bottom: 5px; background: rgba(0,0,0,.68); color: #fff; font-size: 11px; padding: 1px 5px; border-radius: 4px; }
   .vi-check { position: absolute; top: 4px; left: 4px; z-index: 2; width: 16px; height: 16px; opacity: 0; transition: opacity .1s; }
   .video-item:hover .vi-check, .video-item.checked .vi-check { opacity: 1; }
+  /* 下载记录页:封面右下角播放按钮 → 在 Finder 中定位该视频文件 */
+  .vi-play {
+    position: absolute; right: 5px; bottom: 5px; z-index: 2;
+    width: 27px; height: 27px; padding: 0; border: none; border-radius: 50%;
+    background: rgba(0,0,0,.55); color: #fff;
+    display: flex; align-items: center; justify-content: center;
+    cursor: pointer;
+    opacity: 0; transition: opacity .12s, background .12s;
+  }
+  .video-item:hover .vi-play { opacity: 1; }
+  .vi-play:hover { background: var(--accent); }
+  .vi-play svg { width: 12px; height: 12px; margin-left: 1px; }
+  .thumb-wrap.has-play .thumb-dur { left: 5px; right: auto; }
   .vi-title { font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
   .vi-title a, .vi-meta a, .uc-name a { color: inherit; text-decoration: none; }
   .vi-title a:hover, .vi-meta a:hover, .uc-name a:hover { color: var(--accent); text-decoration: underline; }
@@ -325,7 +323,7 @@
   }
   .dl-badge svg { width: 10px; height: 10px; }
 
-  /* 收藏夹文件夹列表 */
+  /* 收藏夹文件夹列表(列表视图行) */
   .fav-folder { display: flex; align-items: center; gap: 12px; padding: 12px 16px; cursor: pointer; transition: background .12s; }
   .fav-folder:hover { background: var(--bg-soft); }
   .fav-folder + .fav-folder { border-top: 1px solid var(--border-soft); }
@@ -335,10 +333,30 @@
     display: flex; align-items: center; justify-content: center;
     font-size: 15px; font-weight: 700;
   }
+  .fav-folder .fav-icon svg { width: 16px; height: 16px; }
   .fav-folder .fav-name { font-weight: 600; font-size: 13.5px; }
   .fav-folder .fav-count { font-size: 12px; color: var(--text-mute); }
   .fav-folder .fav-arrow { margin-left: auto; color: var(--text-mute); display: inline-flex; }
   .fav-folder .fav-arrow svg { width: 15px; height: 15px; }
+  .fav-folder .fav-tag { margin-left: 8px; font-size: 11px; color: var(--accent); background: var(--accent-soft); padding: 1px 6px; border-radius: 6px; font-weight: 600; }
+
+  /* 收藏夹/合集卡片(网格视图) */
+  .fav-card {
+    cursor: pointer; display: flex; flex-direction: column; gap: 6px;
+    border-radius: var(--radius); padding: 8px; margin: -8px;
+    transition: background .12s;
+  }
+  .lib-grid .fav-card { margin: 0; }
+  .fav-card:hover { background: var(--bg-soft); }
+  .fav-card .fc-cover {
+    position: relative; aspect-ratio: 16/9; border-radius: 7px;
+    overflow: hidden; background: var(--bg-muted);
+  }
+  .fav-card .fc-cover img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .fav-card .fc-count { position: absolute; right: 5px; bottom: 5px; background: rgba(0,0,0,.68); color: #fff; font-size: 11px; padding: 1px 5px; border-radius: 4px; }
+  .fav-card .fc-title { font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+  .fav-card .fc-sub { font-size: 11.5px; color: var(--text-mute); display: flex; align-items: center; gap: 4px; }
+  .fav-card .fc-sub svg { width: 12px; height: 12px; }
 
   /* ==================== 底部批量操作条 ==================== */
   .action-bar {
@@ -395,27 +413,42 @@
   .tab-panel { display: none; }
   .tab-panel.active { display: block; }
 
-  /* 抽屉内设置行 */
-  .set-row { display: flex; align-items: center; gap: 10px; padding: 10px 0; flex-wrap: wrap; }
+  /* 抽屉内设置(独立设置抽屉,改动即存) */
+  .set-group {
+    font-size: 11.5px; font-weight: 700; color: var(--text-mute);
+    letter-spacing: .06em; margin: 20px 0 2px;
+    display: flex; align-items: center; gap: 8px;
+  }
+  .set-group::after { content: ""; flex: 1; height: 1px; background: var(--border-soft); }
+  .set-row { display: flex; align-items: center; gap: 12px; padding: 11px 0; }
   .set-row + .set-row { border-top: 1px solid var(--border-soft); }
-  .set-label { font-size: 13px; color: var(--text-main); min-width: 84px; flex-shrink: 0; }
-  .set-row .hint { margin-top: 4px; width: 100%; }
-  .check-line { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--text-soft); margin-right: 14px; }
+  .set-main { flex: 1; min-width: 0; }
+  .set-name { font-size: 13px; font-weight: 600; }
+  .set-desc { font-size: 11.5px; color: var(--text-mute); margin-top: 1px; line-height: 1.45; }
+  .set-ctl { flex-shrink: 0; display: flex; align-items: center; gap: 8px; }
+  .save-flash {
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 12px; color: var(--green);
+    opacity: 0; transition: opacity .25s; pointer-events: none;
+  }
+  .save-flash.show { opacity: 1; }
+  .save-flash svg { width: 12px; height: 12px; }
+  /* 开关 */
+  .tgl { position: relative; display: inline-block; width: 36px; height: 21px; flex-shrink: 0; cursor: pointer; }
+  .tgl input { position: absolute; inset: 0; width: 100%; height: 100%; margin: 0; opacity: 0; cursor: pointer; }
+  .tgl i { position: absolute; inset: 0; border-radius: 11px; background: var(--bg-muted); transition: background .15s; pointer-events: none; }
+  .tgl i::after {
+    content: ""; position: absolute; left: 2.5px; top: 2.5px; width: 16px; height: 16px;
+    border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.25);
+    transition: transform .15s;
+  }
+  .tgl input:checked + i { background: var(--accent); }
+  .tgl input:checked + i::after { transform: translateX(15px); }
 
   /* 分段切换(UP 更新页数据源) */
   .seg { display: inline-flex; background: var(--bg-soft); border-radius: 7px; padding: 2px; gap: 2px; }
   .seg button { background: none; border: none; color: var(--text-soft); padding: 4px 10px; border-radius: 5px; font-size: 12.5px; }
   .seg button.active { background: var(--bg-card); color: var(--text-main); font-weight: 600; box-shadow: var(--shadow-sm); }
-
-  /* 追更新视频提示横幅 */
-  .new-banner {
-    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-    padding: 10px 14px; margin-bottom: 14px; border-radius: 10px;
-    background: var(--accent-soft); border: 1px solid var(--accent);
-    color: var(--accent); font-size: 13px;
-  }
-  .new-banner .nb-text { font-weight: 600; }
-  .new-banner .nb-actions { margin-left: auto; display: flex; gap: 8px; }
 
   /* 关注 UP 网格(站点关注 → 关注 UP 视图) */
   .up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
@@ -429,6 +462,21 @@
   .up-list { display: flex; flex-direction: column; gap: 6px; }
   .up-list .up-card { padding: 8px 12px; }
 
+  /* 自动下载管理卡片(页面上直接管理:清晰度 + 移除) */
+  .up-card.mgr { flex-wrap: wrap; row-gap: 8px; }
+  .up-card.mgr .uc-ctl { flex-basis: 100%; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
+  .up-card.mgr .uc-ctl select { font-size: 12px; padding: 3px 6px; }
+  .up-list .up-card.mgr .uc-ctl { flex-basis: auto; margin-left: auto; }
+
+  /* 后台拉到新内容的提示条 */
+  .fresh-hint {
+    display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+    padding: 8px 14px; margin-bottom: 12px; border-radius: 10px;
+    background: var(--accent-soft); border: 1px dashed var(--accent);
+    color: var(--accent); font-size: 12.5px;
+  }
+  .fresh-hint .fh-text { font-weight: 600; }
+
   /* UP 清单条目 */
   .up-item { display: flex; align-items: center; gap: 10px; padding: 10px 0; }
   .up-item + .up-item { border-top: 1px solid var(--border-soft); }
@@ -436,8 +484,6 @@
   .up-item .up-name { font-size: 13.5px; font-weight: 600; }
   .up-item .up-sub { font-size: 11.5px; color: var(--text-mute); }
   .up-item .up-right { margin-left: auto; display: flex; align-items: center; gap: 10px; flex-shrink: 0; }
-  .switch-label { display: inline-flex; align-items: center; gap: 5px; font-size: 12px; color: var(--text-mute); }
-  .switch-label.on { color: var(--accent); }
 
   /* 登录状态卡 */
   .acct-card {
@@ -511,6 +557,7 @@
       <div class="nav-item active" data-page="downloads" onclick="goPage('downloads')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
         <span>下载记录</span>
+        <span class="nav-badge" id="dl-badge" style="display:none;"></span>
       </div>
       <div class="nav-item" data-page="history" onclick="goPage('history')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
@@ -518,12 +565,15 @@
       </div>
       <div class="nav-item" data-page="feed" onclick="goPage('feed')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
-        <span>UP 更新</span>
-        <span class="nav-badge" id="feed-badge" style="display:none;"></span>
+        <span>关注动态</span>
+      </div>
+      <div class="nav-item" data-page="seasons" onclick="goPage('seasons')">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
+        <span>追更合集</span>
       </div>
       <div class="nav-item" data-page="fav" onclick="goPage('fav')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        <span>收藏夹</span>
+        <span>我的收藏</span>
       </div>
       <div class="nav-item" data-page="later" onclick="goPage('later')">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -552,8 +602,10 @@
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
               新建下载
             </button>
-            <button class="ghost" onclick="openDrawer('queue')">
-              下载队列<span class="queue-badge" id="queue-badge" style="display:none;"></span>
+            <button class="ghost" onclick="clearAllRecords()">清除全部记录</button>
+            <button class="ghost" onclick="clearInvalidRecords()">清除失败/失效记录</button>
+            <button class="ghost icon-only" onclick="loadDownloads()" title="刷新">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             </button>
             <input type="text" class="search-input lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
             <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
@@ -579,46 +631,70 @@
         <div id="list-history" class="lib-list"></div>
       </div>
 
-      <!-- ===== 页面:UP 更新 ===== -->
+      <!-- ===== 页面:关注动态 ===== -->
       <div class="page" data-page="feed">
         <div class="page-head">
-          <h1>UP 更新</h1>
+          <h1>关注动态</h1>
           <div class="ph-right">
             <div class="seg" id="feed-seg">
               <button data-src="bili" onclick="setFeedSource('bili')">关注动态</button>
-              <button data-src="up" onclick="setFeedSource('up')">自动下载</button>
               <button data-src="all" onclick="setFeedSource('all')">关注列表</button>
+              <button data-src="mine" onclick="setFeedSource('mine')">自动下载</button>
             </div>
-            <button class="ghost" onclick="openDrawer('uplist')">
-              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M16 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="8.5" cy="7" r="4"/><line x1="20" y1="8" x2="20" y2="14"/><line x1="23" y1="11" x2="17" y2="11"/></svg>
-              管理 UP 清单
-            </button>
             <input type="text" class="search-input lib-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="refreshLib()" title="刷新看新增">
+            <button class="ghost icon-only" onclick="refreshLib()" title="刷新">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             </button>
             <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
           </div>
         </div>
-        <div class="new-banner" id="feed-new-banner" style="display:none;"></div>
         <div class="sub-info" id="meta-feed"></div>
+        <!-- 自动下载管理条(仅 mine 视图显示):添加 UP + 立即检查 -->
+        <div class="panel" id="feed-mine-tools" style="display:none;">
+          <div class="panel-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;">
+            <input type="text" id="up-add-input" placeholder="粘贴 UP 主页链接或 mid;加入后新投稿自动进入下载队列" style="flex:1;min-width:220px;">
+            <button class="primary sm" onclick="upAdd()">添加</button>
+            <button class="ghost sm" id="up-check-btn" onclick="upCheckNow(this)">立即检查新视频</button>
+          </div>
+        </div>
         <div id="list-feed" class="lib-list"></div>
       </div>
 
-      <!-- ===== 页面:收藏夹 ===== -->
+      <!-- ===== 页面:追更合集 ===== -->
+      <div class="page" data-page="seasons">
+        <div class="page-head">
+          <h1 id="season-page-title">追更合集</h1>
+          <div class="ph-right">
+            <button class="ghost" id="season-back-btn" onclick="seasonBack()" style="display:none;">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
+              返回
+            </button>
+            <input type="text" class="search-input lib-search" placeholder="搜索合集 / 标题 / UP 主" oninput="applyLibFilter()">
+            <button class="ghost icon-only" onclick="seasonRefresh()" title="刷新">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          </div>
+        </div>
+        <div class="sub-info" id="meta-seasons"></div>
+        <div id="season-overview"></div>
+        <div id="list-seasons" class="lib-list" style="display:none;"></div>
+      </div>
+
+      <!-- ===== 页面:我的收藏 ===== -->
       <div class="page" data-page="fav">
         <div class="page-head">
-          <h1 id="fav-page-title">收藏夹</h1>
+          <h1 id="fav-page-title">我的收藏</h1>
           <div class="ph-right">
             <button class="ghost" id="fav-back-btn" onclick="favBack()" style="display:none;">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
               返回
             </button>
-            <input type="text" class="search-input lib-search" id="fav-search" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()" style="display:none;">
+            <input type="text" class="search-input lib-search" id="fav-search" placeholder="搜索收藏夹 / 标题 / UP 主" oninput="applyLibFilter()" style="display:none;">
             <button class="ghost icon-only" onclick="favRefresh()" title="刷新">
               <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
             </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图" id="fav-view-btn" style="display:none;"></button>
+            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图" id="fav-view-btn"></button>
           </div>
         </div>
         <div class="sub-info" id="meta-fav"></div>
@@ -652,7 +728,7 @@
     <span class="ab-count">已选 <b class="lib-count">0</b> 项</span>
     <button class="ghost" onclick="libToggleAll(true)">全选</button>
     <button class="ghost" onclick="libToggleAll(false)">取消</button>
-    <select class="lib-quality" style="margin-left:auto;">
+    <select class="lib-quality" id="ab-quality" style="margin-left:auto;">
       <option value="">最高画质(自动)</option>
       <option value="1080P">1080P</option>
       <option value="720P">720P</option>
@@ -660,7 +736,10 @@
       <option value="360P">360P</option>
       <option value="音频">仅音频</option>
     </select>
-    <button class="primary" onclick="libDownload()">下载选中</button>
+    <button class="primary" id="ab-download-btn" onclick="libDownload()">下载选中</button>
+    <!-- 下载记录页:勾选任务/记录后的管理动作 -->
+    <button class="danger" id="ab-del-rec" style="display:none;" onclick="delSelected(false)">删除记录</button>
+    <button class="danger" id="ab-del-file" style="display:none;" onclick="delSelected(true)">删除记录 + 文件</button>
   </div>
 </div>
 
@@ -673,13 +752,16 @@
 <div class="drawer-mask" id="drawer-mask" onclick="closeDrawer()"></div>
 <div class="drawer" id="drawer">
 
-  <!-- 账号/登录 -->
+  <!-- 账号/登录 + 全局设置 -->
   <div class="drawer-panel" id="dpanel-account">
     <div class="drawer-head">
       <h2>账号</h2>
-      <button class="quiet icon-only" onclick="closeDrawer()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
+      <div style="display:flex;align-items:center;gap:10px;">
+        <span class="save-flash" id="save-flash"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>已自动保存</span>
+        <button class="quiet icon-only" onclick="closeDrawer()">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
     </div>
     <div class="drawer-body">
       <div class="acct-card">
@@ -721,88 +803,95 @@
         </div>
       </div>
 
-      <div class="drawer-section">设置</div>
-      <div class="set-row">
-        <span class="set-label">下载目录</span>
-        <input type="text" id="config-dir-input" style="flex:1;min-width:160px;">
-        <button class="ghost sm" onclick="resetConfigDir()">恢复默认</button>
-        <div class="hint" style="margin-top:2px;">路径含 ~ 自动展开,目录不存在会自动创建。</div>
+      <!-- 全局设置(改动即生效) -->
+      <div class="set-group">下载</div>
+      <div class="set-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+        <div class="set-main">
+          <div class="set-name">下载目录</div>
+          <div class="set-desc">路径含 ~ 自动展开,目录不存在会自动创建</div>
+        </div>
+        <div style="display:flex;gap:8px;">
+          <input type="text" id="config-dir-input" style="flex:1;min-width:140px;" onchange="saveDir()">
+          <button class="ghost sm" onclick="resetConfigDir()">默认</button>
+        </div>
       </div>
       <div class="set-row">
-        <span class="set-label">同时下载数</span>
-        <select id="config-concurrent">
-          <option value="1">1</option>
-          <option value="2">2</option>
-          <option value="3">3</option>
-          <option value="4">4</option>
-        </select>
+        <div class="set-main"><div class="set-name">同时下载数</div></div>
+        <div class="set-ctl">
+          <select id="config-concurrent" onchange="saveConfigField({max_concurrent: this.value})">
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+          </select>
+        </div>
       </div>
       <div class="set-row">
-        <span class="set-label">单任务限速</span>
-        <select id="config-ratelimit">
-          <option value="0">不限速</option>
-          <option value="1">1 MB/s</option>
-          <option value="2">2 MB/s</option>
-          <option value="5">5 MB/s</option>
-          <option value="10">10 MB/s</option>
-          <option value="20">20 MB/s</option>
-        </select>
-        <div class="hint" style="margin-top:2px;">并发和限速只影响后续启动的任务。</div>
+        <div class="set-main">
+          <div class="set-name">单任务限速</div>
+          <div class="set-desc">并发和限速只影响后续启动的任务</div>
+        </div>
+        <div class="set-ctl">
+          <select id="config-ratelimit" onchange="saveConfigField({ratelimit_mbps: this.value})">
+            <option value="0">不限速</option>
+            <option value="1">1 MB/s</option>
+            <option value="2">2 MB/s</option>
+            <option value="5">5 MB/s</option>
+            <option value="10">10 MB/s</option>
+            <option value="20">20 MB/s</option>
+          </select>
+        </div>
       </div>
-      <div class="set-row">
-        <span class="set-label">主题</span>
-        <select id="config-theme">
-          <option value="auto">跟随系统</option>
-          <option value="light">浅色</option>
-          <option value="dark">深色</option>
-        </select>
-      </div>
-      <div class="set-row">
-        <span class="set-label">下载附件</span>
-        <label class="check-line"><input type="checkbox" id="config-save-danmaku"> 弹幕</label>
-        <label class="check-line"><input type="checkbox" id="config-save-subtitle"> 字幕</label>
-        <label class="check-line"><input type="checkbox" id="config-save-cover"> 封面</label>
-      </div>
-      <div class="set-row">
-        <span class="set-label">归档/通知</span>
-        <label class="check-line"><input type="checkbox" id="config-sort-by-up"> 按 UP 建子目录</label>
-        <label class="check-line"><input type="checkbox" id="config-notify"> 完成通知</label>
-      </div>
-      <div class="set-row">
-        <span class="set-label">追更间隔</span>
-        <select id="config-auto-interval">
-          <option value="10">10 分钟</option>
-          <option value="30">30 分钟</option>
-          <option value="60">1 小时</option>
-          <option value="120">2 小时</option>
-          <option value="360">6 小时</option>
-        </select>
-        <div class="hint" style="margin-top:2px;">追更只检查 UP 清单里开启了「自动追更」的 UP;发现新视频会在「UP 更新」页提示,由你确认后才下载;间隔刻意较长(低频串行更安全)。</div>
-      </div>
-      <div class="set-row" style="border-top:none;">
-        <span class="set-label"></span>
-        <button class="primary" onclick="saveAllConfig()">保存设置</button>
-      </div>
-    </div>
-  </div>
 
-  <!-- UP 清单管理 -->
-  <div class="drawer-panel" id="dpanel-uplist">
-    <div class="drawer-head">
-      <h2>UP 清单</h2>
-      <button class="quiet icon-only" onclick="closeDrawer()">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-      </button>
-    </div>
-    <div class="drawer-body">
-      <div class="btn-row" style="margin-bottom:14px;">
-        <input type="text" id="up-add-input" placeholder="粘贴 UP 主页链接或 mid" style="flex:1;">
-        <button class="primary" onclick="upAdd()">添加</button>
+      <div class="set-group">自动下载</div>
+      <div class="set-row">
+        <div class="set-main">
+          <div class="set-name">检查间隔</div>
+          <div class="set-desc">按间隔检查 UP 清单,新投稿自动加入下载队列;串行低速、间隔刻意保守,防 B 站风控</div>
+        </div>
+        <div class="set-ctl">
+          <select id="config-auto-interval" onchange="saveConfigField({auto_refresh_minutes: this.value})">
+            <option value="10">10 分钟</option>
+            <option value="30">30 分钟</option>
+            <option value="60">1 小时</option>
+            <option value="120">2 小时</option>
+            <option value="360">6 小时</option>
+          </select>
+        </div>
       </div>
-      <div id="up-list-panel"></div>
-      <div class="btn-row" style="margin-top:16px;">
-        <button class="ghost sm" onclick="upShowAll()">查看本地历史</button>
-        <button class="ghost sm" onclick="upRefreshFromDrawer()">刷新看新增</button>
+
+      <div class="set-group">保存内容</div>
+      <div class="set-row">
+        <div class="set-main"><div class="set-name">弹幕</div><div class="set-desc">下载后另存 .xml 弹幕文件</div></div>
+        <div class="set-ctl"><label class="tgl"><input type="checkbox" id="config-save-danmaku" onchange="saveChk('save_danmaku', this)"><i></i></label></div>
+      </div>
+      <div class="set-row">
+        <div class="set-main"><div class="set-name">字幕</div><div class="set-desc">保存 CC 字幕(srt,若有)</div></div>
+        <div class="set-ctl"><label class="tgl"><input type="checkbox" id="config-save-subtitle" onchange="saveChk('save_subtitle', this)"><i></i></label></div>
+      </div>
+      <div class="set-row">
+        <div class="set-main"><div class="set-name">封面</div><div class="set-desc">保存封面图</div></div>
+        <div class="set-ctl"><label class="tgl"><input type="checkbox" id="config-save-cover" onchange="saveChk('save_cover', this)"><i></i></label></div>
+      </div>
+      <div class="set-row">
+        <div class="set-main"><div class="set-name">按 UP 建子目录</div><div class="set-desc">下载文件归档到「下载目录/UP 名/」下</div></div>
+        <div class="set-ctl"><label class="tgl"><input type="checkbox" id="config-sort-by-up" onchange="saveChk('sort_by_up', this)"><i></i></label></div>
+      </div>
+      <div class="set-row">
+        <div class="set-main"><div class="set-name">完成通知</div><div class="set-desc">下载完成发 macOS 系统通知</div></div>
+        <div class="set-ctl"><label class="tgl"><input type="checkbox" id="config-notify" onchange="saveChk('notify', this)"><i></i></label></div>
+      </div>
+
+      <div class="set-group">外观</div>
+      <div class="set-row">
+        <div class="set-main"><div class="set-name">主题</div></div>
+        <div class="set-ctl">
+          <select id="config-theme" onchange="saveTheme(this.value)">
+            <option value="auto">跟随系统</option>
+            <option value="light">浅色</option>
+            <option value="dark">深色</option>
+          </select>
+        </div>
       </div>
     </div>
   </div>
@@ -825,36 +914,8 @@
     </div>
   </div>
 
-  <!-- 下载队列 -->
-  <div class="drawer-panel" id="dpanel-queue">
-    <div class="drawer-head">
-      <h2>下载队列</h2>
-      <div style="display:flex;gap:8px;align-items:center;">
-        <button class="ghost sm" onclick="deleteSelectedTasks()">删除选中</button>
-        <button class="danger sm" onclick="clearAllRecords()">清除记录</button>
-        <button class="quiet icon-only" onclick="closeDrawer()">
-          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
-        </button>
-      </div>
-    </div>
-    <div class="drawer-body" style="padding:0 0 16px;">
-      <div id="queue-list"></div>
-    </div>
-  </div>
-
 </div>
 
-<!-- 删除选择弹窗 -->
-<div class="modal-mask" id="del-modal">
-  <div class="modal">
-    <div class="modal-title" id="del-modal-title"></div>
-    <div class="btn-col">
-      <button class="ghost" onclick="delChoice(false)">只删除下载记录</button>
-      <button class="danger" onclick="delChoice(true)">删除记录 + 已下载文件</button>
-      <button class="quiet" onclick="closeDelModal()">取消</button>
-    </div>
-  </div>
-</div>
 
 <script>
 const API = (p) => p;  // 同源
@@ -872,6 +933,9 @@ const ICONS = {
   moon: _I('<path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>'),
   check: _I('<polyline points="20 6 9 17 4 12"/>'),
   chevron: _I('<polyline points="9 18 15 12 9 6"/>'),
+  play: _I('<polygon points="7 4 19 12 7 20 7 4" fill="currentColor" stroke="none"/>'),
+  folder: _I('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'),
+  layers: _I('<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>'),
 };
 const icon = (name) => ICONS[name] || '';
 
@@ -883,7 +947,6 @@ function openDrawer(name) {
   panel.classList.add('active');
   document.getElementById('drawer').classList.add('open');
   document.getElementById('drawer-mask').classList.add('open');
-  if (name === 'uplist') upListRender();
   if (name === 'account') loadConfigIntoUI();
 }
 function closeDrawer() {
@@ -904,7 +967,7 @@ document.querySelectorAll('.tab').forEach(t => {
 });
 
 /* ---------- 页面路由 ---------- */
-const LIB_PAGES = ['downloads', 'history', 'feed', 'fav', 'later'];
+const LIB_PAGES = ['downloads', 'history', 'feed', 'seasons', 'fav', 'later'];
 let _libMode = 'history';
 
 function goPage(name, skipLoad) {
@@ -917,6 +980,7 @@ function goPage(name, skipLoad) {
     _shown = 0;
     _libChecked.clear();
     if (name === 'fav') { _favCurrent = null; favShowFolders(); }
+    if (name === 'seasons') { _seasonsCurrent = null; seasonShowOverview(); }
     const pg = document.querySelector(`.page[data-page="${name}"]`);
     const s = pg && pg.querySelector('.lib-search');
     if (s) s.value = '';
@@ -1024,6 +1088,7 @@ async function uploadCookieTxt() {
 
 /* ---------- 解析:单视频/批量自动判断 ---------- */
 let _singleUrl = '';
+let _singleInfo = null;  // 最近一次解析结果(带 uploader_mid,下载时回传)
 
 async function smartParse() {
   const text = document.getElementById('dl-input').value.trim();
@@ -1045,6 +1110,7 @@ async function parseVideo(url) {
     })).json();
     if (!r.ok) throw new Error(r.error || '解析失败');
     _singleUrl = url;
+    _singleInfo = r.info;
     renderParseResult(r.info, url, r.logged_in);
   } catch (e) {
     box.innerHTML = '<div class="empty">' + e.message + '</div>';
@@ -1103,6 +1169,7 @@ async function loadPartFormats(url) {
       body: JSON.stringify({ url, page: parseInt(page) })
     })).json();
     if (!r.ok) throw new Error(r.error || '加载失败');
+    _singleInfo = r.info;
     fbox.innerHTML = `
       ${qualitySelectHtml(r.info.formats, r.info.best_label)}
       <div class="btn-row" style="margin-top:10px;"><button class="primary" onclick="startDownload()">开始下载</button></div>`;
@@ -1137,7 +1204,7 @@ async function startDownload() {
   try {
     const r = await (await fetch(API('/api/download'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ url, label, page })
+      body: JSON.stringify({ url, label, page, uploader_mid: (_singleInfo && _singleInfo.uploader_mid) || 0 })
     })).json();
     if (!r.ok) {
       if (r.task_id) alert(r.error + ',请在「下载记录」查看该任务');
@@ -1146,7 +1213,7 @@ async function startDownload() {
     }
     subscribeProgress(r.task_id);
     closeDrawer();
-    openDrawer('queue');
+    goPage('downloads');
   } catch (e) { alert(e.message); }
 }
 
@@ -1241,7 +1308,8 @@ async function batchDownload() {
     const idx = parseInt(cb.dataset.bidx);
     const it = _batchItems[idx];
     return { url: it.url, title: it.title, page: it.url.includes('?p=') ? parseInt(it.url.split('?p=')[1]) : 1,
-             thumbnail: it.thumbnail || '', uploader: it.uploader || '', duration: it.duration || 0 };
+             thumbnail: it.thumbnail || '', uploader: it.uploader || '',
+             uploader_mid: it.uploader_mid || 0, duration: it.duration || 0 };
   });
   const skipped = items.filter(it => isUrlDownloaded(it.url)).length;
   items = items.filter(it => !isUrlDownloaded(it.url));
@@ -1262,8 +1330,9 @@ let _libItems = [];
 
 const withIdx = (arr) => arr.map((it, idx) => ({ it, idx }));
 
-/* 每页条数自适应:列数按 CSS auto-fill 规则由容器宽度推,行数按视口高度推,
-   让首屏铺满不留空;列表视图由用户自选条数(记住偏好)。
+/* 每页条数自适应:列数按 CSS auto-fill 规则由容器宽度推,行数按视口高度推。
+   网格首屏刻意多渲染一行——正好铺满一屏时滚动条不出现,scroll 事件永远
+   不触发,无限滚会卡死(列表视图不受影响,由用户自选条数)。
    rowH 为单行卡片高度:视频卡约 232,UP 行卡约 76。 */
 function computePageSize(minCol = 200, gap = 14, rowH = 232) {
   if (_libView === 'list') {
@@ -1272,7 +1341,7 @@ function computePageSize(minCol = 200, gap = 14, rowH = 232) {
   const d = libDom();
   const w = (d && d.list) ? d.list.clientWidth : 1064;
   const cols = Math.max(2, Math.floor((w + gap) / (minCol + gap)));
-  const rows = Math.max(2, Math.floor((window.innerHeight - 150) / rowH));
+  const rows = Math.max(2, Math.floor((window.innerHeight - 150) / rowH) + 1);
   return cols * rows;
 }
 
@@ -1292,8 +1361,11 @@ function libDom() {
    历史页本地加载完后还能向服务器继续要更早的。 */
 let _shown = 0;
 
+/* UP 卡片类视图(关注列表 / 自动下载清单)不走视频卡那套分块 */
+const isUpCardsView = () => _libMode === 'feed' && _feedSource !== 'bili';
+
 function currentChunk() {
-  if (_libMode === 'feed' && _feedSource === 'all') {
+  if (isUpCardsView()) {
     return _libView === 'list' ? computePageSize() : computePageSize(240, 12, 76);
   }
   return _libView === 'list' ? computePageSize() : computePageSize(200, 14, 232);
@@ -1302,7 +1374,11 @@ function currentChunk() {
 function renderPage() {
   const d = libDom();
   if (!d.list) return;
-  if (_libMode === 'feed' && _feedSource === 'all') { renderFollowAll(); return; }
+  if (_libMode === 'feed' && _feedSource === 'all') { renderFollowAll(); maybeFillScreen(); return; }
+  if (_libMode === 'feed' && _feedSource === 'mine') { renderMyUps(); return; }
+  // 收藏夹/追更合集首屏(卡片视图):切视图/resize 时也要重渲染
+  if (_libMode === 'fav' && !_favCurrent) { renderFavFolders(); return; }
+  if (_libMode === 'seasons' && !_seasonsCurrent) { renderSeasonsOverview(); return; }
   const q = getLibSearchQuery();
   let filtered = _libItems;
   if (q) {
@@ -1322,11 +1398,44 @@ function renderPage() {
       ? `共 ${_libItems.length} 条 · 匹配 ${filtered.length}`
       : (_libMode === 'history' ? '' : `共 ${_libItems.length} 条`);
   }
+  maybeFillScreen();
+}
+
+/* 内容不足一屏时滚动条不出现、scroll 事件不触发,无限滚会卡死;
+   这里主动补块直到可滚动或没有更多(历史还能向服务器要更早的)。 */
+let _filling = false;
+function maybeFillScreen() {
+  if (_filling || getLibSearchQuery()) return;
+  if (_libMode === 'feed' && _feedSource === 'mine') return;  // UP 清单一次全渲染
+  if (_libMode === 'fav' && !_favCurrent) return;             // 收藏夹首屏无分页
+  if (_libMode === 'seasons' && !_seasonsCurrent) return;     // 合集首屏无分页
+  const sc = document.querySelector('.content');
+  if (!sc || sc.scrollHeight > sc.clientHeight + 2) return;
+  _filling = true;
+  try {
+    for (let i = 0; i < 10 && sc.scrollHeight <= sc.clientHeight + 2; i++) {
+      if (_libMode === 'feed' && _feedSource === 'all') {
+        if (_followAllShown >= _followAll.length) break;
+        _followAllShown += currentChunk();
+        renderFollowAll();
+      } else {
+        if (_shown >= _libItems.length) {
+          if (_libMode === 'history' && _histHasMore) maybeLoadMoreHistory();
+          break;
+        }
+        _shown += currentChunk();
+        renderLibList(_libItems.slice(0, _shown).map((it, idx) => ({ it, idx })), libDom().list);
+      }
+    }
+  } finally { _filling = false; }
 }
 
 function maybeLoadMore() {
   if (getLibSearchQuery()) return;
   if (_libMode === 'feed' && _feedSource === 'all') { maybeLoadMoreFollowAll(); return; }
+  if (_libMode === 'feed' && _feedSource === 'mine') return;
+  if (_libMode === 'fav' && !_favCurrent) return;
+  if (_libMode === 'seasons' && !_seasonsCurrent) return;
   if (!LIB_PAGES.includes(_libMode)) return;
   if (_shown < _libItems.length) {
     _shown += currentChunk();
@@ -1384,9 +1493,86 @@ async function maybeLoadMoreHistory() {
   _histLoading = false;
 }
 
-/* ---------- UP 更新(我的清单 / 站点关注 两个数据源) ---------- */
-let _feedSource = localStorage.getItem('bd_feed_src') || 'up';
-let _biliFollowCache = [];
+/* ---------- 统一「缓存优先 → 后台拉新 → 有新数据提示」 ----------
+   打开页面立即渲染 /api/cache 的上次数据(绝不干等),同时后台请求真接口;
+   拉到的数据和当前展示的不一样时,页面顶部提示「查看最新」,不打断浏览。 */
+const _freshApply = {};  // page -> 应用新数据的函数
+
+function _sig(arr) {
+  if (!Array.isArray(arr) || arr.length === 0) return "0";
+  const id = (x) => x.bvid || x.mid || x.id || x.url || "";
+  return arr.length + "|" + id(arr[0]) + "|" + id(arr[arr.length - 1]);
+}
+
+function showFreshHint(page, applyFn) {
+  const pg = document.querySelector(`.page[data-page="${page}"]`);
+  if (!pg) return;
+  _freshApply[page] = applyFn;
+  let bar = pg.querySelector('.fresh-hint');
+  if (!bar) {
+    bar = document.createElement('div');
+    bar.className = 'fresh-hint';
+    (pg.querySelector('.sub-info') || pg.querySelector('.page-head')).after(bar);
+  }
+  bar.innerHTML = `<span class="fh-text">获取到新内容</span>
+    <button class="primary sm" onclick="applyFresh('${page}')">查看最新</button>
+    <button class="quiet sm" onclick="dismissFresh('${page}')">暂不</button>`;
+  bar.style.display = '';
+}
+
+function applyFresh(page) {
+  const fn = _freshApply[page];
+  dismissFresh(page);
+  if (fn) fn();
+}
+
+function dismissFresh(page) {
+  const pg = document.querySelector(`.page[data-page="${page}"]`);
+  const bar = pg && pg.querySelector('.fresh-hint');
+  if (bar) bar.style.display = 'none';
+  delete _freshApply[page];
+}
+
+/* opts: { page, api, cacheKey, extract(body)->数组, apply(body), stillValid()->bool,
+           showLoading()?, showError(msg)? }
+   缓存渲染每次都做;同源后台请求在途时不叠加(切走再切回靠缓存立即渲染,
+   在途请求完成后按 stillValid 决定直接应用或提示)。 */
+const _bgInFlight = {};  // cacheKey -> bool
+async function cachedLoad(opts) {
+  const { page, api, cacheKey, extract, apply, stillValid } = opts;
+  let shown = null;
+  try {
+    const r = await (await fetch(API('/api/cache/' + cacheKey))).json();
+    if (r.ok && r.data && r.data.ok) {
+      shown = extract(r.data);
+      if (stillValid()) apply(r.data);
+    }
+  } catch (e) { /* 无缓存,走加载态 */ }
+  if (shown === null && opts.showLoading && stillValid()) opts.showLoading();
+  if (_bgInFlight[cacheKey]) return;
+  _bgInFlight[cacheKey] = true;
+  try {
+    const r2 = await (await fetch(API(api))).json();
+    if (!r2.ok) {
+      if (shown === null && opts.showError) opts.showError(r2.error || '加载失败');
+      return;
+    }
+    const fresh = extract(r2);
+    if (shown === null) { if (stillValid()) apply(r2); return; }
+    if (_sig(fresh) !== _sig(shown) && stillValid()) {
+      showFreshHint(page, () => { if (stillValid()) apply(r2); });
+    }
+  } catch (e) {
+    if (shown === null && opts.showError) opts.showError(e.message);
+  } finally { _bgInFlight[cacheKey] = false; }
+}
+
+/* ---------- UP 更新(关注动态 / 关注列表 / 自动下载清单) ---------- */
+let _feedSource = (() => {
+  const s = localStorage.getItem('bd_feed_src');
+  return (s === 'all' || s === 'mine') ? s : 'bili';  // 旧值 'up' 已废弃
+})();
+let _myUps = [];
 
 function setFeedSource(src) {
   _feedSource = src;
@@ -1396,157 +1582,193 @@ function setFeedSource(src) {
   _shown = 0;
   _followAllShown = 0;
   _libChecked.clear();
+  dismissFresh('feed');
+  document.getElementById('feed-mine-tools').style.display = src === 'mine' ? '' : 'none';
   refreshLib();
 }
 
 function syncFeedSeg() {
   document.querySelectorAll('#feed-seg button').forEach(b => b.classList.toggle('active', b.dataset.src === _feedSource));
+  const tools = document.getElementById('feed-mine-tools');
+  if (tools) tools.style.display = _feedSource === 'mine' ? '' : 'none';
 }
-
-let _upChecking = false;
-
-async function loadFollowUp() {
-  const d = libDom();
-  // 1) 本地缓存直接展示,绝不进加载态
-  let cached = [];
-  try {
-    const h = await (await fetch(API('/api/up-history'))).json();
-    cached = (h.ok && h.items) || [];
-  } catch (e) { /* ignore */ }
-  const onThis = () => _libMode === 'feed' && _feedSource === 'up';
-  if (cached.length) {
-    _libItems = cached;
-    if (onThis()) renderPage();
-  } else if (onThis()) {
-    d.list.innerHTML = '<div class="empty">还没有检查记录。后台追更线程会按间隔检查,也可点「刷新」立即检查(串行防限流,约需数十秒)。</div>';
-  }
-  loadPending();
-  // 2) 后台静默检查;成功才替换,失败/限流保持现有内容,只靠横幅/角标提示
-  if (_upChecking) return;
-  _upChecking = true;
-  try {
-    const r = await (await fetch(API('/api/up-updates?include_seen=true'))).json();
-    if (r.ok && (r.items || []).length && onThis()) {
-      _libItems = r.items;
-      renderPage();
-    }
-  } catch (e) { /* 静默:不打断已展示内容 */ }
-  _upChecking = false;
-  loadPending();
-}
-
-/* ---------- 追更待确认(发现新视频 → 横幅/角标 → 用户点下载) ---------- */
-let _pendingCount = 0;
-
-async function loadPending() {
-  try {
-    const r = await (await fetch(API('/api/pending'))).json();
-    const items = (r.ok && r.items) || [];
-    _pendingCount = items.length;
-    const badge = document.getElementById('feed-badge');
-    if (badge) {
-      badge.style.display = _pendingCount ? '' : 'none';
-      badge.textContent = _pendingCount > 99 ? '99+' : _pendingCount;
-    }
-    const banner = document.getElementById('feed-new-banner');
-    if (banner) {
-      if (_pendingCount) {
-        banner.style.display = '';
-        banner.innerHTML = `
-          <span class="nb-text">追更发现 ${_pendingCount} 个新视频</span>
-          <span style="color:var(--text-soft);">确认后入队下载(单并发串行)</span>
-          <span class="nb-actions">
-            <button class="primary sm" onclick="downloadPending()">全部下载</button>
-            <button class="quiet sm" onclick="dismissPending()">忽略</button>
-          </span>`;
-      } else {
-        banner.style.display = 'none';
-      }
-    }
-  } catch (e) { /* ignore */ }
-}
-
-async function downloadPending() {
-  try {
-    const r = await (await fetch(API('/api/pending/download'), { method: 'POST' })).json();
-    if (!r.ok) throw new Error(r.error || '入队失败');
-    alert(`已加入 ${r.count} 个下载任务`);
-    r.task_ids.forEach(subscribeProgress);
-    await loadPending();
-    openDrawer('queue');
-  } catch (e) { alert(e.message); }
-}
-
-async function dismissPending() {
-  if (!confirm('忽略这 ' + _pendingCount + ' 个新视频?忽略后不再提示(本地历史里仍可查)。')) return;
-  await fetch(API('/api/pending'), { method: 'DELETE' }).catch(() => {});
-  await loadPending();
-}
-
-let _biliChecking = false;
 
 async function loadFollowBili() {
-  const d = libDom();
-  const onThis = () => _libMode === 'feed' && _feedSource === 'bili';
-  // 缓存直接展示,不进加载态
-  if (_biliFollowCache.length) {
-    _libItems = _biliFollowCache;
-    if (onThis()) renderPage();
-  } else if (onThis()) {
-    d.list.innerHTML = '<div class="empty">正在后台拉取关注 UP 的近期投稿(串行防限流,约需数十秒),完成后自动展示。</div>';
-  }
-  // 后台静默拉取(5 分钟服务端缓存);成功才落页面,失败保持现状
-  if (_biliChecking) return;
-  _biliChecking = true;
-  try {
-    const r = await (await fetch(API('/api/follow-updates'))).json();
-    if (r.ok && (r.items || []).length) {
-      _biliFollowCache = r.items;
-      if (onThis()) { _libItems = _biliFollowCache; renderPage(); }
-    }
-  } catch (e) { /* 静默 */ }
-  _biliChecking = false;
+  // 缓存优先(串行拉 30 个 UP 要几十秒,绝不让人干等);后台拉新,有变化提示
+  await cachedLoad({
+      page: 'feed',
+      api: '/api/follow-updates',
+      cacheKey: 'follow_updates',
+      extract: (b) => b.items || [],
+      stillValid: () => _libMode === 'feed' && _feedSource === 'bili',
+      showLoading: () => {
+        const d = libDom();
+        d.meta.textContent = '';
+        d.list.innerHTML = '<div class="empty">正在后台拉取关注 UP 的近期投稿(串行防限流,约需数十秒),完成后自动展示。</div>';
+      },
+      showError: (msg) => {
+        libDom().list.innerHTML = `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadFollowBili()">${icon('refresh')} 重试</button></div>`;
+      },
+      apply: (b) => {
+        _libItems = b.items || [];
+        renderPage();
+        libDom().meta.textContent = `共 ${_libItems.length} 条`;
+      },
+    });
 }
 
-/* ---------- 收藏夹 ---------- */
+/* ---------- 自动下载清单(页面直接管理:添加/清晰度/移除/立即检查) ---------- */
+async function loadMyUps() {
+  const d = libDom();
+  d.meta.textContent = '';
+  try {
+    const r = await (await fetch(API('/api/up-list'))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _myUps = r.ups || [];
+    renderMyUps();
+  } catch (e) {
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadMyUps()">${icon('refresh')} 重试</button></div>`;
+  }
+}
+
+function renderMyUps() {
+  const d = libDom();
+  const q = getLibSearchQuery();
+  let ups = _myUps;
+  if (q) ups = _myUps.filter(u =>
+    (u.uname || '').toLowerCase().includes(q) || String(u.mid).includes(q));
+  d.list.className = 'lib-list';
+  if (ups.length === 0) {
+    d.list.innerHTML = `<div class="empty">${q ? '没有匹配结果(试试其他关键词)'
+      : '清单为空。在上方粘贴 UP 主页链接添加,或到「关注列表」一键加入。<br>加入清单的 UP,新投稿会自动进入下载队列。'}</div>`;
+  } else {
+    d.list.innerHTML = `<div class="${_libView === 'grid' ? 'up-grid' : 'up-list'}">` + ups.map(u => `
+      <div class="up-card mgr">
+        <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'">
+        <div class="uc-name" title="${escapeHtml(u.uname)}"><a href="https://space.bilibili.com/${u.mid}" target="_blank" rel="noopener">${escapeHtml(u.uname || ('UP ' + u.mid))}</a></div>
+        <span class="dl-badge">${icon('check')}自动下载</span>
+        <div class="uc-ctl">
+          ${upQualitySelect(u.mid, u.quality || '')}
+          <button class="danger sm" onclick="upRemove(${u.mid})">移除</button>
+        </div>
+      </div>`).join('') + '</div>';
+  }
+  if (d.meta) {
+    d.meta.textContent = q
+      ? `清单 ${_myUps.length} 个 UP · 匹配 ${ups.length}`
+      : `共 ${_myUps.length} 个 UP 在自动下载名单 · 新投稿自动进入下载队列`;
+  }
+}
+
+/* ---------- 我的收藏(收藏夹列表,一级页) ---------- */
 let _favFolders = [];
-let _favCurrent = null;
+let _favCurrent = null;  // 已进入的收藏夹 id
 
 function favShowFolders() {
   document.getElementById('fav-folder-list').style.display = '';
   document.getElementById('list-fav').style.display = 'none';
   document.getElementById('fav-back-btn').style.display = 'none';
-  document.getElementById('fav-search').style.display = 'none';
-  document.getElementById('fav-view-btn').style.display = 'none';
-  document.getElementById('fav-page-title').textContent = '收藏夹';
-  document.getElementById('meta-fav').textContent = '';
+  document.getElementById('fav-search').style.display = '';
+  document.getElementById('fav-page-title').textContent = '我的收藏';
+  document.getElementById('meta-fav').textContent =
+    _favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '';
 }
 
 async function favLoadFolders() {
-  const box = document.getElementById('fav-folder-list');
+  _favCurrent = null;
   favShowFolders();
-  box.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹列表...</div>';
-  try {
-    const r = await (await fetch(API('/api/fav-folders'))).json();
-    if (!r.ok) throw new Error(r.error || '加载失败');
-    _favFolders = r.folders || [];
-    if (_favFolders.length === 0) {
-      box.innerHTML = '<div class="empty">暂无收藏夹</div>';
-      return;
-    }
-    box.innerHTML = `<div class="panel"><div class="panel-body tight">` +
-      _favFolders.map(f => `
-        <div class="fav-folder" onclick="favEnter(${f.id})">
-          <div class="fav-icon">${escapeHtml((f.title || '?').slice(0,1))}</div>
-          <div>
-            <div class="fav-name">${escapeHtml(f.title)}</div>
-            <div class="fav-count">${f.media_count || 0} 个视频</div>
-          </div>
-          <span class="fav-arrow">${icon('chevron')}</span>
-        </div>`).join('') + '</div></div>';
-  } catch (e) {
-    box.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
+  await cachedLoad({
+    page: 'fav',
+    api: '/api/fav-folders',
+    cacheKey: 'fav_folders',
+    extract: (b) => b.folders || [],
+    stillValid: () => _libMode === 'fav' && !_favCurrent,
+    showLoading: () => {
+      document.getElementById('fav-folder-list').innerHTML =
+        '<div class="empty"><span class="spinner"></span>加载收藏夹列表...</div>';
+    },
+    showError: (msg) => {
+      document.getElementById('fav-folder-list').innerHTML =
+        `<div class="empty">${msg}<br><button class="ghost sm" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
+    },
+    apply: (b) => {
+      _favFolders = b.folders || [];
+      favShowFolders();
+      renderFavFolders();
+    },
+  });
+}
+
+/* 我的收藏首屏:收藏夹卡片/行,支持列表/网格两种视图与标题搜索 */
+function renderFavFolders() {
+  const box = document.getElementById('fav-folder-list');
+  if (!box) return;
+  const q = getLibSearchQuery();
+  let list = _favFolders;
+  if (q) list = _favFolders.filter(f => (f.title || '').toLowerCase().includes(q));
+  const metaEl = document.getElementById('meta-fav');
+  if (metaEl) {
+    metaEl.textContent = q
+      ? `共 ${_favFolders.length} 个收藏夹 · 匹配 ${list.length}`
+      : (_favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '');
   }
+  if (list.length === 0) {
+    box.innerHTML = `<div class="empty">${q ? '没有匹配的收藏夹(试试其他关键词)' : '暂无收藏夹'}</div>`;
+    return;
+  }
+  box.innerHTML = _libView === 'grid'
+    ? `<div class="lib-grid">${list.map(favFolderCard).join('')}</div>`
+    : `<div class="panel"><div class="panel-body tight">${list.map(favFolderRow).join('')}</div></div>`;
+}
+
+const _favCard = (cover, count, title, subHtml, onclickAttr) => `
+  <div class="fav-card" onclick="${onclickAttr}">
+    <div class="fc-cover">
+      <img src="${escapeHtml(cover)}" onerror="this.style.visibility='hidden'" loading="lazy">
+      <span class="fc-count">${count} 个视频</span>
+    </div>
+    <div class="fc-title">${escapeHtml(title)}</div>
+    <div class="fc-sub">${subHtml}</div>
+  </div>`;
+
+const favFolderCard = (f) =>
+  _favCard(f.cover || '', f.media_count || 0, f.title || '(未命名)',
+           icon('folder') + '收藏夹', `favEnter(${f.id})`);
+
+const favSeasonCard = (s) =>
+  _favCard(s.cover || '', s.media_count || 0, s.title || '(未命名)',
+           icon('layers') + '追更中', `seasonEnter(${s.id})`);
+
+function favFolderRow(f) {
+  return `
+    <div class="fav-folder" onclick="favEnter(${f.id})">
+      <div class="fav-icon">${escapeHtml((f.title || '?').slice(0, 1))}</div>
+      <div>
+        <div class="fav-name">${escapeHtml(f.title)}</div>
+        <div class="fav-count">${f.media_count || 0} 个视频</div>
+      </div>
+      <span class="fav-arrow">${icon('chevron')}</span>
+    </div>`;
+}
+
+function favSeasonRow(s) {
+  return `
+    <div class="fav-folder" onclick="seasonEnter(${s.id})">
+      <div class="fav-icon">${icon('layers')}</div>
+      <div>
+        <div class="fav-name">${escapeHtml(s.title)}<span class="fav-tag">追更中</span></div>
+        <div class="fav-count">${s.media_count || 0} 个视频</div>
+      </div>
+      <span class="fav-arrow">${icon('chevron')}</span>
+    </div>`;
+}
+
+function _favShowList(title) {
+  document.getElementById('fav-folder-list').style.display = 'none';
+  document.getElementById('list-fav').style.display = '';
+  document.getElementById('fav-back-btn').style.display = '';
+  document.getElementById('fav-search').style.display = '';
+  document.getElementById('fav-page-title').textContent = title;
 }
 
 async function favEnter(fid) {
@@ -1554,12 +1776,7 @@ async function favEnter(fid) {
   const folder = _favFolders.find(f => f.id === fid);
   if (!folder) return;
   _favCurrent = fid;
-  document.getElementById('fav-folder-list').style.display = 'none';
-  document.getElementById('list-fav').style.display = '';
-  document.getElementById('fav-back-btn').style.display = '';
-  document.getElementById('fav-search').style.display = '';
-  document.getElementById('fav-view-btn').style.display = '';
-  document.getElementById('fav-page-title').textContent = folder.title;
+  _favShowList(folder.title);
   const d = libDom();
   d.meta.textContent = '';
   d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
@@ -1577,7 +1794,6 @@ async function favEnter(fid) {
 }
 
 function favBack() {
-  _favCurrent = null;
   favLoadFolders();
 }
 
@@ -1586,7 +1802,110 @@ function favRefresh() {
   else favLoadFolders();
 }
 
-/* ---------- UP 清单管理(抽屉) ---------- */
+/* ---------- 追更合集(独立一级页) ---------- */
+let _seasons = [];
+let _seasonsCurrent = null;  // 已进入的合集 season_id
+
+function seasonShowOverview() {
+  document.getElementById('season-overview').style.display = '';
+  document.getElementById('list-seasons').style.display = 'none';
+  document.getElementById('season-back-btn').style.display = 'none';
+  document.getElementById('season-page-title').textContent = '追更合集';
+  document.getElementById('meta-seasons').textContent =
+    _seasons.length ? `共 ${_seasons.length} 个追更中的合集` : '';
+}
+
+async function loadSeasons() {
+  _seasonsCurrent = null;
+  seasonShowOverview();
+  await cachedLoad({
+    page: 'seasons',
+    api: '/api/fav-seasons',
+    cacheKey: 'fav_seasons',
+    extract: (b) => b.seasons || [],
+    stillValid: () => _libMode === 'seasons' && !_seasonsCurrent,
+    showLoading: () => {
+      document.getElementById('season-overview').innerHTML =
+        '<div class="empty"><span class="spinner"></span>加载追更合集...</div>';
+    },
+    showError: (msg) => {
+      document.getElementById('season-overview').innerHTML =
+        `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadSeasons()">${icon('refresh')} 重试</button></div>`;
+    },
+    apply: (b) => {
+      _seasons = b.seasons || [];
+      seasonShowOverview();
+      renderSeasonsOverview();
+    },
+  });
+}
+
+/* 追更合集首屏:合集卡片/行,可按标题搜索 */
+function renderSeasonsOverview() {
+  const box = document.getElementById('season-overview');
+  if (!box) return;
+  const q = getLibSearchQuery();
+  let list = _seasons;
+  if (q) list = _seasons.filter(s => (s.title || '').toLowerCase().includes(q));
+  const metaEl = document.getElementById('meta-seasons');
+  if (metaEl) {
+    metaEl.textContent = q
+      ? `共 ${_seasons.length} 个合集 · 匹配 ${list.length}`
+      : (_seasons.length ? `共 ${_seasons.length} 个追更中的合集` : '');
+  }
+  if (list.length === 0) {
+    box.innerHTML = `<div class="empty">${q ? '没有匹配结果(试试其他关键词)' : '还没有追的合集。在 B 站视频页点「追合集」后,会出现在这里。'}</div>`;
+    return;
+  }
+  box.innerHTML = _libView === 'grid'
+    ? `<div class="lib-grid">${list.map(favSeasonCard).join('')}</div>`
+    : `<div class="panel"><div class="panel-body tight">${list.map(favSeasonRow).join('')}</div></div>`;
+}
+
+async function seasonEnter(sid) {
+  const season = _seasons.find(s => s.id === sid);
+  if (!season) return;
+  _seasonsCurrent = sid;
+  document.getElementById('season-overview').style.display = 'none';
+  document.getElementById('list-seasons').style.display = '';
+  document.getElementById('season-back-btn').style.display = '';
+  document.getElementById('season-page-title').textContent = season.title;
+  const d = libDom();
+  d.meta.textContent = '';
+  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载合集内容...</div>';
+  try {
+    const r = await (await fetch(API(`/api/season-content?season_id=${sid}`))).json();
+    if (!r.ok) throw new Error(r.error || '加载失败');
+    _libItems = r.items || [];
+    _libChecked.clear();
+    _shown = 0;
+    renderPage();
+    d.meta.textContent = `共 ${_libItems.length} 条`;
+  } catch (e) {
+    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="seasonEnter(${sid})">${icon('refresh')} 重试</button></div>`;
+  }
+}
+
+function seasonBack() {
+  loadSeasons();
+}
+
+function seasonRefresh() {
+  if (_seasonsCurrent) seasonEnter(_seasonsCurrent);
+  else loadSeasons();
+}
+
+/* ---------- UP 清单操作(管理界面在「自动下载」视图里) ---------- */
+const QUALITY_OPTIONS = [
+  ['', '最高画质(自动)'], ['1080P', '1080P'], ['720P', '720P'],
+  ['480P', '480P'], ['360P', '360P'], ['音频', '仅音频'],
+];
+
+const upQualitySelect = (mid, cur) =>
+  `<select onchange="upSetQuality(${mid}, this.value)" title="该 UP 新视频自动下载的默认清晰度">` +
+  QUALITY_OPTIONS.map(([v, l]) => `<option value="${v}" ${v === cur ? 'selected' : ''}>${l}</option>`).join('') +
+  `</select>`;
+
 async function upAdd() {
   const input = document.getElementById('up-add-input');
   const v = input.value.trim();
@@ -1598,97 +1917,66 @@ async function upAdd() {
     })).json();
     if (!r.ok) throw new Error(r.error || '添加失败');
     input.value = '';
-    alert(`已添加 UP (mid: ${r.up.mid}${r.up.uname ? ', ' + r.up.uname : ''})`);
-    upListRender();
+    alert(`已加入清单:${r.up.uname || ('UP ' + r.up.mid)}\n之后 TA 的新投稿会自动进入下载队列。`);
+    if (_libMode === 'feed' && _feedSource === 'mine') loadMyUps();
   } catch (e) { alert(e.message); }
 }
 
-async function upListRender() {
-  const panel = document.getElementById('up-list-panel');
-  const r = await (await fetch(API('/api/up-list'))).json();
-  if (!r.ok || r.ups.length === 0) {
-    panel.innerHTML = '<div style="color:var(--text-mute);font-size:13px;padding:12px 0;">清单为空。粘贴主页链接或 mid 添加 UP,开启「自动追更」后系统会定时检查新投稿,发现后在页面提示、由你确认下载。</div>';
-    return;
-  }
-  panel.innerHTML = `<div style="font-size:12px;color:var(--text-mute);margin-bottom:6px;">已添加 ${r.ups.length} 个 UP</div>` + r.ups.map(u => `
-    <div class="up-item">
-      <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'">
-      <div style="flex:1;min-width:0;">
-        <div class="up-name">${escapeHtml(u.uname || ('UP ' + u.mid))}</div>
-        <div class="up-sub">mid:${u.mid} ${u.fetched_at ? '· 上次拉取 ' + formatTime(u.fetched_at) : '· 未拉取过'}</div>
-      </div>
-      <div class="up-right">
-        <label class="switch-label ${u.auto ? 'on' : ''}">
-          <input type="checkbox" ${u.auto ? 'checked' : ''} onchange="upToggleAuto(${u.mid}, this.checked)">追更
-        </label>
-        <button class="danger sm" onclick="upRemove(${u.mid})">移除</button>
-      </div>
-    </div>`).join('');
-}
-
-async function upToggleAuto(mid, auto) {
+async function upSetQuality(mid, quality) {
   try {
-    const r = await (await fetch(API('/api/up-list/set-auto'), {
+    const r = await (await fetch(API('/api/up-list/set-quality'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ mid, auto })
+      body: JSON.stringify({ mid, quality })
     })).json();
-    if (!r.ok) { alert('切换失败'); upListRender(); return; }
-    if (auto) alert('已开启自动追更。新投稿会按设置的间隔自动入队下载(串行低速)。');
-    upListRender();
+    if (!r.ok) { alert('设置失败'); loadMyUps(); }
   } catch (e) { alert(e.message); }
 }
 
 async function upRemove(mid) {
-  if (!confirm('从清单移除 UP ' + mid + '?')) return;
+  if (!confirm('从清单移除后,该 UP 的新投稿不再自动下载。确定移除?')) return;
   const r = await (await fetch(API('/api/up-list/remove'), {
     method: 'POST', headers: {'Content-Type': 'application/json'},
     body: JSON.stringify({ mid })
   })).json();
-  if (r.ok) upListRender();
+  if (r.ok && _libMode === 'feed' && _feedSource === 'mine') loadMyUps();
 }
 
-async function upRefresh() {
-  goPage('feed');
-}
-
-function upRefreshFromDrawer() {
-  closeDrawer();
-  goPage('feed');
-}
-
-async function upShowAll() {
-  closeDrawer();
-  goPage('feed', true);
-  const d = libDom();
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>读取本地历史...</div>';
-  d.meta.textContent = '';
+async function upCheckNow(btn) {
   try {
-    const r = await (await fetch(API('/api/up-history'))).json();
-    if (!r.ok) throw new Error(r.error || '读取失败');
-    _libItems = r.items || [];
-    renderPage();
-    d.meta.textContent = _libItems.length
-      ? `共 ${_libItems.length} 条(本地历史,上限 100 条)`
-      : '历史为空——点「刷新」后,发现的视频会存在这里';
-  } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="upShowAll()">${icon('refresh')} 重试</button></div>`;
-  }
+    await fetch(API('/api/up-list/check'), { method: 'POST' });
+    if (btn) {
+      const old = btn.innerHTML;
+      btn.disabled = true;
+      btn.innerHTML = '<span class="spinner"></span>检查中...';
+      // 串行检查耗时取决于 UP 数,先给个固定反馈窗口,期间队列轮询会带回新任务
+      setTimeout(() => { btn.disabled = false; btn.innerHTML = old; }, 30000);
+    }
+  } catch (e) { alert(e.message); }
 }
 
 /* ---------- 稍后再看 ---------- */
 async function loadWatchlater() {
-  const d = libDom();
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
-  d.meta.textContent = '';
-  try {
-    const r = await (await fetch(API('/api/watchlater'))).json();
-    if (!r.ok) throw new Error(r.error || '加载失败');
-    _libItems = r.items || [];
-    renderPage();
-    d.meta.textContent = `共 ${_libItems.length} 条`;
-  } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
-  }
+  await cachedLoad({
+    page: 'later',
+    api: '/api/watchlater',
+    cacheKey: 'watchlater',
+    extract: (b) => b.items || [],
+    stillValid: () => _libMode === 'later',
+    showLoading: () => {
+      const d = libDom();
+      d.meta.textContent = '';
+      d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
+    },
+    showError: (msg) => {
+      const d = libDom();
+      d.list.innerHTML = `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
+    },
+    apply: (b) => {
+      _libItems = b.items || [];
+      renderPage();
+      libDom().meta.textContent = `共 ${_libItems.length} 条`;
+    },
+  });
 }
 
 /* 各页面进入时的加载分发 */
@@ -1697,47 +1985,106 @@ function refreshLib() {
   else if (_libMode === 'feed') {
     if (_feedSource === 'bili') loadFollowBili();
     else if (_feedSource === 'all') loadFollowAll();
-    else loadFollowUp();
+    else loadMyUps();
   }
+  else if (_libMode === 'seasons') loadSeasons();
   else if (_libMode === 'fav') favLoadFolders();
   else if (_libMode === 'later') loadWatchlater();
   else loadHistory();
 }
 
-/* ---------- 下载记录(已完成任务渲染成视频网格) ---------- */
+/* ---------- 下载记录(队列已并入:进行中任务在前,已完成在后) ---------- */
+const TASK_ACTIVE = ['queued', 'downloading', 'merging', 'cancelling', 'retrying'];
+const TASK_STATUS_CN = {
+  queued: '排队中', downloading: '下载中', merging: '合并中',
+  cancelling: '取消中', retrying: '重试中', failed: '失败',
+  cancelled: '已取消', interrupted: '已中断',
+};
+
 async function loadDownloads() {
   const d = libDom();
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载下载记录...</div>';
   d.meta.textContent = '';
   try {
     const r = await (await fetch(API('/api/tasks'))).json();
     const tasks = r.tasks || [];
     _doneBvids = new Set(tasks.filter(t => t.status === 'done')
       .map(t => bvFromUrl(t.url)).filter(Boolean));
-    updateQueueBadge(tasks);
-    _libItems = tasks.filter(t => t.status === 'done')
-      .map(t => ({
-        url: t.url, title: t.title || '(无标题)',
-        uploader: t.uploader || '', thumbnail: t.thumbnail || '',
-        duration: t.duration || 0, view_at: t.finished_at || 0,
-      }))
-      .sort((a, b) => (b.view_at || 0) - (a.view_at || 0));
+    updateDownloadsBadge(tasks);
+    // 进行中在最前(时间倒序),其余(完成/失败/取消)按完成时间倒序
+    _libItems = tasks.map(t => {
+      const it = {
+        task_id: t.task_id, status: t.status,
+        url: t.url, title: t.title || '(解析中)', label: t.label || '',
+        uploader: t.uploader || '', uploader_mid: t.uploader_mid || 0,
+        thumbnail: t.thumbnail || '', duration: t.duration || 0,
+        view_at: t.finished_at || t.created_at || 0,
+        progress: t.progress || 0, speed: t.speed || 0, eta: t.eta || 0,
+        error: t.error || '',
+        _sort: (TASK_ACTIVE.includes(t.status) ? 0 : 1) * 1e10 - (t.finished_at || t.created_at || 0),
+      };
+      return it;
+    }).sort((a, b) => a._sort - b._sort);
     renderPage();
-    d.meta.textContent = `共 ${_libItems.length} 条`;
+    const doneN = _libItems.filter(x => x.status === 'done').length;
+    const activeN = _libItems.filter(x => TASK_ACTIVE.includes(x.status)).length;
+    d.meta.textContent = `已下载 ${doneN} 条` + (activeN ? ` · 进行中 ${activeN}` : '');
     loadStats();
-    loadTasks();  // 队列抽屉渲染 + 进行中任务的 SSE 订阅
+    tasks.filter(t => TASK_ACTIVE.includes(t.status)).forEach(t => subscribeProgress(t.task_id));
   } catch (e) {
     d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadDownloads()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
-function updateQueueBadge(tasks) {
-  const active = tasks.filter(t => ['queued', 'downloading', 'merging', 'cancelling', 'retrying'].includes(t.status)).length;
-  const badge = document.getElementById('queue-badge');
+/* 进行中任务数 → 侧边栏「下载记录」角标 */
+function updateDownloadsBadge(tasks) {
+  const active = tasks.filter(t => TASK_ACTIVE.includes(t.status)).length;
+  const badge = document.getElementById('dl-badge');
   if (badge) {
     badge.style.display = active ? '' : 'none';
-    badge.textContent = active;
+    badge.textContent = active > 99 ? '99+' : active;
   }
+}
+
+/* SSE 进度 → 就地更新任务卡,不打断浏览 */
+function updateTaskCard(t) {
+  const card = document.getElementById('vt-' + t.task_id);
+  if (!card) { maybeReloadDownloads(); return; }
+  const pct = Math.min(100, Math.max(0, t.progress || 0));
+  const bar = card.querySelector('.dp-bar i');
+  if (bar) bar.style.width = pct + '%';
+  const set = (sel, val) => { const el = card.querySelector(sel); if (el && val != null) el.textContent = val; };
+  set('.dp-pct', pct + '%');
+  if (t.speed) set('.dp-spd', t.speed > 1024 ? (t.speed / 1024).toFixed(1) + ' MB/s' : t.speed.toFixed(0) + ' KB/s');
+  if (t.eta) set('.dp-eta', '剩余 ' + t.eta + 's');
+  const tag = card.querySelector('.status-tag');
+  if (tag) { tag.className = 'status-tag ' + t.status; tag.textContent = TASK_STATUS_CN[t.status] || t.status; }
+  if (['done', 'failed', 'cancelled', 'interrupted'].includes(t.status)) maybeReloadDownloads();
+}
+
+/* 勾选期间不整体重拉(列表会重排、勾选索引移位),清空勾选后再拉 */
+let _dlDirty = false;
+function maybeReloadDownloads() {
+  if (document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
+    _dlDirty = true;
+    return;
+  }
+  loadDownloads().then(() => {
+    if (_libMode !== 'downloads' && LIB_PAGES.includes(_libMode)) renderPage();  // 刷其它页的「已下载」角标
+  });
+}
+
+/* 30 秒兜底轮询(与 SSE 互为保险):角标 + 下载记录页静默刷新 */
+async function pollTasks() {
+  try {
+    const tasks = await (await fetch(API('/api/tasks'))).json().then(r => r.tasks || []);
+    _doneBvids = new Set(tasks.filter(t => t.status === 'done')
+      .map(t => bvFromUrl(t.url)).filter(Boolean));
+    updateDownloadsBadge(tasks);
+    if (_libMode === 'downloads'
+        && !document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
+      loadDownloads();
+    }
+  } catch (e) { /* ignore */ }
 }
 
 /* ---------- 关注列表(站点关注的全部 UP,可加入本地清单) ---------- */
@@ -1747,20 +2094,29 @@ let _followAllShown = 0;  // 无限流:当前已显示的条数
 let _localMids = new Set();
 
 async function loadFollowAll() {
-  const d = libDom();
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载你关注的 UP...</div>';
-  d.meta.textContent = '';
-  try {
-    const r = await (await fetch(API('/api/followings'))).json();
-    if (!r.ok) throw new Error(r.error || '加载失败');
-    _followAll = r.items || [];
-    _followAllTotal = r.total || _followAll.length;
-    _localMids = new Set(r.local_mids || []);
-    _followAllShown = 0;
-    renderPage();
-  } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadFollowAll()">${icon('refresh')} 重试</button></div>`;
-  }
+  await cachedLoad({
+    page: 'feed',
+    api: '/api/followings',
+    cacheKey: 'followings',
+    extract: (b) => b.items || [],
+    stillValid: () => _libMode === 'feed' && _feedSource === 'all',
+    showLoading: () => {
+      const d = libDom();
+      d.meta.textContent = '';
+      d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载你关注的 UP...</div>';
+    },
+    showError: (msg) => {
+      const d = libDom();
+      d.list.innerHTML = `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadFollowAll()">${icon('refresh')} 重试</button></div>`;
+    },
+    apply: (b) => {
+      _followAll = b.items || [];
+      _followAllTotal = b.total || _followAll.length;
+      _localMids = new Set(b.local_mids || []);
+      _followAllShown = 0;
+      renderPage();
+    },
+  });
 }
 
 function renderFollowAll() {
@@ -1815,6 +2171,51 @@ async function upAddLocal(mid, btnEl) {
 }
 
 /* ---------- 列表项渲染 ---------- */
+
+/* 下载记录页的任务卡:进行中带进度条(供 SSE 就地更新),失败显示原因 */
+function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
+  const active = TASK_ACTIVE.includes(it.status);
+  const pct = Math.min(100, Math.max(0, it.progress || 0));
+  const spd = it.speed > 1024 ? (it.speed / 1024).toFixed(1) + ' MB/s' : (it.speed || 0).toFixed(0) + ' KB/s';
+  const bar = active
+    ? `<div class="dp-bar"><i style="width:${pct}%"></i></div>` : '';
+  const err = ['failed', 'interrupted'].includes(it.status) && it.error
+    ? `<div class="dp-err" title="${escapeAttr(it.error)}">${escapeHtml(String(it.error).slice(0, 80))}</div>` : '';
+  const live = it.status === 'downloading'
+    ? `<span class="dp-pct">${pct}%</span><span class="dp-spd">${spd}</span>` +
+      (it.eta ? `<span class="dp-eta">剩余 ${it.eta}s</span>` : '')
+    : (it.status === 'merging' ? '<span class="dp-eta">正在合并音视频...</span>' : '');
+  const metaInner = `<span class="status-tag ${it.status}">${TASK_STATUS_CN[it.status] || it.status}</span>${live}` +
+    (it.label ? `<span class="q-label">[${escapeHtml(it.label)}]</span>` : '');
+  const cancelBtn = active
+    ? `<button class="danger sm" onclick="cancelTask('${it.task_id}')">取消</button>` : '';
+  const titleHtml = it.url
+    ? `<a href="${escapeAttr(it.url)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
+    : escapeHtml(it.title);
+  const thumb = `<div class="thumb-wrap"><img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy"></div>`;
+  if (!isGrid) {
+    return `
+    <div class="video-item lv${checkedCls}" id="vt-${it.task_id}">
+      ${checkHtml}
+      ${thumb}
+      <div class="lv-body">
+        <div class="vi-title">${titleHtml}</div>
+        ${bar}
+        <div class="dp-meta">${metaInner}${cancelBtn}</div>
+        ${err}
+      </div>
+    </div>`;
+  }
+  return `
+  <div class="video-item${checkedCls}" id="vt-${it.task_id}">
+    ${checkHtml}
+    ${thumb}
+    <div class="vi-title">${titleHtml}</div>
+    ${bar}
+    <div class="dp-meta">${metaInner}${cancelBtn}</div>
+    ${err}
+  </div>`;
+}
 function renderLibList(pairs, container) {
   if (pairs.length === 0) {
     if (_libMode === 'downloads') {
@@ -1824,11 +2225,14 @@ function renderLibList(pairs, container) {
     }
     const q = getLibSearchQuery();
     const isFiltering = q.length > 0;
-    const retryMap = { history: 'loadHistory', feed: 'refreshLib', fav: 'favLoadFolders', later: 'loadWatchlater' };
+    const retryMap = { history: 'loadHistory', feed: 'refreshLib', fav: 'favRefresh',
+                       seasons: 'seasonRefresh', later: 'loadWatchlater' };
     const retryFn = retryMap[_libMode] || 'loadHistory';
-    const hint = isFiltering
-      ? '没有匹配结果(试试其他关键词)'
-      : '暂无内容(可能 B 站限流或账号无数据)';
+    let hint;
+    if (isFiltering) hint = '没有匹配结果(试试其他关键词)';
+    else if (_libMode === 'fav') hint = '这里还没有收藏任何视频';
+    else if (_libMode === 'seasons') hint = '这个合集还没有视频';
+    else hint = '暂无内容(可能 B 站限流或账号无数据)';
     container.innerHTML = `<div class="empty">${hint}<br><button class="ghost sm" onclick="${retryFn}()">${icon('refresh')} 重新加载</button></div>`;
     return;
   }
@@ -1839,6 +2243,10 @@ function renderLibList(pairs, container) {
     const checkedAttr = checked ? 'checked' : '';
     const checkedCls = checked ? ' checked' : '';
     const checkHtml = `<input type="checkbox" data-libidx="${origIdx}" ${checkedAttr} onchange="toggleLibCheck(${origIdx}, this.checked)" class="vi-check">`;
+    // 下载记录页:进行中/失败/取消的任务渲染成进度卡(队列已并入)
+    if (_libMode === 'downloads' && it.status && it.status !== 'done') {
+      return taskCardHtml(it, isGrid, checkHtml, checkedCls);
+    }
     const badgeHtml = (_libMode !== 'downloads' && isUrlDownloaded(it.url))
       ? `<span class="dl-badge">${icon('check')}已下载</span>` : '';
     const pct = it.watched_pct || 0;
@@ -1855,13 +2263,17 @@ function renderLibList(pairs, container) {
       ? `<a href="${escapeAttr(it.url)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
       : escapeHtml(it.title);
     const durHtml = it.duration ? `<span class="thumb-dur">${formatDuration(it.duration)}</span>` : '';
+    // 下载记录:封面右下角播放按钮 → 在 Finder 中定位该视频下载到的文件
+    const playHtml = (_libMode === 'downloads' && it.task_id)
+      ? `<button class="vi-play" title="在 Finder 中显示该视频" onclick="event.stopPropagation();revealTask('${it.task_id}')">${icon('play')}</button>` : '';
+    const thumbCls = playHtml ? 'thumb-wrap has-play' : 'thumb-wrap';
     if (!isGrid) {
       return `
       <div class="video-item lv${checkedCls}">
         ${checkHtml}
-        <div class="thumb-wrap">
+        <div class="${thumbCls}">
           <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy">
-          ${durHtml}
+          ${durHtml}${playHtml}
         </div>
         <div class="lv-body">
           <div class="vi-title">${titleHtml} ${badgeHtml}</div>
@@ -1873,9 +2285,9 @@ function renderLibList(pairs, container) {
     return `
     <div class="video-item${checkedCls}">
       ${checkHtml}
-      <div class="thumb-wrap">
+      <div class="${thumbCls}">
         <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy">
-        ${durHtml}
+        ${durHtml}${playHtml}
       </div>
       <div class="vi-title">${titleHtml} ${badgeHtml}</div>
       <div class="vi-meta">${metaParts.join(' · ')}</div>
@@ -1920,13 +2332,29 @@ const _libChecked = new Set();
 
 function toggleLibCheck(origIdx, checked) {
   if (checked) _libChecked.add(origIdx); else _libChecked.delete(origIdx);
+  const cb = document.querySelector(`.page.active input[data-libidx="${origIdx}"]`);
+  const item = cb ? cb.closest('.video-item') : null;
+  if (item) item.classList.toggle('checked', checked);
   updateLibCount();
 }
 
+/* 点击封面图切换勾选(勾选框太小不好点)。播放按钮/链接内部已 stopPropagation,不会误触发。 */
+document.addEventListener('click', (e) => {
+  const thumb = e.target.closest('.video-item .thumb-wrap');
+  if (!thumb) return;
+  const cb = thumb.closest('.video-item').querySelector('input.vi-check');
+  if (!cb) return;
+  cb.checked = !cb.checked;  // 先更新 DOM,让 计数/操作条 看到新状态
+  toggleLibCheck(parseInt(cb.dataset.libidx), cb.checked);
+});
+
 function libToggleAll(checked) {
-  document.querySelectorAll('.page.active input[data-libidx]').forEach(cb => {
+  document.querySelectorAll('.page.active .video-item').forEach(item => {
+    const cb = item.querySelector('input.vi-check');
+    if (!cb) return;
     const idx = parseInt(cb.dataset.libidx);
     cb.checked = checked;
+    item.classList.toggle('checked', checked);
     if (checked) _libChecked.add(idx); else _libChecked.delete(idx);
   });
   updateLibCount();
@@ -1935,16 +2363,27 @@ function libToggleAll(checked) {
 function updateLibCount() {
   const n = document.querySelectorAll('.page.active input[data-libidx]:checked').length;
   document.querySelectorAll('.lib-count').forEach(el => el.textContent = n);
+  // 下载页勾选期间被打断的列表刷新,清空勾选后补上
+  if (_libMode === 'downloads' && n === 0 && _dlDirty) { _dlDirty = false; loadDownloads(); }
   updateActionBar();
 }
 
 function updateActionBar() {
   const bar = document.getElementById('lib-action-bar');
-  const onLibPage = LIB_PAGES.includes(_libMode) && _libMode !== 'downloads'
-    && !(_libMode === 'feed' && _feedSource === 'all')
+  const onLibPage = LIB_PAGES.includes(_libMode)
+    && !isUpCardsView()
+    && !(_libMode === 'fav' && !_favCurrent)
+    && !(_libMode === 'seasons' && !_seasonsCurrent)
     && document.querySelector(`.page.active[data-page="${_libMode}"]`);
   const n = document.querySelectorAll('.page.active input[data-libidx]:checked').length;
   bar.classList.toggle('show', !!onLibPage && n > 0);
+  // 按页面切换动作组:下载记录页勾选的是任务/记录 → 删除;其它页 → 批量下载
+  const isDl = _libMode === 'downloads';
+  const show = (id, on) => { const el = document.getElementById(id); if (el) el.style.display = on ? '' : 'none'; };
+  show('ab-quality', !isDl);
+  show('ab-download-btn', !isDl);
+  show('ab-del-rec', isDl);
+  show('ab-del-file', isDl);
 }
 
 async function libDownload() {
@@ -1955,7 +2394,8 @@ async function libDownload() {
   let items = checked.map(cb => {
     const it = _libItems[parseInt(cb.dataset.libidx)];
     return { url: it.url, title: it.title, page: 1,
-             thumbnail: it.thumbnail || '', uploader: it.uploader || '', duration: it.duration || 0 };
+             thumbnail: it.thumbnail || '', uploader: it.uploader || '',
+             uploader_mid: it.uploader_mid || 0, duration: it.duration || 0 };
   });
   const skipped = items.filter(it => isUrlDownloaded(it.url)).length;
   items = items.filter(it => !isUrlDownloaded(it.url));
@@ -1968,7 +2408,7 @@ async function libDownload() {
     if (!r.ok) throw new Error(r.error || '启动失败');
     alert(`已加入 ${r.count} 个下载任务${skipped ? `(跳过 ${skipped} 个已下载)` : ''}`);
     r.task_ids.forEach(subscribeProgress);
-    openDrawer('queue');
+    goPage('downloads');
   } catch (e) { alert(e.message); }
 }
 
@@ -1991,14 +2431,8 @@ function subscribeProgress(taskId, retries) {
   es.onmessage = (ev) => {
     retries = 0;
     const t = JSON.parse(ev.data);
-    renderTask(t);
-    if (t.status === 'done') {
-      loadTasks().then(() => {
-        if (_libMode === 'downloads') loadDownloads();
-        else refreshLibBadges();
-      });
-    }
-    if (['done', 'failed', 'cancelled'].includes(t.status)) {
+    updateTaskCard(t);
+    if (['done', 'failed', 'cancelled', 'interrupted'].includes(t.status)) {
       es.close(); delete _activeSSE[taskId];
     }
   };
@@ -2010,115 +2444,62 @@ function subscribeProgress(taskId, retries) {
   };
 }
 
-function renderTask(t) {
-  let box = document.getElementById('task-' + t.task_id);
-  const queueList = document.getElementById('queue-list');
-  if (!box) {
-    box = document.createElement('div');
-    box.id = 'task-' + t.task_id;
-    box.className = 'task-item';
-    queueList.prepend(box);
-  }
-  box.className = 'task-item';
-  const statusCN = {
-    queued: '排队中', downloading: '下载中', merging: '合并中',
-    cancelling: '取消中', retrying: '重试中',
-    done: '已完成', failed: '失败',
-    cancelled: '已取消', interrupted: '已中断'
-  };
-  const speedTxt = t.speed > 1024 ? (t.speed / 1024).toFixed(1) + ' MB/s' : (t.speed || 0).toFixed(0) + ' KB/s';
-  const partTag = t.page && t.page > 1 ? ` <span class="part-tag">P${t.page}</span>` : '';
-  let body = '';
-  if (t.status === 'downloading') {
-    body = `
-      <div class="progress-wrap">
-        <div class="progress-bar active" style="width:${t.progress}%"></div>
-        <div class="progress-text">${t.progress}% · ${speedTxt}${t.eta ? ' · 剩余 ' + t.eta + '秒' : ''}</div>
-      </div>
-      <div class="ti-actions"><button class="danger sm" onclick="cancelTask('${t.task_id}')">取消</button></div>`;
-  } else if (t.status === 'merging') {
-    body = `<div class="merging-anim"><span class="spinner"></span>正在用 ffmpeg 合并音视频...</div>`;
-  } else if (t.status === 'retrying') {
-    body = `<div class="merging-anim"><span class="spinner"></span>${escapeHtml(t.error || '正在重试...')}</div>
-      <div class="ti-actions"><button class="danger sm" onclick="cancelTask('${t.task_id}')">取消</button></div>`;
-  } else if (t.status === 'cancelling') {
-    body = `<div class="hint" style="margin-top:0;">正在取消...</div>`;
-  } else if (t.status === 'done') {
-    body = `<div class="hint" style="margin-top:0;">已保存到 ${escapeHtml(DL_DIR)}</div>
-      <div class="ti-actions"><button class="ghost sm" onclick="openFolder()">在 Finder 中显示</button></div>`;
-  } else if (t.status === 'failed') {
-    body = `<div class="ti-err">${escapeHtml(t.error || '下载失败')}</div>`;
-  } else if (t.status === 'cancelled') {
-    body = `<div class="ti-err">已取消</div>`;
-  } else if (t.status === 'interrupted') {
-    body = `<div class="ti-err">${escapeHtml(t.error || '已中断')}</div>`;
-  } else {
-    body = `<div class="hint" style="margin-top:0;">排队中...</div>`;
-  }
-  box.innerHTML = `
-    <div class="ti-head">
-      <input type="checkbox" data-qid="${t.task_id}" ${_queueChecked.has(t.task_id)?'checked':''} onchange="toggleQueueCheck('${t.task_id}', this.checked)">
-      <span class="label">${escapeHtml(t.title || '(解析中)')}${partTag} <span class="q-label">[${escapeHtml(t.label||'')}]</span></span>
-      <span class="status-tag ${t.status}">${statusCN[t.status] || t.status}</span>
-    </div>
-    <div class="ti-body">${body}</div>`;
-  document.getElementById('queue-list-empty')?.remove();
-}
-
-const _queueChecked = new Set();
-function toggleQueueCheck(id, checked) {
-  if (checked) _queueChecked.add(id); else _queueChecked.delete(id);
-}
-
 async function cancelTask(taskId) {
   try {
     await fetch(API('/api/cancel/' + taskId), { method: 'POST' });
   } catch (e) { /* SSE 会更新状态 */ }
 }
 
-/* ---------- 队列删除 ---------- */
-let _delPending = null;
-
-function deleteSelectedTasks() {
-  const ids = [..._queueChecked];
+/* ---------- 记录删除(下载记录页勾选后的底部操作条) ---------- */
+/* 勾选后直接按按钮语义删除,不再弹窗二次选择 */
+async function delSelected(deleteFile) {
+  const checked = [...document.querySelectorAll('.page.active input[data-libidx]:checked')];
+  const ids = checked.map(cb => (_libItems[parseInt(cb.dataset.libidx)] || {}).task_id).filter(Boolean);
   if (ids.length === 0) { alert('请先勾选要删除的任务'); return; }
-  openDelModal(ids.length, { ids, isClearAll: false });
-}
-
-function clearAllRecords() {
-  openDelModal(0, { ids: [], isClearAll: true });
-}
-
-function openDelModal(count, pending) {
-  _delPending = pending;
-  document.getElementById('del-modal-title').textContent =
-    pending.isClearAll ? '清除所有已完成的记录?' : `删除 ${count} 条记录?`;
-  document.getElementById('del-modal').classList.add('open');
-}
-function closeDelModal() {
-  document.getElementById('del-modal').classList.remove('open');
-  _delPending = null;
-}
-
-async function delChoice(deleteFile) {
-  if (!_delPending) return;
-  const p = _delPending;
-  closeDelModal();
   try {
-    const url = p.isClearAll ? '/api/tasks/clear' : '/api/task/delete';
-    const body = p.isClearAll ? { delete_file: deleteFile } : { ids: p.ids, delete_file: deleteFile };
-    const r = await (await fetch(API(url), {
-      method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify(body)
+    const r = await (await fetch(API('/api/task/delete'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ ids, delete_file: deleteFile })
     })).json();
     if (!r.ok) throw new Error(r.error || '删除失败');
-    p.ids.forEach(id => _queueChecked.delete(id));
-    await loadTasks();
+    _libChecked.clear();
+    await loadDownloads();
   } catch (e) { alert(e.message); }
 }
 
-async function openFolder() {
+/* 清除所有已完成/失败记录(只删记录,不动文件) */
+async function clearAllRecords() {
   try {
-    await fetch(API('/api/open-folder'), { method: 'POST' });
+    const r = await (await fetch(API('/api/tasks/clear'), {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ delete_file: false })
+    })).json();
+    if (!r.ok) throw new Error(r.error || '清除失败');
+    if (!r.count) { alert('没有可清除的记录'); return; }
+    alert(`已清除 ${r.count} 条记录`);
+    _libChecked.clear();
+    await loadDownloads();
+  } catch (e) { alert(e.message); }
+}
+
+/* 清除失败/失效记录:失败任务 + 文件已不在本地的完成任务(只删记录) */
+async function clearInvalidRecords() {
+  try {
+    const r = await (await fetch(API('/api/tasks/clean-invalid'), { method: 'POST' })).json();
+    if (!r.ok) throw new Error(r.error || '清理失败');
+    if (!r.removed) { alert('没有失败/失效的记录'); return; }
+    alert(`已删除 ${r.removed} 条记录\n(下载失败 ${r.failed} 条,文件已失效 ${r.invalid} 条)`);
+    _libChecked.clear();
+    await loadDownloads();
+  } catch (e) { alert(e.message); }
+}
+
+async function revealTask(taskId) {
+  if (!taskId) return;
+  try {
+    const r = await (await fetch(API('/api/task/' + taskId + '/reveal'), { method: 'POST' })).json();
+    if (!r.ok) alert('打开失败: ' + (r.error || ''));
+    else if (!r.found) alert('没找到该视频的文件(可能已被删除或移动),已打开下载目录。');
   } catch (e) { alert('打开失败: ' + e.message); }
 }
 
@@ -2185,39 +2566,48 @@ function loadConfigIntoUI() {
   });
 }
 
-async function saveAllConfig() {
-  const v = document.getElementById('config-dir-input').value.trim();
-  const mc = document.getElementById('config-concurrent').value;
-  const rl = document.getElementById('config-ratelimit').value;
-  const theme = document.getElementById('config-theme').value;
-  if (!v) { alert('请填写下载目录'); return; }
-  localStorage.setItem('bd_theme', theme);
-  applyTheme(theme);
-  const body = {
-    download_dir: v, max_concurrent: mc, ratelimit_mbps: rl, theme,
-    save_danmaku: document.getElementById('config-save-danmaku').checked,
-    save_subtitle: document.getElementById('config-save-subtitle').checked,
-    save_cover: document.getElementById('config-save-cover').checked,
-    sort_by_up: document.getElementById('config-sort-by-up').checked,
-    notify: document.getElementById('config-notify').checked,
-    auto_refresh_minutes: parseInt(document.getElementById('config-auto-interval').value),
-  };
+/* ---------- 设置:改动即生效,无保存按钮 ---------- */
+function flashSaved() {
+  const el = document.getElementById('save-flash');
+  if (!el) return;
+  el.classList.add('show');
+  clearTimeout(flashSaved._t);
+  flashSaved._t = setTimeout(() => el.classList.remove('show'), 1400);
+}
+
+async function saveConfigField(patch) {
   try {
     const r = await (await fetch(API('/api/config'), {
       method: 'POST', headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(body)
+      body: JSON.stringify(patch)
     })).json();
     if (!r.ok) throw new Error(r.error || '保存失败');
-    DL_DIR = r.download_dir;
-    alert('已保存:\n目录: ' + r.download_dir +
-          '\n并发: ' + r.max_concurrent + '\n限速: ' + (r.ratelimit_mbps ? r.ratelimit_mbps + ' MB/s' : '不限'));
-  } catch (e) { alert(e.message); }
+    if ('download_dir' in patch) DL_DIR = r.download_dir;
+    flashSaved();
+    return r;
+  } catch (e) { alert('保存失败: ' + e.message); }
 }
 
-async function resetConfigDir() {
-  if (!confirm('恢复默认下载目录 ~/Downloads/bilibili ?')) return;
+function saveChk(name, el) {
+  const patch = {};
+  patch[name] = el.checked;
+  saveConfigField(patch);
+}
+
+function saveDir() {
+  const v = document.getElementById('config-dir-input').value.trim();
+  if (v) saveConfigField({ download_dir: v });
+}
+
+function saveTheme(v) {
+  localStorage.setItem('bd_theme', v);
+  applyTheme(v);
+  saveConfigField({ theme: v });
+}
+
+function resetConfigDir() {
   document.getElementById('config-dir-input').value = '~/Downloads/bilibili';
-  saveAllConfig();
+  saveConfigField({ download_dir: '~/Downloads/bilibili' });
 }
 
 async function loadConfig() {
@@ -2258,31 +2648,6 @@ function isUrlDownloaded(url) {
   return !!bv && _doneBvids.has(bv);
 }
 
-function refreshLibBadges() {
-  if (!_libItems.length) return;
-  const active = document.querySelector('.page.active');
-  if (active && active.dataset.page === _libMode) renderPage();
-}
-
-async function loadTasks() {
-  try {
-    const r = await (await fetch(API('/api/tasks'))).json();
-    const tasks = r.tasks || [];
-    _doneBvids = new Set(tasks.filter(t => t.status === 'done')
-      .map(t => bvFromUrl(t.url)).filter(Boolean));
-    updateQueueBadge(tasks);
-    const list = document.getElementById('queue-list');
-    if (tasks.length === 0) {
-      list.innerHTML = '<div class="empty" id="queue-list-empty">暂无下载任务</div>';
-      return;
-    }
-    list.innerHTML = '';
-    tasks.slice().reverse().forEach(renderTask);
-    tasks.filter(t => ['queued','downloading','merging','cancelling'].includes(t.status))
-      .forEach(t => subscribeProgress(t.task_id));
-  } catch (e) {}
-}
-
 (async function init() {
   await loadConfig();
   const stored = localStorage.getItem('bd_theme');
@@ -2306,8 +2671,8 @@ async function loadTasks() {
     if (_scroller.scrollTop + _scroller.clientHeight < _scroller.scrollHeight - 600) return;
     maybeLoadMore();
   }, { passive: true });
-  // 后台任务(自动追更入队等)靠轮询刷新队列,与 SSE 互为兜底;顺带刷追更角标
-  setInterval(() => { loadTasks(); loadPending(); }, 30000);
+  // 后台自动下载入队靠轮询刷新角标,与 SSE 互为兜底
+  setInterval(() => { pollTasks(); }, 30000);
 })();
 </script>
 </body>
