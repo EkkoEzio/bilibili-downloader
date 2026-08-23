@@ -6,10 +6,11 @@
 
 缓存只是展示加速,不是数据源:删了也能正常工作(回到首次打开的加载态)。
 """
-import json
 import threading
 import time
 from pathlib import Path
+
+import storage
 
 from config import DATA_DIR
 
@@ -19,7 +20,25 @@ CACHE_DIR.mkdir(exist_ok=True)
 # 允许读写的缓存键(与路由一一对应,防任意文件读写)
 KEYS = ("follow_updates", "followings", "fav_folders", "fav_seasons", "watchlater")
 
+# 磁盘清理:超 30 天没更新的缓存文件,应用启动时删除(防长期积累)。
+DISCARD_AFTER = 30 * 86400
+
 _lock = threading.Lock()
+
+
+def purge_stale() -> int:
+    """删除超 30 天没更新的缓存文件(按 mtime),返回删除数。启动时调用。"""
+    now = time.time()
+    removed = 0
+    with _lock:
+        for f in CACHE_DIR.glob("*.json"):
+            try:
+                if now - f.stat().st_mtime > DISCARD_AFTER:
+                    f.unlink()
+                    removed += 1
+            except OSError:
+                pass
+    return removed
 
 
 def save(key: str, payload: dict) -> None:
@@ -28,11 +47,7 @@ def save(key: str, payload: dict) -> None:
         return
     entry = {"saved_at": int(time.time()), "data": payload}
     with _lock:
-        try:
-            (CACHE_DIR / f"{key}.json").write_text(
-                json.dumps(entry, ensure_ascii=False), encoding="utf-8")
-        except Exception:
-            pass  # 缓存写失败不影响正常返回
+        storage.write_json(CACHE_DIR / f"{key}.json", entry)
 
 
 def load(key: str):
@@ -40,7 +55,4 @@ def load(key: str):
     if key not in KEYS:
         return None
     with _lock:
-        try:
-            return json.loads((CACHE_DIR / f"{key}.json").read_text(encoding="utf-8"))
-        except Exception:
-            return None
+        return storage.read_json(CACHE_DIR / f"{key}.json", default=None)

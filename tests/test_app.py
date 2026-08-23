@@ -164,6 +164,20 @@ def test_fav_seasons_route(client, monkeypatch):
     assert r["ok"] and r["seasons"][0]["id"] == 1761108
 
 
+def test_routes_do_not_pollute_real_cache(client, monkeypatch):
+    """路由测试不得把 mock 数据写进真实 data/cache。
+    曾因 test_fav_seasons_route 未隔离 CACHE_DIR,每跑一次测试就把用户端
+    追更合集缓存覆写成单条 mock——下次打开页面与真实数据对比必不一致,
+    「查看最新」提示每次重启后必弹一次。"""
+    from pathlib import Path
+    real = Path(__file__).resolve().parent.parent / "data" / "cache" / "fav_seasons.json"
+    snapshot = real.read_text(encoding="utf-8") if real.exists() else None
+    monkeypatch.setattr("app.auth.fetch_collected_seasons", lambda: [{"id": 999}])
+    assert client.get("/api/fav-seasons").get_json()["ok"]
+    after = real.read_text(encoding="utf-8") if real.exists() else None
+    assert after == snapshot, "测试把 mock 数据写进了真实 data/cache"
+
+
 def test_season_content_route(client, monkeypatch):
     monkeypatch.setattr("app.auth.fetch_season_content",
                         lambda sid: [{"bvid": "BV1", "title": "t", "url": "u"}])
@@ -177,6 +191,32 @@ def test_tasks_clean_invalid_route(client, monkeypatch):
                         lambda: {"failed": 2, "invalid": 3, "removed": 5})
     r = client.post("/api/tasks/clean-invalid").get_json()
     assert r["ok"] and r["failed"] == 2 and r["invalid"] == 3 and r["removed"] == 5
+
+
+# ---------- 扫码登录 ----------
+
+def test_qrcode_image_uses_passed_url_not_new_key(client, monkeypatch):
+    """/api/login/qrcode-image 必须用传入的 ?url= 画码。
+    重新 qrcode_generate() 会产生新 key,图与前端轮询的 key 不一致,
+    扫码确认了也没人认(一直「未扫码」直到过期)——回归 2026-08-19 评审。"""
+    import bilibili_auth
+
+    def _boom():
+        raise AssertionError("image 接口不得重新 generate(会换 key)")
+
+    monkeypatch.setattr(bilibili_auth, "qrcode_generate", _boom)
+    r = client.get("/api/login/qrcode-image"
+                   "?url=https://passport.bilibili.com/h5-app/passport/login/scan?qrcode_key=x")
+    assert r.status_code == 200 and r.mimetype == "image/png"
+    # 无 url / 非 B 站域名(防钓鱼二维码)一律拒绝
+    assert client.get("/api/login/qrcode-image").status_code == 400
+    assert client.get("/api/login/qrcode-image?url=https://evil.com/phish").status_code == 400
+
+
+def test_frontend_qrcode_img_passes_url():
+    """前端二维码图应把 /api/login/qrcode 返回的 url 传给图片接口。"""
+    html = _tpl()
+    assert "qrcode-image')}?url=${encodeURIComponent(r.url)}" in html
 
 
 # ---------- 页面缓存:缓存优先 + 后台拉新(2026-08-18(e)) ----------
@@ -210,6 +250,31 @@ def test_cache_empty_when_never_fetched(client, tmp_path, monkeypatch):
     assert client.get("/api/cache/watchlater").get_json()["ok"] is False
 
 
+# ---------- 7 天静默换新(2026-08-19:重启后首开不再必弹「查看最新」) ----------
+
+def test_pagecache_purge_stale_discards_30d(client, tmp_path, monkeypatch):
+    """启动清理:超 30 天没更新的缓存文件删除,其余保留。"""
+    import os as _os
+    import time as _time
+    import pagecache
+    monkeypatch.setattr(pagecache, "CACHE_DIR", tmp_path)
+    fresh_f = tmp_path / "watchlater.json"
+    fresh_f.write_text('{"saved_at": 1, "data": {}}', encoding="utf-8")
+    old_f = tmp_path / "fav_seasons.json"
+    old_f.write_text('{"saved_at": 1, "data": {}}', encoding="utf-8")
+    old_ts = _time.time() - 31 * 86400
+    _os.utime(old_f, (old_ts, old_ts))
+    pagecache.purge_stale()
+    assert not old_f.exists(), "超 30 天的缓存文件应被清理"
+    assert fresh_f.exists(), "近期缓存文件不得误删"
+
+
+def test_frontend_fast_apply_never_breaks_checking():
+    """fast 无感替换必须带勾选守卫:用户已勾选条目时静默重渲染会错位勾选索引。"""
+    html = _tpl()
+    assert "_libChecked.size === 0" in html, "fast 分支应检查无勾选才静默替换"
+
+
 # ---------- /api/stats ----------
 
 def test_stats_month_is_calendar_month(client, monkeypatch, tmp_path):
@@ -239,8 +304,30 @@ def test_app_annotations_resolve():
 # ---------- 前端结构(沿用仓库惯例:对模板做内容断言) ----------
 
 def _tpl():
+    """前端整体包:结构(index.html) + 样式 + 脚本拼接。
+
+    2026-08-19 拆分后前端三分离,既有断言语义不变——仍是「整个前端」。
+    not in 断言同样覆盖三文件,语义更严格(哪里都不该出现)。"""
     from pathlib import Path
-    return (Path(__file__).resolve().parent.parent / "templates" / "index.html").read_text(encoding="utf-8")
+    base = Path(__file__).resolve().parent.parent
+    parts = [base / "templates" / "index.html",
+             base / "static" / "css" / "main.css",
+             base / "static" / "js" / "app.js"]
+    return "\n".join(p.read_text(encoding="utf-8") for p in parts)
+
+
+def test_frontend_split_into_static_files():
+    """前端三分离:index.html 不再内嵌 <style>/<script>(可缓存/可单测)。"""
+    from pathlib import Path
+    base = Path(__file__).resolve().parent.parent
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    assert "<style>" not in html and "<script>" not in html, \
+        "样式/脚本应走 static/,index.html 只留结构"
+    assert 'href="/static/css/main.css' in html
+    assert 'src="/static/js/app.js' in html
+    js = (base / "static" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "function cachedLoad" in js, "脚本应完整迁移"
+    assert "{{" not in js and "{%" not in js, "静态 JS 里不该有 Jinja 语法"
 
 
 def test_frontend_history_load_more():
@@ -372,15 +459,35 @@ def test_frontend_clean_invalid_option():
 
 
 def test_frontend_cache_first_loading():
-    """统一缓存优先:先读 /api/cache 秒显,后台拉新,有变化提示「查看最新」。"""
+    """统一缓存优先:先读 /api/cache 秒显,后台拉新;慢源有变化提示「查看最新」。"""
     html = _tpl()
     assert "cachedLoad" in html
     assert "/api/cache/" in html
     assert "fresh-hint" in html
     assert "applyFresh" in html
-    # 五个慢数据源都走统一加载器
+    # 五个数据源都走统一加载器
     for fn in ("loadFollowBili", "loadFollowAll", "favLoadFolders", "loadSeasons", "loadWatchlater"):
         assert f"cacheKey" in html, "加载器应声明 cacheKey"
+
+
+def test_frontend_fast_sources_auto_apply():
+    """快数据源(追更合集/收藏夹/稍后再看,单接口毫秒级)拉新后无感替换渲染,
+    不弹「查看最新」提示条——提示条只为串行慢源(关注动态/关注列表)保留。
+    起因:重启后首开追更合集必弹一次提示(对比基准是上次会话的缓存,隔天必过期),
+    对几百毫秒就能返回的接口,无感替换才对齐官网行为。"""
+    html = _tpl()
+
+    def opts_of(cache_key):
+        i = html.find(f"cacheKey: '{cache_key}'")
+        assert i >= 0, f"缺少数据源 {cache_key}"
+        start = html.rfind("cachedLoad({", 0, i)
+        return html[start:html.find("});", i)]
+
+    assert "opts.fast" in html, "cachedLoad 应实现 fast 分支"
+    for key in ("fav_seasons", "fav_folders", "watchlater"):
+        assert "fast: true" in opts_of(key), f"{key} 是快源,应 fast: true 无感替换"
+    for key in ("follow_updates", "followings"):
+        assert "fast: true" not in opts_of(key), f"{key} 是慢源,应保留提示条"
 
 
 def test_frontend_uplist_drawer_removed():

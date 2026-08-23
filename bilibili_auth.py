@@ -4,11 +4,14 @@
 """
 import json
 import re
+import threading
+import time
 from typing import Optional
 
 import requests
 import yt_dlp
 
+import storage
 from config import SESSION_COOKIE_FILE, COOKIE_FILE, BROWSER_COOKIE_SOURCE
 
 QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
@@ -80,27 +83,40 @@ def parse_poll_response(data: dict, set_cookie_header: str) -> dict:
 
 
 def save_session(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> None:
-    SESSION_COOKIE_FILE.write_text(json.dumps({
+    storage.write_json(SESSION_COOKIE_FILE, {
         "SESSDATA": sessdata, "DedeUserID": dede_userid, "bili_jct": bili_jct
-    }, ensure_ascii=False), encoding="utf-8")
+    })
 
 
 def load_session() -> Optional[dict]:
-    if not SESSION_COOKIE_FILE.exists():
-        return None
-    try:
-        return json.loads(SESSION_COOKIE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    return storage.read_json(SESSION_COOKIE_FILE, default=None)
 
 
 def clear_session() -> None:
+    """退出扫码登录:删 sess.json + 清会话缓存。不动 cookies.txt(那是
+    用户手工导入的登录态,归 import_cookies_txt/logout 管)。"""
     if SESSION_COOKIE_FILE.exists():
         SESSION_COOKIE_FILE.unlink()
-    # 同时清掉 cookiejar 缓存,避免退出后还能访问接口(5 分钟缓存)
+    # 同时清掉 cookiejar 缓存,避免退出后还能访问接口(5 分钟缓存)。
+    # 各拿各的锁、不嵌套:清会话域期间不阻塞数据域(反之亦然)。
     global _cj_cache, _follow_cache
-    _cj_cache = {"cj": None, "ts": 0.0}
-    _follow_cache = {"items": None, "ts": 0.0}
+    with _session_lock:
+        _cj_cache = {"cj": None, "ts": 0.0}
+    with _fetch_lock:
+        _follow_cache = {"items": None, "ts": 0.0}
+
+
+def import_cookies_txt(text: str) -> None:
+    """用户粘贴的 Netscape cookies.txt 落盘,并切到该登录态。"""
+    COOKIE_FILE.write_text(text, encoding="utf-8")
+    clear_session()
+
+
+def logout() -> None:
+    """完全退出:扫码会话 + 手工导入的 cookies.txt 一起清。"""
+    clear_session()
+    if COOKIE_FILE.exists():
+        COOKIE_FILE.unlink()
 
 
 def has_session() -> bool:
@@ -134,6 +150,10 @@ def get_ytdlp_cookie_arg() -> dict:
 
 
 _cj_cache = {"cj": None, "ts": 0.0}
+# 会话域锁:罩 _cj_cache/_wbi_ie。get_cookiejar 整体入锁(含 Edge 慢提取),
+# 与 clear_session 严格排序——登出期间并发的提取结果不会写回缓存,
+# 也顺带避免并发重复提取;缓存命中时锁内只有一次微秒级检查。
+_session_lock = threading.Lock()
 
 
 def get_cookiejar():
@@ -142,27 +162,28 @@ def get_cookiejar():
     缓存 5 分钟:Edge 读 cookie 较耗时,避免每次请求重建。
     """
     import time as _time
-    if _cj_cache["cj"] is not None and _time.time() - _cj_cache["ts"] < 300:
-        return _cj_cache["cj"]
-    cookie_arg = get_ytdlp_cookie_arg()
-    if "cookiefile" in cookie_arg:
-        try:
-            import http.cookiejar
-            cj = http.cookiejar.MozillaCookieJar(cookie_arg["cookiefile"])
-            cj.load(ignore_discard=True, ignore_expires=True)
-            _cj_cache.update(cj=cj, ts=_time.time())
-            return cj
-        except Exception:
-            pass
-    if "cookiesfrombrowser" in cookie_arg:
-        try:
-            import yt_dlp
-            with yt_dlp.YoutubeDL({"quiet": True, **cookie_arg}) as ydl:
-                _cj_cache.update(cj=ydl.cookiejar, ts=_time.time())
-                return ydl.cookiejar
-        except Exception:
-            pass
-    return None
+    with _session_lock:
+        if _cj_cache["cj"] is not None and _time.time() - _cj_cache["ts"] < 300:
+            return _cj_cache["cj"]
+        cookie_arg = get_ytdlp_cookie_arg()
+        if "cookiefile" in cookie_arg:
+            try:
+                import http.cookiejar
+                cj = http.cookiejar.MozillaCookieJar(cookie_arg["cookiefile"])
+                cj.load(ignore_discard=True, ignore_expires=True)
+                _cj_cache.update(cj=cj, ts=_time.time())
+                return cj
+            except Exception:
+                pass
+        if "cookiesfrombrowser" in cookie_arg:
+            try:
+                import yt_dlp
+                with yt_dlp.YoutubeDL({"quiet": True, **cookie_arg}) as ydl:
+                    _cj_cache.update(cj=ydl.cookiejar, ts=_time.time())
+                    return ydl.cookiejar
+            except Exception:
+                pass
+        return None
 
 
 def get_login_status() -> dict:
@@ -211,22 +232,10 @@ def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
         raise RuntimeError(data.get("message", "获取失败"))
     items = []
     for it in data.get("data", []) or []:
-        owner = it.get("owner") or {}
         dur = it.get("duration", 0)
         watched = max(0, int(it.get("progress") or 0))
         pct = round(watched / dur * 100, 1) if dur else 0
-        items.append({
-            "bvid": it.get("bvid", ""),
-            "title": it.get("title", ""),
-            "uploader": owner.get("name", ""),
-            "uploader_mid": owner.get("mid"),
-            "duration": dur,
-            "watched_seconds": watched,
-            "watched_pct": pct,
-            "thumbnail": it.get("pic", ""),
-            "view_at": it.get("view_at", 0),
-            "url": f"https://www.bilibili.com/video/{it.get('bvid','')}",
-        })
+        items.append(_video_item(it, watched_seconds=watched, watched_pct=pct))
     return items
 
 
@@ -236,6 +245,67 @@ def _my_mid(cj) -> Optional[int]:
         return resp.json().get("data", {}).get("mid")
     except Exception:
         return None
+
+
+def _video_item(it: dict, *, owner_key="owner", name_key="name", pic_key="pic",
+                view_at_key="view_at", mark_invalid=False, **extra) -> dict:
+    """把 B 站各接口的原始条目归一化成前端统一的视频卡字段。
+
+    各接口字段名不一:作者在 owner/upper 容器或顶层(arc 的 author),
+    封面 pic/cover,时间戳 view_at/tview_at/created/无——用参数对齐;
+    extra 直接覆盖/追加字段(如 watched_pct、uploader_mid)。
+    """
+    owner = (it.get(owner_key) or {}) if owner_key else {}
+    bvid = it.get("bvid") or ""
+    title = it.get("title") or ""
+    if mark_invalid and it.get("attr"):
+        title = title or "已失效视频"
+    item = {
+        "bvid": bvid,
+        "title": title,
+        "uploader": (owner.get(name_key) or "") if owner_key else (it.get(name_key) or ""),
+        "uploader_mid": owner.get("mid") if owner_key else None,
+        "thumbnail": (it.get(pic_key) or "").replace("http:", "https:"),
+        "duration": it.get("duration") or 0,
+        "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+    }
+    if view_at_key:
+        item["view_at"] = it.get(view_at_key, 0) or 0
+    if extra:
+        item.update(extra)
+    return item
+
+
+def _paged_get(url: str, base_params: dict, *, what: str, max_pages: int, ps: int,
+               gap: float = 0.3, mid_param: str = "", parse) -> list:
+    """通用分页拉取:会话获取、code 判错、翻页限速。
+
+    parse(data_dict, fetched_count) -> (本页条目, 是否还有下一页)。
+    mid_param 给定时只取一次 _my_mid 塞进参数(旧行为每页重复打 nav 接口)。
+    """
+    cj = get_cookiejar()
+    if cj is None:
+        raise RuntimeError(f"未登录,无法获取{what}")
+    if mid_param:
+        mid = _my_mid(cj)
+        if not mid:
+            raise RuntimeError("无法获取用户 ID")
+        base_params = {**base_params, mid_param: mid}
+    out = []
+    for pn in range(1, max_pages + 1):
+        resp = requests.get(url, cookies=cj, headers=BROWSER_HEADERS,
+                            params={**base_params, "pn": pn, "ps": ps}, timeout=12)
+        data = _safe_json(resp)
+        if not data or data.get("code") != 0:
+            raise RuntimeError((data or {}).get("message",
+                             f"获取{what}失败(可能被风控,稍后再试)"))
+        items, has_more = parse(data.get("data") or {}, len(out))
+        out.extend(items)
+        if not has_more:
+            break
+        if gap:
+            time.sleep(gap)
+    return out
 
 
 def fetch_watchlater() -> list[dict]:
@@ -253,18 +323,7 @@ def fetch_watchlater() -> list[dict]:
         raise RuntimeError((data or {}).get("message", "获取稍后再看失败"))
     out = []
     for it in (data.get("data", {}) or {}).get("list", []) or []:
-        owner = it.get("owner") or {}
-        bvid = it.get("bvid", "")
-        out.append({
-            "bvid": bvid,
-            "title": it.get("title", ""),
-            "uploader": owner.get("name", ""),
-            "uploader_mid": owner.get("mid"),
-            "thumbnail": (it.get("pic") or "").replace("http:", "https:"),
-            "duration": it.get("duration", 0),
-            "view_at": it.get("tview_at", 0),
-            "url": f"https://www.bilibili.com/video/{bvid}",
-        })
+        out.append(_video_item(it, view_at_key="tview_at"))
     return out
 
 
@@ -300,69 +359,30 @@ def fetch_collected_seasons(max_pages: int = 5) -> list[dict]:
     官网调用 /x/v3/fav/folder/collected/list,必须带 platform=web,
     否则 code=0 但永远返回空列表。item.id 就是 season_id。
     """
-    import time as _t
-    cj = get_cookiejar()
-    if cj is None:
-        raise RuntimeError("未登录,无法获取合集列表")
-    mid = _my_mid(cj)
-    if not mid:
-        raise RuntimeError("无法获取用户 ID")
-    out = []
-    for pn in range(1, max_pages + 1):
-        resp = requests.get("https://api.bilibili.com/x/v3/fav/folder/collected/list",
-                            cookies=cj, headers=BROWSER_HEADERS,
-                            params={"up_mid": mid, "pn": pn, "ps": 20,
-                                    "platform": "web"}, timeout=12)
-        data = _safe_json(resp)
-        if not data or data.get("code") != 0:
-            raise RuntimeError((data or {}).get("message", "获取合集列表失败(可能被风控,稍后再试)"))
-        d = data.get("data") or {}
-        for f in d.get("list") or []:
-            out.append({
-                "id": f.get("id"),
-                "title": f.get("title", ""),
-                "media_count": f.get("media_count", 0),
-                "cover": (f.get("cover") or "").replace("http:", "https:"),
-            })
-        if not d.get("has_more"):
-            break
-        _t.sleep(0.3)
-    return out
+    def parse(d, _fetched):
+        items = [{"id": f.get("id"),
+                  "title": f.get("title", ""),
+                  "media_count": f.get("media_count", 0),
+                  "cover": (f.get("cover") or "").replace("http:", "https:")}
+                 for f in d.get("list") or []]
+        return items, bool(d.get("has_more"))
+
+    return _paged_get("https://api.bilibili.com/x/v3/fav/folder/collected/list",
+                      {"platform": "web"}, what="合集列表",
+                      max_pages=max_pages, ps=20, mid_param="up_mid", parse=parse)
 
 
 def fetch_season_content(season_id: int, ps: int = 20, max_pages: int = 30) -> list[dict]:
     """拉取合集(我追的合集)内的视频。/x/space/fav/season/list,pn 翻页。"""
-    import time as _t
-    cj = get_cookiejar()
-    if cj is None:
-        raise RuntimeError("未登录,无法获取合集内容")
-    items: list[dict] = []
-    for pn in range(1, max_pages + 1):
-        resp = requests.get("https://api.bilibili.com/x/space/fav/season/list",
-                            cookies=cj, headers=BROWSER_HEADERS,
-                            params={"season_id": season_id, "pn": pn, "ps": ps}, timeout=12)
-        data = _safe_json(resp)
-        if not data or data.get("code") != 0:
-            raise RuntimeError((data or {}).get("message", "获取合集内容失败(可能被风控,稍后再试)"))
-        d = data.get("data") or {}
-        for m in d.get("medias") or []:
-            bvid = m.get("bvid") or ""
-            title = m.get("title") or ""
-            if m.get("attr"):  # 已失效/下架视频
-                title = title or "已失效视频"
-            items.append({
-                "bvid": bvid,
-                "title": title,
-                "uploader": ((m.get("upper") or {}).get("name")) or "",
-                "uploader_mid": ((m.get("upper") or {}).get("mid")),
-                "thumbnail": (m.get("cover") or "").replace("http:", "https:"),
-                "duration": m.get("duration") or 0,
-                "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
-            })
-        if not d.get("has_more"):
-            break
-        _t.sleep(0.3)
-    return items
+    def parse(d, _fetched):
+        items = [_video_item(m, owner_key="upper", pic_key="cover",
+                             view_at_key=None, mark_invalid=True)
+                 for m in d.get("medias") or []]
+        return items, bool(d.get("has_more"))
+
+    return _paged_get("https://api.bilibili.com/x/space/fav/season/list",
+                      {"season_id": season_id}, what="合集内容",
+                      max_pages=max_pages, ps=ps, parse=parse)
 
 
 def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20) -> list[dict]:
@@ -372,60 +392,34 @@ def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20) -> list[
     不是 `fid`(如 644259)——传 fid 接口会返回 code=0 但 medias 为空。
     旧实现用 yt-dlp 解析 medialist 页面,被风控时静默返回 [],已弃用。
     """
-    import time as _time
-    cj = get_cookiejar()
-    if cj is None:
-        raise RuntimeError("未登录,无法获取收藏夹内容")
-    items: list[dict] = []
-    for pn in range(1, max_pages + 1):
-        resp = requests.get("https://api.bilibili.com/x/v3/fav/resource/list",
-                            cookies=cj, headers=BROWSER_HEADERS,
-                            params={"media_id": media_id, "pn": pn, "ps": ps,
-                                    "order": "mtime"}, timeout=12)
-        data = _safe_json(resp)
-        if not data or data.get("code") != 0:
-            raise RuntimeError((data or {}).get("message", "获取收藏夹内容失败(可能被风控,稍后再试)"))
-        d = data.get("data") or {}
-        for m in d.get("medias") or []:
-            bvid = m.get("bvid") or ""
-            title = m.get("title") or ""
-            if m.get("attr") != 0:  # 已失效/私密等
-                title = title or "已失效视频"
-            items.append({
-                "bvid": bvid,
-                "title": title,
-                "uploader": ((m.get("upper") or {}).get("name")) or "",
-                "uploader_mid": ((m.get("upper") or {}).get("mid")),
-                "thumbnail": (m.get("cover") or "").replace("http:", "https:"),
-                "duration": m.get("duration") or 0,
-                "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
-            })
-        if not d.get("has_more"):
-            break
-        _time.sleep(0.3)  # 大收藏夹翻页防限流
-    return items
+    def parse(d, _fetched):
+        items = [_video_item(m, owner_key="upper", pic_key="cover",
+                             view_at_key=None, mark_invalid=True)
+                 for m in d.get("medias") or []]
+        return items, bool(d.get("has_more"))
+
+    return _paged_get("https://api.bilibili.com/x/v3/fav/resource/list",
+                      {"media_id": media_id, "order": "mtime"}, what="收藏夹内容",
+                      max_pages=max_pages, ps=ps, parse=parse)
 
 
 def fetch_followings(page: int = 1, size: int = 50) -> list[dict]:
     """拉取我关注的 UP 主列表。"""
-    cj = get_cookiejar()
-    if cj is None:
-        raise RuntimeError("未登录,无法获取关注列表")
-    mid = _my_mid(cj)
-    if not mid:
-        raise RuntimeError("无法获取用户 ID")
-    resp = requests.get("https://api.bilibili.com/x/relation/followings",
-                        cookies=cj, headers=BROWSER_HEADERS,
-                        params={"vmid": mid, "pn": page, "ps": min(size, 50), "order": "desc"},
-                        timeout=12)
-    data = _safe_json(resp)
-    if not data or data.get("code") != 0:
-        raise RuntimeError((data or {}).get("message", "获取失败(可能被风控,稍后再试)"))
-    return [{"mid": f.get("mid"), "uname": f.get("uname", ""), "face": f.get("face", "")}
-            for f in (data.get("data", {}) or {}).get("list", []) or []]
+    def parse(d, _fetched):
+        items = [{"mid": f.get("mid"), "uname": f.get("uname", ""),
+                  "face": (f.get("face") or "").replace("http:", "https:")}
+                 for f in d.get("list") or []]
+        return items, False
+
+    return _paged_get("https://api.bilibili.com/x/relation/followings",
+                      {"order": "desc"}, what="关注列表",
+                      max_pages=1, ps=min(size, 50), mid_param="vmid", parse=parse)
 
 
 _followings_cache = {"items": [], "total": 0, "ts": 0}
+# 数据域锁:罩 _followings_cache/_follow_cache。check/act 各自短锁,
+# 翻页等慢网络请求一律锁外,不给 B 站请求排队。
+_fetch_lock = threading.Lock()
 
 
 def fetch_followings_all(force: bool = False, max_pages: int = 10) -> dict:
@@ -434,50 +428,43 @@ def fetch_followings_all(force: bool = False, max_pages: int = 10) -> dict:
     relation 接口轻量,翻页间隔 0.2s 即可;与 arc/search 的账号级风控不是一类。
     """
     import time as _time
-    if not force and _followings_cache["items"] and _time.time() - _followings_cache["ts"] < 600:
-        return {"items": _followings_cache["items"], "total": _followings_cache["total"]}
-    all_items: list[dict] = []
-    total = 0
-    for pn in range(1, max_pages + 1):
-        cj = get_cookiejar()
-        if cj is None:
-            raise RuntimeError("未登录,无法获取关注列表")
-        mid = _my_mid(cj)
-        if not mid:
-            raise RuntimeError("无法获取用户 ID")
-        resp = requests.get("https://api.bilibili.com/x/relation/followings",
-                            cookies=cj, headers=BROWSER_HEADERS,
-                            params={"vmid": mid, "pn": pn, "ps": 50, "order": "desc"},
-                            timeout=12)
-        data = _safe_json(resp)
-        if not data or data.get("code") != 0:
-            raise RuntimeError((data or {}).get("message", "获取失败(可能被风控,稍后再试)"))
-        d = data.get("data") or {}
-        total = d.get("total", 0)
-        page = d.get("list") or []
-        all_items.extend({"mid": f.get("mid"), "uname": f.get("uname", ""),
-                          "face": (f.get("face") or "").replace("http:", "https:")}
-                         for f in page)
-        if len(all_items) >= total or not page:
-            break
-        _time.sleep(0.2)
-    _followings_cache.update(items=all_items, total=total, ts=_time.time())
-    return {"items": all_items, "total": total}
+    with _fetch_lock:
+        if not force and _followings_cache["items"] and _time.time() - _followings_cache["ts"] < 600:
+            return {"items": _followings_cache["items"], "total": _followings_cache["total"]}
+    box = {"total": 0}
+
+    def parse(d, fetched):
+        box["total"] = d.get("total", 0)
+        items = [{"mid": f.get("mid"), "uname": f.get("uname", ""),
+                  "face": (f.get("face") or "").replace("http:", "https:")}
+                 for f in d.get("list") or []]
+        has_more = not (fetched + len(items) >= box["total"] or not items)
+        return items, has_more
+
+    all_items = _paged_get("https://api.bilibili.com/x/relation/followings",
+                           {"order": "desc"}, what="关注列表",
+                           max_pages=max_pages, ps=50, gap=0.2,
+                           mid_param="vmid", parse=parse)
+    with _fetch_lock:
+        _followings_cache.update(items=all_items, total=box["total"], ts=_time.time())
+    return {"items": all_items, "total": box["total"]}
 
 
 _wbi_ie = None
 
 
 def _get_wbi_ie():
-    """复用 yt-dlp 的 WBI 签名器(它内部处理 key 缓存)。"""
+    """复用 yt-dlp 的 WBI 签名器(它内部处理 key 缓存)。锁内懒初始化,
+    防并发双重构造(旧 cookie 实例胜出会长期驻留)。"""
     global _wbi_ie
-    if _wbi_ie is not None:
+    with _session_lock:
+        if _wbi_ie is not None:
+            return _wbi_ie
+        import yt_dlp
+        from yt_dlp.extractor.bilibili import BiliBiliIE
+        ydl = yt_dlp.YoutubeDL({"quiet": True, **get_ytdlp_cookie_arg()})
+        _wbi_ie = BiliBiliIE(ydl)
         return _wbi_ie
-    import yt_dlp
-    from yt_dlp.extractor.bilibili import BiliBiliIE
-    ydl = yt_dlp.YoutubeDL({"quiet": True, **get_ytdlp_cookie_arg()})
-    _wbi_ie = BiliBiliIE(ydl)
-    return _wbi_ie
 
 
 def _safe_json(resp):
@@ -526,15 +513,8 @@ def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
         return []
     items = []
     for v in (data.get("data", {}) or {}).get("list", {}).get("vlist", []) or []:
-        items.append({
-            "bvid": v.get("bvid", ""),
-            "title": v.get("title", ""),
-            "uploader": v.get("author", ""),
-            "uploader_mid": mid,
-            "thumbnail": (v.get("pic") or "").replace("http:", "https:"),
-            "view_at": v.get("created", 0),
-            "url": f"https://www.bilibili.com/video/{v.get('bvid','')}",
-        })
+        items.append(_video_item(v, owner_key=None, name_key="author",
+                                 view_at_key="created", uploader_mid=mid))
     return items
 
 
@@ -549,9 +529,10 @@ def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -
     改为**串行 + 1.5 秒间隔**,牺牲速度换稳定性。30 UP = 45 秒。
     """
     import time as _time
-    if (not force and _follow_cache["items"] is not None
-            and _time.time() - _follow_cache["ts"] < 300):  # 5 分钟
-        return _follow_cache["items"]
+    with _fetch_lock:
+        if (not force and _follow_cache["items"] is not None
+                and _time.time() - _follow_cache["ts"] < 300):  # 5 分钟
+            return _follow_cache["items"]
     follows = fetch_followings(1, max_ups)
     results = []
     # 串行拉取,每个 UP 间间隔 1.5 秒
@@ -560,5 +541,6 @@ def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -
         results.extend(items)
         _time.sleep(1.5)
     results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
-    _follow_cache.update(items=results, ts=_time.time())
+    with _fetch_lock:
+        _follow_cache.update(items=results, ts=_time.time())
     return results

@@ -13,11 +13,11 @@
 
 读/写都用文件锁保证并发安全。
 """
-import json
 import threading
 import time
 from typing import Optional
 
+import storage
 from config import UP_LIST_FILE
 
 _lock = threading.Lock()
@@ -27,16 +27,11 @@ QUALITY_CHOICES = ("", "1080P", "720P", "480P", "360P", "音频")
 
 
 def _read() -> dict:
-    if not UP_LIST_FILE.exists():
-        return {"ups": [], "last_seen": {}}
-    try:
-        return json.loads(UP_LIST_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {"ups": [], "last_seen": {}}
+    return storage.read_json(UP_LIST_FILE, default={"ups": [], "last_seen": {}})
 
 
 def _write(data: dict) -> None:
-    UP_LIST_FILE.write_text(json.dumps(data, ensure_ascii=False, indent=1), encoding="utf-8")
+    storage.write_json(UP_LIST_FILE, data, indent=1)
 
 
 def list_ups() -> list[dict]:

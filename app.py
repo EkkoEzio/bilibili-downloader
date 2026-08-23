@@ -16,7 +16,7 @@ import pagecache
 import up_list
 import bilibili_auth as auth
 import downloader
-from config import PORT, COOKIE_FILE, BROWSER_COOKIE_SOURCE
+from config import PORT, BROWSER_COOKIE_SOURCE
 import config  # DOWNLOAD_DIR 运行时可变,用 config.DOWNLOAD_DIR 实时读
 
 # 日志:控制台 + data/app.log(排 B 站 412/风控/下载失败要看这里)
@@ -54,9 +54,13 @@ def login_qrcode():
 
 @app.route("/api/login/qrcode-image")
 def login_qrcode_image():
-    """本地用 qrcode 库把扫码 URL 画成 PNG,不依赖第三方服务。"""
-    data = auth.qrcode_generate()
-    img = qrcode.make(data["url"])
+    """本地用 qrcode 库把扫码 URL 画成 PNG,不依赖第三方服务。
+    必须传 ?url=(与前端轮询 key 配对的登录 URL):自行 generate 会产生新 key,
+    图与轮询 key 不一致,扫了也一直「未扫码」。域名白名单防钓鱼码。"""
+    url = request.args.get("url", "")
+    if not url.startswith("https://passport.bilibili.com/"):
+        return jsonify({"ok": False, "error": "缺少/非法 url"}), 400
+    img = qrcode.make(url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -84,16 +88,13 @@ def login_cookie_txt():
     text = request.get_data(as_text=True)
     if "SESSDATA" not in text:
         return jsonify({"ok": False, "error": "未找到 SESSDATA"}), 400
-    COOKIE_FILE.write_text(text, encoding="utf-8")
-    auth.clear_session()  # 切到 cookies.txt 模式
+    auth.import_cookies_txt(text)  # 写盘归 bilibili_auth 管,路由层不碰文件
     return jsonify({"ok": True})
 
 
 @app.route("/api/login/logout", methods=["POST"])
 def login_logout():
-    auth.clear_session()
-    if COOKIE_FILE.exists():
-        COOKIE_FILE.unlink()
+    auth.logout()
     return jsonify({"ok": True})
 
 
@@ -544,7 +545,24 @@ def task_reveal(task_id):
         return jsonify({"ok": False, "error": str(e)}), 500
 
 
+@app.route("/api/task/<task_id>/resolve-conflict", methods=["POST"])
+def task_resolve_conflict(task_id):
+    """处理下载文件名冲突。{action: 'rename_with_index' | 'cancel' | 'open_existing'}
+    - rename_with_index: 期望名后加 ` (1)` 递增改名(到 (9) 封顶)
+    - cancel: 忽略冲突,清掉标记
+    - open_existing: 在 Finder 中定位占用期望名的现有文件
+    """
+    action = (request.get_json(silent=True) or {}).get("action", "")
+    r = downloader.resolve_rename_conflict(task_id, action)
+    if not r.get("ok"):
+        return jsonify(r), 400
+    if action == "open_existing" and r.get("path"):
+        subprocess.run(["open", "-R", r["path"]], check=False)
+    return jsonify(r)
+
+
 if __name__ == "__main__":
     print(f"\n  浏览器打开: http://localhost:{PORT}\n")
+    pagecache.purge_stale()  # 清掉超 30 天没更新的缓存文件
     auto_refresh.start_loop()  # 订阅追更轮询(间隔见 config.AUTO_REFRESH_MINUTES)
     app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)

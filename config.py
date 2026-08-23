@@ -4,9 +4,10 @@ DOWNLOAD_DIR / MAX_CONCURRENT / RATELIMIT_MBPS 都是运行时可变的
 (用户在界面可改)。不要用 `from config import XXX` 拿快照,
 改用 `import config` + `config.XXX` 访问,这样能读到最新值。
 """
-import json
 import threading
 from pathlib import Path
+
+import storage
 
 BASE_DIR = Path(__file__).resolve().parent
 DATA_DIR = BASE_DIR / "data"
@@ -39,16 +40,11 @@ AUTO_REFRESH_MAX = 360
 
 def _read() -> dict:
     """读完整 config.json(没有文件返回空字典)。"""
-    if not CONFIG_FILE.exists():
-        return {}
-    try:
-        return json.loads(CONFIG_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return {}
+    return storage.read_json(CONFIG_FILE, default={})
 
 
 def _write(d: dict) -> None:
-    CONFIG_FILE.write_text(json.dumps(d, ensure_ascii=False, indent=1), encoding="utf-8")
+    storage.write_json(CONFIG_FILE, d, indent=1)
 
 
 # 启动加载(读一次,写入默认值兜底)

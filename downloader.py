@@ -4,12 +4,17 @@ import logging
 import subprocess
 import sys
 import threading
+import time
 import uuid
 from typing import Optional
 
 import yt_dlp
 
+from pathlib import Path
+from glob import escape as glob_escape
+
 import extras
+import storage
 from quality import classify_formats, best_video_audio_choice
 from bilibili_auth import get_ytdlp_cookie_arg
 from config import TASKS_FILE
@@ -23,27 +28,27 @@ bvid_from_url = extras.bvid_from_url
 # 任务状态表:task_id -> {status, progress, speed, eta, title, filepath, error, cancel}
 _tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
+# 写盘锁独立于任务锁:快照在任务锁内取,写盘(含 IO)不阻塞任务状态更新
+_persist_lock = threading.Lock()
 # 下载线程句柄:task_id -> threading.Thread
-_threads: dict[str, threading.Thread] = {}
+_threads: dict[str, dict] = {}
 
 
 def _persist() -> None:
-    """把当前所有任务快照写盘。去掉 cancel 标志,保留其余展示字段。"""
+    """把当前所有任务快照写盘。去掉 cancel 标志,保留其余展示字段。
+    storage.write_json 原子替换;独立写锁防多线程并发写盘
+    (进度钩子/批量线程/取消删除路由都会调这里)。"""
     with _tasks_lock:
         snapshot = [{k: v for k, v in t.items() if k != "cancel"} for t in _tasks.values()]
-    try:
-        TASKS_FILE.write_text(json.dumps(snapshot, ensure_ascii=False), encoding="utf-8")
-    except Exception:
-        pass
+    with _persist_lock:
+        storage.write_json(TASKS_FILE, snapshot)
 
 
 def _load_persisted() -> None:
-    """启动时加载历史任务(进行中的统一标记为中断,避免僵尸态)。"""
-    if not TASKS_FILE.exists():
-        return
-    try:
-        data = json.loads(TASKS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    """启动时加载历史任务(进行中的统一标记为中断,避免僵尸态)。
+    文件损坏由 storage.read_json 统一备份 .corrupt-<ts>,不静默清零。"""
+    data = storage.read_json(TASKS_FILE, default=None)
+    if not data:
         return
     with _tasks_lock:
         for t in data:
@@ -203,10 +208,19 @@ def resolve_playlist(url: str) -> dict:
     return {"kind": "list", "title": title, "items": items}
 
 
-def _sanitize(name: str) -> str:
-    for ch in '\\/:*?"<>|':
-        name = name.replace(ch, "_")
-    return name.strip().rstrip(".") or "video"
+def build_filename(title: str, page: int = 1) -> str:
+    """任务权威 title → 期望的落盘文件名 stem(不含目录/扩展名)。
+
+    outtmpl 组装(A.2)与下载后改名对齐(A.3)共用本函数,保证两端算出的
+    期望名恒一致。多 P 加 ` - P{n}` 后缀。
+    """
+    stem = extras.sanitize_filename(title)
+    return f"{stem} - P{int(page)}" if page and int(page) > 1 else stem
+
+
+def _tmpl_literal(s: str) -> str:
+    """把 Python 侧清洗好的字面段安全嵌入 yt-dlp outtmpl:% 是模板元字符,须转义成 %%。"""
+    return s.replace("%", "%%")
 
 
 def _to_mid(v) -> int:
@@ -220,15 +234,36 @@ def _to_mid(v) -> int:
 def _base_opts(fmt_str: str, page: int, task_id: str) -> dict:
     """构造下载基础 opts:format、输出模板(可选按 UP 归档)、附件开关、进度钩子。
 
+    落盘命名权在 Python 侧(设计 A.2):outtmpl 用任务权威 title 组装好的
+    字面文件名 + `.%(ext)s`,不再让 yt-dlp 按字节截断 %(title).200B——
+    CJK 下字节/字符截断边界错位是「记录与文件对不上」的根因之一。
+    任务无权威 title 时(仅防御,正常流程到不了)退回旧模板。
+
     仅音频/单体格式不设 merge_output_format;组合轨(DASH 视频+音频)或
     best 需要合并时才要求输出 mp4。
     """
-    sub = "%(uploader)s/" if config.SORT_BY_UP else ""
-    tmpl = "%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1 else "%(title).200B.%(ext)s"
+    with _tasks_lock:
+        t = dict(_tasks.get(task_id) or {})
+    title = (t.get("title") or "").strip()
+    uploader = (t.get("uploader") or "").strip()
+    if title and title != "(解析中)":
+        stem = _tmpl_literal(build_filename(title, page))
+        name_tmpl = f"{stem}.%(ext)s"
+        # UP 子目录也用清洗后的字面名;批量任务没透传 UP 名时退回 live 字段
+        if config.SORT_BY_UP:
+            sub = (f"{_tmpl_literal(extras.sanitize_filename(uploader))}/"
+                   if uploader else "%(uploader)s/")
+        else:
+            sub = ""
+    else:
+        name_tmpl = ("%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1
+                     else "%(title).200B.%(ext)s")
+        sub = "%(uploader)s/" if config.SORT_BY_UP else ""
     opts = {
         "format": fmt_str,
-        "outtmpl": str(config.DOWNLOAD_DIR / (sub + tmpl)),
+        "outtmpl": str(config.DOWNLOAD_DIR / (sub + name_tmpl)),
         "progress_hooks": [_progress_hook(task_id)],
+        "postprocessor_hooks": [_pp_hook(task_id)],
     }
     if "+" in fmt_str or fmt_str == "best":
         opts["merge_output_format"] = "mp4"
@@ -267,6 +302,25 @@ def is_downloaded(url: str) -> bool:
     return False
 
 
+# postprocessor 钩子捕获的最终落盘路径(设计 A.3):task_id -> str
+# MoveFiles 是最后一个后处理器,其 finished 载荷里的 filepath 即合并/搬运完成的最终文件
+_final_paths: dict[str, str] = {}
+
+# 主文件扩展名(用于从候选中挑出视频/音频本体,排除封面/字幕等副文件)
+_MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
+               ".m4a", ".mp3", ".aac", ".opus", ".ogg"}
+
+
+def _pp_hook(task_id: str):
+    def hook(d):
+        if d.get("status") != "finished":
+            return
+        fp = (d.get("info_dict") or {}).get("filepath") or ""
+        if fp and Path(fp).suffix.lower() in _MEDIA_EXTS:
+            _final_paths[task_id] = fp
+    return hook
+
+
 def _progress_hook(task_id: str):
     state = {"bucket": None}  # 上次落盘所在的 5% 进度桶
 
@@ -296,6 +350,12 @@ def _progress_hook(task_id: str):
             elif d["status"] == "finished":
                 t["progress"] = 100
                 t["status"] = "merging"  # yt-dlp 合并阶段
+                # 权威 title 缺失(批量未透传且预解析没拿到)时,
+                # 用 yt-dlp 最终解析结果兜底一次(A.1 例外分支)
+                if not t.get("title") or t["title"] == "(解析中)":
+                    ft = ((d.get("info_dict") or {}).get("title") or "").strip()
+                    if ft:
+                        t["title"] = ft
                 persist = True
             elif d["status"] == "error":
                 t["status"] = "failed"
@@ -321,6 +381,167 @@ def _finalize_cancelled(task_id: str) -> None:
     _persist()
 
 
+def _find_actual_file(task_id: str, expected_stem: str) -> Optional[Path]:
+    """找 yt-dlp 实际落盘的主文件。
+
+    优先 postprocessor 钩子捕获的最终路径(权威);没捕获到(旧流程/异常)
+    再扫下载目录:stem 精确匹配 → 前缀匹配。返回 Path 或 None。
+    """
+    captured = _final_paths.get(task_id)
+    if captured and Path(captured).is_file():
+        return Path(captured)
+    try:
+        dirs = [config.DOWNLOAD_DIR] + [d for d in config.DOWNLOAD_DIR.iterdir() if d.is_dir()]
+    except OSError:
+        return None
+    for d in dirs:
+        try:
+            files = [f for f in d.iterdir() if f.is_file()]
+        except OSError:
+            continue
+        media = [f for f in files if f.suffix.lower() in _MEDIA_EXTS]
+        exact = [f for f in media if f.stem == expected_stem]
+        if exact:
+            return max(exact, key=lambda f: f.stat().st_size)
+        # 兜底:yt-dlp 对字面段做了意外变换时按前缀找(截短些避免长标题误配)
+        prefix = [f for f in media if f.stem.startswith(expected_stem[:10])]
+        if prefix:
+            return max(prefix, key=lambda f: f.stat().st_size)
+    return None
+
+
+def _rename_with_sidecars(source: Path, new_stem: str) -> Path:
+    """把 source 改名为 new_stem(保留各自扩展名),同 stem 的封面/字幕等
+    副文件一并改名。返回主文件新路径;目标被占等异常向上抛。"""
+    target = source.with_name(new_stem + source.suffix)
+    for side in source.parent.glob(glob_escape(source.stem) + ".*"):
+        if side in (source, target) or not side.is_file():
+            continue
+        side_target = side.with_name(new_stem + side.suffix)
+        if not side_target.exists():
+            side.rename(side_target)
+    source.rename(target)
+    return target
+
+
+def _align_task_file(task_id: str) -> None:
+    """下载成功后把磁盘文件名强制对齐任务 title(设计 A.3/A.4)。
+
+    尽力而为:任何失败只写 rename_error/rename_conflict 等展示字段,
+    绝不影响任务的「完成」状态。副文件(封面/字幕)随主文件一起改。
+    """
+    try:
+        with _tasks_lock:
+            t0 = _tasks.get(task_id)
+            title = (t0.get("title") or "").strip() if t0 else ""
+            page = int(t0.get("page") or 1) if t0 else 1
+        if not title or title == "(解析中)":
+            return
+        expected_stem = build_filename(title, page)
+        actual = _find_actual_file(task_id, expected_stem)
+        if actual is None:
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t:
+                    t["rename_error"] = "下载完成但没找到落盘文件"
+            _persist()
+            return
+        if actual.stem == expected_stem:
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t:
+                    t["actual_filename"] = str(actual)
+            _persist()
+            return
+        target = actual.with_name(expected_stem + actual.suffix)
+        if target.exists() and not _same_file(actual, target):
+            # A.4:拒绝覆盖,由用户在 UI 上选(加后缀/打开现有/忽略)
+            same_size = actual.stat().st_size == target.stat().st_size
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                if t:
+                    t["actual_filename"] = str(actual)
+                    if same_size:
+                        t["rename_skipped"] = "duplicate"
+                    else:
+                        t["rename_conflict"] = {"source": str(actual),
+                                                "expected": str(target),
+                                                "existing": str(target)}
+            _persist()
+            return
+        new_path = _rename_with_sidecars(actual, expected_stem)
+        with _tasks_lock:
+            t = _tasks.get(task_id)
+            if t:
+                t["actual_filename"] = str(new_path)
+        _persist()
+    except OSError as e:
+        with _tasks_lock:
+            t = _tasks.get(task_id)
+            if t:
+                t["rename_error"] = str(e)
+        _persist()
+    finally:
+        _final_paths.pop(task_id, None)
+
+
+def _same_file(a: Path, b: Path) -> bool:
+    """两个路径是否同一文件(大小写不敏感盘上仅大小写不同的名字也算)。"""
+    try:
+        return a.stat().st_ino == b.stat().st_ino
+    except OSError:
+        return False
+
+
+def resolve_rename_conflict(task_id: str, action: str) -> dict:
+    """用户处理改名冲突(设计 A.4)。action:
+    - rename_with_index: 期望名 stem 后加 ` (1)`(递增到 (9) 封顶)改名
+    - cancel: 放弃处理,清掉冲突标记
+    - open_existing: 返回现有文件路径,由路由层在 Finder 定位
+    """
+    with _tasks_lock:
+        t = _tasks.get(task_id)
+        conflict = dict(t.get("rename_conflict") or {}) if t else {}
+    if not conflict:
+        return {"ok": False, "error": "该任务没有待处理的名称冲突"}
+
+    if action == "cancel":
+        with _tasks_lock:
+            t = _tasks.get(task_id)
+            if t:
+                t.pop("rename_conflict", None)
+        _persist()
+        return {"ok": True}
+
+    if action == "open_existing":
+        return {"ok": True, "path": conflict.get("existing", "")}
+
+    if action == "rename_with_index":
+        source = Path(conflict.get("source") or "")
+        if not source.is_file():
+            return {"ok": False, "error": "下载的文件已不在磁盘上,无法改名"}
+        title = (t.get("title") or "").strip()
+        base = build_filename(title, int(t.get("page") or 1))
+        for i in range(1, 10):
+            cand = source.with_name(f"{base} ({i}){source.suffix}")
+            if cand.exists():
+                continue
+            try:
+                new_path = _rename_with_sidecars(source, f"{base} ({i})")
+            except OSError as e:
+                return {"ok": False, "error": f"改名失败:{e}"}
+            with _tasks_lock:
+                t2 = _tasks.get(task_id)
+                if t2:
+                    t2.pop("rename_conflict", None)
+                    t2["actual_filename"] = str(new_path)
+            _persist()
+            return {"ok": True, "actual_filename": str(new_path)}
+        return {"ok": False, "error": "后缀已试到 (9) 仍冲突,请手动改名"}
+
+    return {"ok": False, "error": f"未知操作:{action}"}
+
+
 def _run_download(task_id: str, url: str, label: str, formats: list[dict], page: int) -> None:
     # formats 为空时(批量任务未预解析),自己解析补上
     if not formats:
@@ -332,7 +553,9 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
             with _tasks_lock:
                 t = _tasks.get(task_id)
                 if t:
-                    if not t.get("title"):
+                    # 入队即锚定(A.1):title 只在缺失/占位时补,绝不二次覆盖,
+                    # 否则 UP 改标题会造成「页面 A、磁盘 B」漂移
+                    if not t.get("title") or t["title"] == "(解析中)":
                         t["title"] = summary["title"]
                     # 封面/UP/时长补进任务,供「下载记录」页像观看历史一样渲染卡片
                     if not t.get("thumbnail"):
@@ -389,11 +612,15 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                 return
 
         # 每次重试都重建 YoutubeDL 实例(避免内部状态污染)
+        _final_paths.pop(task_id, None)  # 上一次尝试捕获的路径作废
         opts = _ydl_opts(base_opts)
         try:
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
-            # 成功: 统计实际下载文件大小,用于 C3 统计面板
+            # 成功:先把落盘文件名对齐任务 title(A.3),
+            # 统计/弹幕/Finder 定位都用对齐后的权威路径
+            _align_task_file(task_id)
+            # 统计实际下载文件大小,用于 C3 统计面板
             import time as _t
             files = []
             done_ok = False
@@ -572,8 +799,15 @@ def _task_files(t: dict) -> list:
     """根据任务标题在下载目录找对应文件(yt-dlp 文件名以标题开头)。
 
     按 UP 归档(SORT_BY_UP)时文件在「UP名/」子目录,也扫一层子目录。
+    新任务有 A.3 写入的 actual_filename 时直接命中,免前缀扫描
+    (也根治了「前缀截断错位 → Reveal 找不到文件」的老问题)。
     """
     from pathlib import Path
+    af = t.get("actual_filename")
+    if af:
+        p = Path(af)
+        if p.is_file():
+            return [p]
     title = (t.get("title") or "").strip()
     if not title:
         return []
@@ -608,6 +842,7 @@ def delete_tasks(task_ids: list, delete_file: bool) -> int:
                 t["cancel"] = True  # 进行中的先标记取消
             removed.append(t)
             del _tasks[tid]
+            _final_paths.pop(tid, None)
     if delete_file:
         for t in removed:
             for f in _task_files(t):

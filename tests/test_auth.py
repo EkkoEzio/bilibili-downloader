@@ -211,3 +211,183 @@ def test_fetch_up_card_failure_returns_none(monkeypatch):
         raise RuntimeError("net")
     monkeypatch.setattr(bilibili_auth.requests, "get", boom)
     assert bilibili_auth.fetch_up_card(1) is None
+
+
+# ---------- 模块级缓存补锁(2026-08-19 评审 P0:登出竞态残留旧身份) ----------
+
+def test_logout_during_cookie_extract_no_stale_writeback(monkeypatch, tmp_path):
+    """登出发生在 Edge cookie 提取期间:提取结果不得写回缓存。
+    旧行为:clear_session 无锁先清,T1 提取完把旧 cookiejar 写回缓存,
+    登出后最长 5 分钟仍以旧身份访问 B 站接口。"""
+    import threading
+    import time
+    import yt_dlp as _ydl
+
+    started, release = threading.Event(), threading.Event()
+
+    class _FakeJar:
+        pass
+
+    class _FakeYDL:
+        cookiejar = _FakeJar()
+        def __init__(self, *a, **k):
+            pass
+        def __enter__(self):
+            started.set()
+            assert release.wait(3)
+            return self
+        def __exit__(self, *a):
+            return False
+
+    # 隔离:无 sess.json / 无 cookies.txt → 走 cookiesfrombrowser(假 YDL)分支
+    monkeypatch.setattr(bilibili_auth, "SESSION_COOKIE_FILE", tmp_path / "sess.json")
+    monkeypatch.setattr(bilibili_auth, "COOKIE_FILE", tmp_path / "cookies.txt")
+    monkeypatch.setattr(_ydl, "YoutubeDL", _FakeYDL)
+
+    result = {}
+
+    def t_extract():
+        result["cj"] = bilibili_auth.get_cookiejar()
+
+    t1 = threading.Thread(target=t_extract)
+    t1.start()
+    assert started.wait(2), "T1 应进入慢提取"
+    t2 = threading.Thread(target=clear_session)  # 登出发生在提取期间
+    t2.start()
+    time.sleep(0.2)  # 让 clear 走到(有锁时)等锁处
+    release.set()
+    t1.join(3)
+    t2.join(3)
+    assert result["cj"] is not None, "T1 返回旧 jar 本身无妨"
+    assert bilibili_auth._cj_cache["cj"] is None, \
+        "登出后缓存不得残留旧 cookiejar(5 分钟内所有请求都带旧身份)"
+
+
+def test_session_and_fetch_caches_are_lock_protected():
+    """会话域缓存(_cj_cache/_wbi_ie)持 _session_lock;数据域缓存
+    (_followings_cache/_follow_cache)持 _fetch_lock;clear_session 覆盖两域。"""
+    import inspect
+    for fn, lock in (
+        (bilibili_auth.get_cookiejar, "_session_lock"),
+        (bilibili_auth._get_wbi_ie, "_session_lock"),
+        (bilibili_auth.clear_session, "_session_lock"),
+        (bilibili_auth.fetch_followings_all, "_fetch_lock"),
+        (bilibili_auth.fetch_follow_updates, "_fetch_lock"),
+    ):
+        assert lock in inspect.getsource(fn), f"{fn.__name__} 应持 {lock}"
+    assert "_fetch_lock" in inspect.getsource(bilibili_auth.clear_session), \
+        "clear_session 也要清数据域缓存"
+
+
+# ---------- fetch_* 公共骨架 + 归一化收敛(2026-08-19 评审 P2) ----------
+
+class _PagedResp:
+    def __init__(self, data):
+        self._d = data
+    def json(self):
+        return self._d
+
+
+def test_paged_get_pages_and_sleeps(monkeypatch):
+    """_paged_get:翻页收集、页间限速、pn 递增、终止即停。"""
+    pages = [{"code": 0, "data": {"list": [1], "has_more": True}},
+             {"code": 0, "data": {"list": [2], "has_more": False}}]
+    pns, sleeps = [], []
+    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
+
+    def fake_get(url, cookies=None, headers=None, params=None, timeout=None):
+        pns.append(params["pn"])
+        return _PagedResp(pages.pop(0))
+
+    monkeypatch.setattr(bilibili_auth.requests, "get", fake_get)
+    monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
+
+    def parse(d, fetched):
+        return d["list"], bool(d.get("has_more"))
+
+    out = bilibili_auth._paged_get("https://x/api", {}, what="测试", max_pages=5,
+                                   ps=20, gap=0.3, parse=parse)
+    assert out == [1, 2]
+    assert pns == [1, 2]
+    assert sleeps == [0.3], "页间限速只在还有下一页时执行"
+
+
+def test_paged_get_mid_fetched_once(monkeypatch):
+    """骨架取 mid 只打一次 nav 接口;翻页不再重复(旧行为每页一次)。"""
+    pages = [{"code": 0, "data": {"list": [1], "has_more": True}},
+             {"code": 0, "data": {"list": [2], "has_more": False}}]
+    mid_calls = []
+
+    def fake_mid(cj):
+        mid_calls.append(1)
+        return 2974547
+
+    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_auth, "_my_mid", fake_mid)
+    monkeypatch.setattr(bilibili_auth.requests, "get",
+                        lambda *a, **k: _PagedResp(pages.pop(0)))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    def parse(d, fetched):
+        return d["list"], bool(d.get("has_more"))
+
+    out = bilibili_auth._paged_get("https://x/api", {}, what="测试", max_pages=5,
+                                   ps=20, mid_param="vmid", parse=parse)
+    assert out == [1, 2]
+    assert len(mid_calls) == 1, "mid 应只取一次,不是每页一次"
+
+
+def test_video_item_normalizes_variants():
+    """归一化器对齐各接口字段差异:owner/upper/顶层作者、pic/cover、
+    时间戳键、失效标记、extra 覆盖。"""
+    vi = bilibili_auth._video_item
+    a = vi({"bvid": "BV1", "title": "t", "pic": "http://i0/x.jpg",
+            "owner": {"name": "U", "mid": 1}, "duration": 10, "view_at": 5})
+    assert (a["bvid"], a["uploader"], a["uploader_mid"], a["duration"],
+            a["view_at"], a["url"], a["thumbnail"]) == (
+        "BV1", "U", 1, 10, 5, "https://www.bilibili.com/video/BV1", "https://i0/x.jpg")
+    # upper 容器 + cover 键 + 无时间戳 + 失效标记
+    b = vi({"bvid": "", "title": "", "attr": 2, "cover": "",
+            "upper": {"name": "U2", "mid": 2}},
+           owner_key="upper", pic_key="cover", view_at_key=None, mark_invalid=True)
+    assert b["title"] == "已失效视频" and b["url"] == "" and "view_at" not in b
+    # 顶层作者(arc/search 的 author/created) + extra 覆盖
+    c = vi({"bvid": "BV3", "title": "t3", "author": "顶层UP", "pic": "",
+            "created": 99}, owner_key=None, name_key="author",
+           view_at_key="created", uploader_mid=42)
+    assert c["uploader"] == "顶层UP" and c["view_at"] == 99 and c["uploader_mid"] == 42
+
+
+def test_fetch_family_uses_shared_skeleton():
+    """分页家族统一走 _paged_get;视频归一化统一走 _video_item。"""
+    import inspect
+    for fn in ("fetch_collected_seasons", "fetch_season_content",
+               "fetch_fav_content", "fetch_followings", "fetch_followings_all"):
+        assert "_paged_get" in inspect.getsource(getattr(bilibili_auth, fn)), \
+            f"{fn} 应走公共分页骨架"
+    for fn in ("fetch_history", "fetch_watchlater", "fetch_season_content",
+               "fetch_fav_content", "fetch_up_videos"):
+        assert "_video_item" in inspect.getsource(getattr(bilibili_auth, fn)), \
+            f"{fn} 的归一化应走 _video_item"
+
+
+def test_followings_all_mid_once_and_pages(monkeypatch):
+    """followings_all 回归:多页拉取 mid 只取一次(旧实现每页重复打 nav)。"""
+    pages = [{"code": 0, "data": {"total": 2, "list": [{"mid": 1, "uname": "A", "face": ""}]}},
+             {"code": 0, "data": {"total": 2, "list": [{"mid": 2, "uname": "B", "face": ""}]}}]
+    mid_calls = []
+
+    def fake_mid(cj):
+        mid_calls.append(1)
+        return 2974547
+
+    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_auth, "_my_mid", fake_mid)
+    monkeypatch.setattr(bilibili_auth.requests, "get",
+                        lambda *a, **k: _PagedResp(pages.pop(0)))
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    monkeypatch.setattr(bilibili_auth, "_followings_cache",
+                        {"items": [], "total": 0, "ts": 0})
+    r = bilibili_auth.fetch_followings_all(force=True, max_pages=3)
+    assert [u["mid"] for u in r["items"]] == [1, 2] and r["total"] == 2
+    assert len(mid_calls) == 1, "mid 只取一次(旧实现每页调 _my_mid 多打 nav 接口)"

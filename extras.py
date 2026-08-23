@@ -18,6 +18,26 @@ log = logging.getLogger("bd.extras")
 
 _BV_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
 
+# Windows 保留设备名(不带扩展名时整名命中,带扩展名时首个点前段命中)
+_WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
+                 *(f"COM{i}" for i in range(1, 10)),
+                 *(f"LPT{i}" for i in range(1, 10))}
+
+
+def sanitize_filename(name: str) -> str:
+    """清洗成跨平台安全文件名:非法字符→_、空白合并、去首尾空白与点。
+
+    下载文件名的唯一权威清洗入口(downloader 的 outtmpl 与改名对齐共用,
+    保证"任务 title → 期望文件名"两端走同一实现)。空名兜底 video。
+    """
+    name = re.sub(r'[\\/:*?"<>|]', "_", name or "")
+    name = re.sub(r"\s+", " ", name).strip(" .")
+    if not name:
+        return "video"
+    if name.upper() in _WIN_RESERVED or name.split(".")[0].upper() in _WIN_RESERVED:
+        name = "_" + name
+    return name
+
 
 def bvid_from_url(url: str) -> Optional[str]:
     """从视频 URL 提取 BV 号;提取不到(短链/av号)返回 None。"""
