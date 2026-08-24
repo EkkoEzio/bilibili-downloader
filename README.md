@@ -2,8 +2,9 @@
 
 本地网页应用,把 B 站视频高画质留存到本地。支持大会员 1080P+/4K。
 
-> **v2.0.0**:加入即自动下载 · 缓存优先 · 下载队列合并 · 设置即存 ·
-> 追更合集接入 · 网格视图 · 启动器自愈。详见 [CHANGELOG.md](CHANGELOG.md)。
+> **v2.1.0**:下载文件名对齐官方标题 · 任务史原子持久化 · 登出无残留 ·
+> 前端页控制器模块化 · 后端拆 taskstore/parsing/files/bilibili_api ·
+> `BD_PORT` 可换端口。详见 [CHANGELOG.md](CHANGELOG.md)。
 
 ## 快速开始
 
@@ -165,17 +166,27 @@ A: 个人自用、只下载自己账号有权观看的免费内容、不外传,�
 ## 项目结构
 
 ```
-├── app.py              # Flask 路由层
-├── bilibili_auth.py    # 扫码/Edge/cookie 登录 + 内容 API
-├── downloader.py       # yt-dlp 封装(解析/下载/重试/进度/取消/通知)
-├── quality.py          # 清晰度标注与 format 归一化
-├── config.py           # 运行时配置(目录/并发/限速/主题/附件)
+├── app.py              # Flask 路由层(薄;@api_errors 统一异常出口)
+├── bilibili_auth.py    # 登录与会话:扫码/Edge/cookie + cookiejar 缓存
+├── bilibili_api.py     # B 站读接口客户端(历史/收藏/合集/关注/UP 投稿)
+├── downloader.py       # 下载执行引擎(线程/重试/进度/取消/通知)
+├── taskstore.py        # 任务状态表 + tasks.json 原子持久化 + 统计
+├── parsing.py          # yt-dlp 解析(单视频/多 P/收藏夹合集列表)
+├── files.py            # 落盘文件名组装/对齐/改名冲突处理
+├── quality.py          # 清晰度标注与 format 归一化(纯函数)
+├── config.py           # 运行时配置(字段表驱动;BD_PORT 可换端口)
 ├── up_list.py          # 自定义 UP 清单数据层(per-UP 默认清晰度)
 ├── auto_refresh.py     # 自动下载轮询(串行防风控,新投稿直接入队)
 ├── pagecache.py        # 页面数据缓存(打开秒显上次数据)
-├── extras.py           # 弹幕抓取(protobuf)+ bvid 提取
-├── templates/index.html# 单页前端(原生 JS + 内联 CSS,2679 行)
-├── tests/              # 单元测试(114 个)
+├── storage.py          # 统一 JSON 持久化(原子写 + 损坏备份)
+├── extras.py           # 弹幕抓取(protobuf)+ bvid 提取 + 文件名清洗
+├── templates/index.html# 单页前端骨架(结构与内联事件)
+├── static/js/          # 前端 ES modules:
+│   ├── app.js          # 入口 + window 桥(内联 onclick 兼容)
+│   ├── lib.js          # 页控制器框架(共享状态/无限滚/操作条/缓存优先)
+│   ├── pages/*.js      # 六页各一控制器(下载/历史/动态/合集/收藏/稍后再看)
+│   └── *.js            # util/icons/net/theme/quality/login/settings/drawer/newdl
+├── tests/              # 单元测试(161 个)
 ├── data/               # 运行时数据(gitignore)
 │   ├── config.json     用户设置
 │   ├── tasks.json      下载任务历史
