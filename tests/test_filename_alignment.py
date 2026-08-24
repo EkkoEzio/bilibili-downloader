@@ -370,11 +370,10 @@ def test_resolve_conflict_cancel(client, monkeypatch, tmp_path):
 
 
 def test_resolve_conflict_open_existing(client, monkeypatch, tmp_path):
-    """「打开现有文件」:返回路径并由路由层 open -R 定位。"""
-    import app as app_module
+    """「打开现有文件」:返回路径并由路由层交给 reveal_path 定位。"""
     calls = []
-    monkeypatch.setattr(app_module.subprocess, "run",
-                        lambda *a, **k: calls.append(a))
+    monkeypatch.setattr("app.downloader.reveal_path",
+                        lambda p: calls.append(str(p)) or True)
     existing = tmp_path / "占坑的旧文件.mp4"
     existing.write_bytes(b"x")
     _mk_task("rc3", status="done", title="t",
@@ -384,7 +383,7 @@ def test_resolve_conflict_open_existing(client, monkeypatch, tmp_path):
         r = client.post("/api/task/rc3/resolve-conflict",
                         json={"action": "open_existing"}).get_json()
         assert r["ok"] and r["path"] == str(existing)
-        assert calls and calls[0][0] == ["open", "-R", str(existing)]
+        assert calls == [str(existing)]
     finally:
         downloader._tasks.pop("rc3", None)
 
@@ -422,3 +421,133 @@ def test_frontend_has_conflict_ui():
     assert "resolveTaskConflict" in html, "前端缺少冲突处理函数"
     assert "名称冲突" in html, "前端缺少冲突提示"
     assert "自动改名失败" in html, "前端缺少改名失败提示"
+
+
+# ---------- 文件管理器定位:跨平台 ----------
+
+def test_reveal_dispatches_per_platform(monkeypatch, tmp_path):
+    """reveal_path 按平台选命令,不再硬编码 macOS 的 `open -R`。"""
+    import files
+    f = tmp_path / "视频.mp4"
+    f.write_bytes(b"x")
+    calls = []
+    monkeypatch.setattr(files.subprocess, "run",
+                        lambda argv, **kw: calls.append(argv))
+
+    monkeypatch.setattr(files.sys, "platform", "darwin")
+    files.reveal_path(f)
+    assert calls[-1] == ["open", "-R", str(f)]
+
+    monkeypatch.setattr(files.sys, "platform", "win32")
+    files.reveal_path(f)
+    assert calls[-1] == ["explorer", f"/select,{f}"]
+
+    # Linux 无通用「选中文件」协议 → 退化为打开所在目录
+    monkeypatch.setattr(files.sys, "platform", "linux")
+    files.reveal_path(f)
+    assert calls[-1] == ["xdg-open", str(tmp_path)]
+
+
+def test_reveal_survives_missing_command(monkeypatch, tmp_path):
+    """命令不存在时返回 False 而不是抛 FileNotFoundError。
+
+    回归:check=False 只忽略返回码,命令缺失照样抛;非 macOS 上硬编码
+    `open` 会让 /api/task/<id>/reveal 直接 500。
+    """
+    import files
+
+    def boom(argv, **kw):
+        raise FileNotFoundError(argv[0])
+
+    monkeypatch.setattr(files.subprocess, "run", boom)
+    monkeypatch.setattr(files.sys, "platform", "linux")
+    assert files.open_dir(tmp_path) is False
+    assert files.reveal_path(tmp_path / "不存在.mp4") is False
+
+
+def test_routes_have_no_hardcoded_platform_command():
+    """路由层不再直接 subprocess 唤起系统命令,统一走 files 的跨平台封装。"""
+    src = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+    assert "subprocess" not in src, "app.py 不应再直接调 subprocess"
+    assert "reveal_path" in src and "open_dir" in src
+
+
+# ---------- _task_files 匹配收紧(消除误删邻居文件) ----------
+
+def test_task_files_ignores_longer_neighbour_title(monkeypatch, tmp_path):
+    """标题是别人前缀的任务,不得匹配上邻居的文件。
+
+    回归:旧实现按未清洗的 title[:30] 做 name.startswith,任务「第01期」会
+    把另一个视频「第01期特别版.mp4」也算成自己的文件——配上
+    「删除记录 + 文件」就是删别人的东西。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    mine = tmp_path / "第01期.mp4"
+    mine.write_bytes(b"x")
+    neighbour = tmp_path / "第01期特别版.mp4"
+    neighbour.write_bytes(b"y")
+
+    files = downloader._task_files({"title": "第01期"})
+    assert files == [mine], "只应命中自己的文件"
+    assert neighbour.is_file()
+
+
+def test_delete_file_keeps_neighbour_on_disk(monkeypatch, tmp_path):
+    """删除记录 + 文件:只删自己的,邻居文件必须还在。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    mine = tmp_path / "教程.mp4"
+    mine.write_bytes(b"x")
+    neighbour = tmp_path / "教程完整版.mp4"
+    neighbour.write_bytes(b"y")
+    _mk_task("nb1", status="done", title="教程")
+    try:
+        taskstore.delete_tasks(["nb1"], delete_file=True)
+    finally:
+        downloader._tasks.pop("nb1", None)
+    assert not mine.exists(), "自己的文件应被删除"
+    assert neighbour.is_file(), "邻居文件不得被误删"
+
+
+def test_task_files_matches_sanitized_title(monkeypatch, tmp_path):
+    """标题含非法字符时,磁盘上是清洗后的名字,也要能定位到。
+
+    回归:旧实现拿原始 title 做前缀匹配,`坏/名字:x` 这类标题永远匹配不上
+    (磁盘上已是 `坏_名字_x`),Reveal 找不到文件、还会被判成「失效记录」。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    f = tmp_path / "坏_名字_x.mp4"
+    f.write_bytes(b"x")
+    assert downloader._task_files({"title": "坏/名字:x"}) == [f]
+
+
+def test_task_files_matches_multipart_suffix(monkeypatch, tmp_path):
+    """多 P 任务的期望名带 ` - P{n}`,应精确命中对应分集而不是别的分集。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    p2 = tmp_path / "合集 - P2.mp4"
+    p2.write_bytes(b"x")
+    p3 = tmp_path / "合集 - P3.mp4"
+    p3.write_bytes(b"y")
+    assert downloader._task_files({"title": "合集", "page": 3}) == [p3]
+
+
+def test_task_files_includes_sidecars(monkeypatch, tmp_path):
+    """封面/字幕/弹幕等副文件要跟主文件一起算进任务。
+
+    回归:有 actual_filename 时旧实现只返回主文件,「删除记录 + 文件」会留下
+    孤儿 .xml/.srt/.jpg,downloaded_bytes 也少算附件体积。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    main = tmp_path / "视频.mp4"
+    main.write_bytes(b"x" * 10)
+    (tmp_path / "视频.xml").write_bytes(b"d")          # 弹幕
+    (tmp_path / "视频.jpg").write_bytes(b"c")          # 封面
+    (tmp_path / "视频.zh-Hans.srt").write_bytes(b"s")  # 字幕
+    (tmp_path / "别的视频.mp4").write_bytes(b"z")
+
+    names = {f.name for f in
+             downloader._task_files({"title": "视频", "actual_filename": str(main)})}
+    assert names == {"视频.mp4", "视频.xml", "视频.jpg", "视频.zh-Hans.srt"}
+
+    # 没有 actual_filename 的老任务走扫描路径,同样要覆盖整族
+    names2 = {f.name for f in downloader._task_files({"title": "视频"})}
+    assert names2 == {"视频.mp4", "视频.xml", "视频.jpg", "视频.zh-Hans.srt"}

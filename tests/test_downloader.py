@@ -60,6 +60,48 @@ def test_retry_state_renders_in_frontend():
     assert "重试中" in html
 
 
+def test_task_state_sets_single_source():
+    """活跃/终态集合前后端必须一致,且两者不重叠、并集覆盖全部状态。
+
+    回归:后端曾有三份手写副本(_load_persisted / find_active_by_url / _ACTIVE)
+    都漏了 "retrying",而前端 TASK_ACTIVE 有——重试窗口内重复下载拦截失效、
+    「清除全部记录」会删掉在跑任务的记录、重启后 retrying 成僵尸态。
+    """
+    import re
+    base = Path(__file__).resolve().parent.parent
+    js = (base / "static" / "js" / "pages" / "downloads.js").read_text(encoding="utf-8")
+
+    m = re.search(r"const TASK_ACTIVE = \[([^\]]*)\]", js)
+    assert m, "前端未找到 TASK_ACTIVE 定义"
+    front_active = set(re.findall(r"'(\w+)'", m.group(1)))
+    assert front_active == set(taskstore.ACTIVE), (
+        f"活跃状态集合不一致:后端 {sorted(taskstore.ACTIVE)} / 前端 {sorted(front_active)}")
+
+    # SSE 收流的终态集合(前端 subscribeProgress 里的那份)
+    front_terminal = set(re.findall(r"'(\w+)'", re.search(
+        r"if \(\[([^\]]*)\]\.includes\(t\.status\)\) \{\s*\n\s*es\.close", js).group(1)))
+    assert front_terminal == set(taskstore.TERMINAL), (
+        f"终态集合不一致:后端 {sorted(taskstore.TERMINAL)} / 前端 {sorted(front_terminal)}")
+
+    assert not set(taskstore.ACTIVE) & set(taskstore.TERMINAL), "活跃态与终态不得重叠"
+
+    # 有中文文案的状态都应被两个集合覆盖(防新增状态漏归类)
+    known = set(taskstore.ACTIVE) | set(taskstore.TERMINAL)
+    cn_block = re.search(r"const TASK_STATUS_CN = \{(.*?)\};", js, re.S)
+    assert cn_block, "前端未找到 TASK_STATUS_CN 定义"
+    declared = set(re.findall(r"(\w+):", cn_block.group(1)))
+    assert declared <= known, f"前端有未归类的状态:{sorted(declared - known)}"
+    # done 只在 TERMINAL 里,没有中文文案(完成态渲染成普通视频卡),单独确认
+    assert "done" in taskstore.TERMINAL
+
+
+def test_sse_stops_on_all_terminal_states():
+    """SSE 必须在任何终态收流,而不是只判 done/failed(取消/中断会一直推)。"""
+    src = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
+    assert "taskstore.TERMINAL" in src, "SSE 应复用 taskstore.TERMINAL,不要手写状态"
+    assert 'in ("done", "failed")' not in src, "不应再有只判 done/failed 的收流条件"
+
+
 # ---------- 取消立即生效 / persist 节流 / 读取拷贝 ----------
 
 def test_progress_hook_raises_when_cancel_flag_set():
@@ -368,3 +410,27 @@ def test_load_persisted_backs_up_corrupt_not_silent_wipe(monkeypatch, tmp_path):
     finally:
         downloader._tasks.clear()
         downloader._tasks.update(saved)
+
+
+# ---------- 统计面板 ----------
+
+def test_disk_bytes_counts_subdirs(monkeypatch, tmp_path):
+    """磁盘用量要递归统计:开了「按 UP 建子目录」后文件全在子目录里。
+
+    回归:旧实现只 iterdir() 扫顶层,归档模式下磁盘用量恒为 0,
+    历史任务缺 downloaded_bytes 时总大小也会被兜底成 0。
+    """
+    monkeypatch.setattr(taskstore.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "顶层.mp4").write_bytes(b"a" * 100)
+    up_dir = tmp_path / "某UP主"
+    up_dir.mkdir()
+    (up_dir / "归档.mp4").write_bytes(b"b" * 250)
+
+    stats = taskstore.compute_stats()
+    assert stats["disk_bytes"] == 350, "子目录文件应计入磁盘用量"
+
+
+def test_disk_bytes_survives_missing_dir(monkeypatch, tmp_path):
+    """下载目录不存在时统计不炸,返回 0。"""
+    monkeypatch.setattr(taskstore.config, "DOWNLOAD_DIR", tmp_path / "并不存在")
+    assert taskstore.compute_stats()["disk_bytes"] == 0

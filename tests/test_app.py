@@ -128,30 +128,35 @@ def test_up_list_set_quality_route(client, monkeypatch):
 # ---------- /api/task/<id>/reveal:在 Finder 中定位文件 ----------
 
 def test_task_reveal_opens_file(client, monkeypatch):
-    """找到文件时用 open -R 选中该文件(按 UP 归档时也能定位)。"""
+    """找到文件时定位并选中该文件(按 UP 归档时也能定位)。
+
+    具体平台命令归 files.reveal_path(见 test_filename_alignment),
+    这里只验路由把正确的路径交给它。
+    """
     from pathlib import Path
-    opened = []
+    revealed = []
     monkeypatch.setattr("app.downloader.find_task_files",
                         lambda tid: [Path("/dl/UP/视频.mp4")])
-    monkeypatch.setattr("app.subprocess.run",
-                        lambda cmd, check=False: opened.append(cmd))
+    monkeypatch.setattr("app.downloader.reveal_path",
+                        lambda p: revealed.append(str(p)) or True)
     r = client.post("/api/task/abc/reveal").get_json()
     assert r["ok"] and r["found"] is True
-    assert opened == [["open", "-R", "/dl/UP/视频.mp4"]]
+    assert revealed == ["/dl/UP/视频.mp4"]
 
 
 def test_task_reveal_falls_back_to_download_dir(client, monkeypatch):
+    """找不到文件时退回打开下载目录,并如实回报 found=False。"""
     from pathlib import Path
     opened = []
     monkeypatch.setattr("app.downloader.find_task_files", lambda tid: [])
     monkeypatch.setattr("app.downloader.get_task", lambda tid: {"title": "x"})
-    monkeypatch.setattr("app.subprocess.run",
-                        lambda cmd, check=False: opened.append(cmd))
+    monkeypatch.setattr("app.downloader.open_dir",
+                        lambda p: opened.append(str(p)) or True)
     import app as app_module
     monkeypatch.setattr(app_module.config, "DOWNLOAD_DIR", Path("/dl"))
     r = client.post("/api/task/abc/reveal").get_json()
     assert r["ok"] and r["found"] is False
-    assert opened == [["open", "/dl"]]
+    assert opened == ["/dl"]
 
 
 # ---------- 我追的合集(2026-08-18) ----------
@@ -331,6 +336,90 @@ def test_frontend_split_into_static_files():
                    for p in sorted((base / "static" / "js").rglob("*.js")))
     assert "cachedLoad" in js, "脚本应完整迁移"
     assert "{{" not in js and "{%" not in js, "静态 JS 里不该有 Jinja 语法"
+
+
+# ---------- window 桥完整性 ----------
+# 拆 ES modules 后,内联 onclick 依赖 app.js 把函数挂到 window。这条链有两个
+# 断点,且都躲得过「对拼接文本做子串断言」——名字在两个文件里都出现,缺的只是
+# 一个 export 关键字 / 一行桥条目:
+#   1. 模块忘了 export → 命名空间对象上取到 undefined → window.fn 是 undefined
+#      → 内联 onclick 直接 TypeError(v2.1 重构时 newdl.batchDownload 真踩了,
+#        「批量下载」按钮点了没反应,161 个测试全绿)
+#   2. 新增内联 onclick 但忘了挂桥 → ReferenceError
+# 下面两条测试分别锁住这两个方向。
+
+def _js_dir():
+    from pathlib import Path
+    return Path(__file__).resolve().parent.parent / "static" / "js"
+
+
+def _strip_block_comments(src: str) -> str:
+    """去掉 /* */ 块注释:注释里的示例代码不是真实引用(app.js 的桥说明里
+    就有 onclick="xxx()" 这种占位)。"""
+    import re
+    return re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+
+
+def _window_bridge():
+    """解析 app.js 的 window 桥,返回 [(全局名, 模块别名, 成员名)]。"""
+    import re
+    app_js = (_js_dir() / "app.js").read_text(encoding="utf-8")
+    # `name: mod.member,` 或简写 `mod.member,`
+    entries = re.findall(r"^\s*(?:(\w+):\s*)?(\w+)\.(\w+),\s*$", app_js, re.M)
+    return [(alias or member, mod, member) for alias, mod, member in entries]
+
+
+def _module_files():
+    """app.js 的 `import * as X from './y.js'` → {别名: 文件路径}。"""
+    import re
+    app_js = (_js_dir() / "app.js").read_text(encoding="utf-8")
+    return {alias: _js_dir() / rel for alias, rel
+            in re.findall(r"import \* as (\w+) from '\./([\w/.]+)'", app_js)}
+
+
+def test_frontend_window_bridge_targets_are_exported():
+    """桥上每个 `mod.member` 都必须真的被该模块 export。
+
+    未导出时命名空间对象上是 undefined,window.fn 也就是 undefined,
+    内联 onclick 调用直接 TypeError——而子串断言完全看不出来。"""
+    import re
+    mods = _module_files()
+    bridge = _window_bridge()
+    assert len(bridge) > 30, f"桥条目解析异常(只解析到 {len(bridge)} 条)"
+    missing = []
+    for win_name, mod, member in bridge:
+        f = mods.get(mod)
+        if not f or not f.exists():
+            continue
+        src = f.read_text(encoding="utf-8")
+        exported = (
+            re.search(rf"export\s+(?:async\s+)?(?:function|const|let|var|class)\s+{member}\b", src)
+            or re.search(rf"export\s*\{{[^}}]*\b{member}\b[^}}]*\}}", src)
+        )
+        if not exported:
+            missing.append(f"window.{win_name} <- {mod}.{member} ({f.name} 未 export)")
+    assert not missing, "桥指向了未导出的成员(运行时是 undefined):\n" + "\n".join(missing)
+
+
+def test_frontend_inline_handlers_are_bridged():
+    """内联 on* 处理器引用的全局函数都必须挂在 window 桥上,否则 ReferenceError。"""
+    import re
+    from pathlib import Path
+    base = Path(__file__).resolve().parent.parent
+    sources = [(base / "templates" / "index.html").read_text(encoding="utf-8")]
+    sources += [_strip_block_comments(p.read_text(encoding="utf-8"))
+                for p in sorted(_js_dir().rglob("*.js"))]
+
+    called = set()
+    for src in sources:
+        for handler in re.findall(r'on(?:click|change|input)="([^"]*)"', src):
+            # 前面不是 . 或字母的标识符才是全局调用(排除 this.x() / event.y())
+            called.update(re.findall(r"(?<![\w.])([A-Za-z_]\w*)\s*\(", handler))
+
+    bridged = {win for win, _mod, _member in _window_bridge()}
+    unbridged = sorted(called - bridged)
+    assert not unbridged, ("内联处理器引用了未挂桥的函数:"
+                           + ", ".join(f"{n}()" for n in unbridged))
 
 
 def test_frontend_history_load_more():

@@ -26,7 +26,7 @@ from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
 from parsing import parse_video, parse_part, resolve_playlist, _ydl_opts
 from files import (build_filename, tmpl_literal, _MEDIA_EXTS,
                    align_task_file as _align_task_file,
-                   resolve_rename_conflict)
+                   resolve_rename_conflict, reveal_path, open_dir)
 
 log = logging.getLogger("bd.downloader")
 

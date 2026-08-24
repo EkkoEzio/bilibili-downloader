@@ -5,7 +5,6 @@ import re
 import threading
 import time
 import json
-import subprocess
 from typing import Optional
 
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
@@ -419,7 +418,11 @@ def watchlater():
 
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
-    """SSE 推送单个任务进度,完成/失败后关闭。"""
+    """SSE 推送单个任务进度,任务进终态后收流。
+
+    终态取 taskstore.TERMINAL(done/failed/cancelled/interrupted)——早先只判
+    done/failed,取消或中断的任务服务端会一直 1 秒一推,靠前端主动 close 才停。
+    """
     def gen():
         while True:
             t = downloader.get_task(task_id)
@@ -427,7 +430,7 @@ def progress(task_id):
                 yield "event: end\ndata: {}\n\n"
                 break
             yield f"data: {json.dumps(t, ensure_ascii=False)}\n\n"
-            if t["status"] in ("done", "failed"):
+            if t["status"] in taskstore.TERMINAL:
                 break
             time.sleep(1)
     return Response(stream_with_context(gen()), mimetype="text/event-stream")
@@ -465,13 +468,13 @@ def set_config():
 @app.route("/api/task/<task_id>/reveal", methods=["POST"])
 @api_errors
 def task_reveal(task_id):
-    """在 Finder 中定位该任务下载到的文件(按 UP 归档时是子目录里的那个)。
-    找不到文件时退回打开下载目录。"""
+    """在文件管理器中定位该任务下载到的文件(按 UP 归档时是子目录里的那个)。
+    找不到文件时退回打开下载目录。跨平台细节在 files.reveal_path/open_dir。"""
     files = downloader.find_task_files(task_id)
     if files:
-        subprocess.run(["open", "-R", str(files[0])], check=False)
+        downloader.reveal_path(files[0])
         return jsonify({"ok": True, "found": True})
-    subprocess.run(["open", str(config.DOWNLOAD_DIR)], check=False)
+    downloader.open_dir(config.DOWNLOAD_DIR)
     return jsonify({"ok": True, "found": False})
 
 
@@ -487,7 +490,7 @@ def task_resolve_conflict(task_id):
     if not r.get("ok"):
         return jsonify(r), 400
     if action == "open_existing" and r.get("path"):
-        subprocess.run(["open", "-R", r["path"]], check=False)
+        downloader.reveal_path(r["path"])
     return jsonify(r)
 
 

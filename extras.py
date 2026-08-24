@@ -39,6 +39,19 @@ def sanitize_filename(name: str) -> str:
     return name
 
 
+def build_filename(title: str, page: int = 1) -> str:
+    """任务权威 title → 期望的落盘文件名 stem(不含目录/扩展名)。
+
+    outtmpl 组装(A.2)、下载后改名对齐(A.3)与 taskstore 的文件定位共用本函数,
+    保证三端算出的期望名恒一致。多 P 加 ` - P{n}` 后缀。
+
+    放在这里(而不是 files.py)是分层需要:taskstore 定位文件也要用它,
+    而 files.py 依赖 taskstore——纯命名逻辑必须待在依赖链底部。
+    """
+    stem = sanitize_filename(title)
+    return f"{stem} - P{int(page)}" if page and int(page) > 1 else stem
+
+
 def bvid_from_url(url: str) -> Optional[str]:
     """从视频 URL 提取 BV 号;提取不到(短链/av号)返回 None。"""
     m = _BV_RE.search(url or "")

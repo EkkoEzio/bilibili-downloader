@@ -206,7 +206,7 @@ function updateBatchCount() {
   if (el) el.textContent = n;
 }
 
-async function batchDownload() {
+export async function batchDownload() {
   const checked = [...document.querySelectorAll('input[data-bidx]:checked')];
   if (checked.length === 0) { alert('请至少勾选一项'); return; }
   const label = document.getElementById('batch-quality').value;

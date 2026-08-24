@@ -10,6 +10,7 @@ _final_paths 是下载引擎(postprocessor 钩子)与文件名对齐(files.py)�
 """
 import threading
 import time
+from glob import escape as glob_escape
 from pathlib import Path
 from typing import Optional
 
@@ -30,7 +31,13 @@ _persist_lock = threading.Lock()
 # MoveFiles 是最后一个后处理器,其 finished 载荷里的 filepath 即合并/搬运完成的最终文件
 _final_paths: dict[str, str] = {}
 
-_ACTIVE = ("queued", "downloading", "merging", "cancelling")
+# 任务状态机的两个集合,全项目唯一来源(曾有三份后端副本各自漏写 "retrying",
+# 导致重试窗口内:重复下载拦截失效、「清除全部记录」把在跑的任务记录删掉、
+# 重启后 retrying 变僵尸态)。前端 pages/downloads.js 的 TASK_ACTIVE 必须与
+# ACTIVE 一致,tests/test_app.py 有一致性断言。
+ACTIVE = ("queued", "downloading", "merging", "cancelling", "retrying")
+TERMINAL = ("done", "failed", "cancelled", "interrupted")
+_ACTIVE = ACTIVE  # 旧名保留,避免下游 import 断裂
 
 
 def _persist() -> None:
@@ -52,7 +59,7 @@ def _load_persisted() -> None:
     with _tasks_lock:
         for t in data:
             # 上次中断的活跃任务标记为已中断
-            if t.get("status") in ("queued", "downloading", "merging", "cancelling"):
+            if t.get("status") in ACTIVE:
                 t["status"] = "interrupted"
                 t["error"] = "服务重启,任务中断"
             t["cancel"] = False
@@ -82,7 +89,7 @@ def find_active_by_url(url: str, label: str, page: int = 1) -> Optional[str]:
         for tid, t in _tasks.items():
             if (t.get("url") == url and t.get("label") == label
                     and t.get("page", 1) == page
-                    and t["status"] in ("queued", "downloading", "merging", "cancelling")):
+                    and t["status"] in ACTIVE):
                 return tid
     return None
 
@@ -99,32 +106,69 @@ def is_downloaded(url: str) -> bool:
     return False
 
 
-def _task_files(t: dict) -> list:
-    """根据任务标题在下载目录找对应文件(yt-dlp 文件名以标题开头)。
+# 前缀匹配时允许的后缀起始字符。落盘名可以是「期望名 + ` - P3` / `.zh-Hans`
+# / ` (1)`」这类后缀,但不允许期望名后面直接接别的字——否则任务「第01期」会
+# 匹配上另一个视频「第01期特别版」的文件,delete_file=True 就删了邻居的文件。
+_STEM_SUFFIX_STARTS = (" ", ".", "-", "_", "(", "[")
 
-    按 UP 归档(SORT_BY_UP)时文件在「UP名/」子目录,也扫一层子目录。
-    新任务有 A.3 写入的 actual_filename 时直接命中,免前缀扫描
-    (也根治了「前缀截断错位 → Reveal 找不到文件」的老问题)。
+
+def _stem_belongs(stem: str, expected: str) -> bool:
+    """磁盘文件的 stem 是否属于期望名 expected(精确相等,或带分隔符后缀)。"""
+    if stem == expected:
+        return True
+    if not stem.startswith(expected):
+        return False
+    return stem[len(expected):].startswith(_STEM_SUFFIX_STARTS)
+
+
+def _file_family(main: Path) -> list:
+    """主文件 + 同 stem 的副文件(封面/字幕/弹幕)。
+
+    删除与体积统计都应覆盖整族:只返回主文件会在「删除记录 + 文件」后留下
+    孤儿 .xml/.srt/.jpg,downloaded_bytes 也会少算附件。
+    """
+    try:
+        fam = sorted(f for f in main.parent.glob(glob_escape(main.stem) + ".*")
+                     if f.is_file())
+        return fam or ([main] if main.is_file() else [])
+    except OSError:
+        return [main] if main.is_file() else []
+
+
+def _task_files(t: dict) -> list:
+    """找任务对应的落盘文件(主文件 + 封面/字幕/弹幕等副文件)。
+
+    优先用 A.3 写入的 actual_filename——权威路径,免扫描(也根治了
+    「前缀截断错位 → Reveal 找不到文件」的老问题)。老任务没有这个字段时,
+    按 build_filename 算出的期望名扫下载目录及一层子目录(SORT_BY_UP 归档)。
+
+    匹配规则见 _stem_belongs。早先是拿**未清洗**的 title[:30] 做
+    name.startswith,有两个后果:标题含 / : ? 等非法字符的任务永远匹配不上
+    (磁盘上这些字符已被换成 _),以及任何共享前 30 字的两个视频互相误配——
+    后者叠加 delete_file=True 会删掉邻居的文件。
     """
     af = t.get("actual_filename")
     if af:
         p = Path(af)
         if p.is_file():
-            return [p]
+            return _file_family(p)
     title = (t.get("title") or "").strip()
-    if not title:
+    if not title or title == "(解析中)":
         return []
-    prefix = title[:30]  # CJK 标题原样保留,30字符(~90B)在截断范围内,足够唯一
+    expected = extras.build_filename(title, int(t.get("page") or 1))
     try:
-        files = [f for f in config.DOWNLOAD_DIR.iterdir()
-                 if f.is_file() and f.name.startswith(prefix)]
-        for sub in config.DOWNLOAD_DIR.iterdir():
-            if sub.is_dir():
-                files += [f for f in sub.iterdir()
-                          if f.is_file() and f.name.startswith(prefix)]
-        return files
-    except Exception:
+        dirs = [config.DOWNLOAD_DIR]
+        dirs += [d for d in config.DOWNLOAD_DIR.iterdir() if d.is_dir()]
+    except OSError:
         return []
+    files = []
+    for d in dirs:
+        try:
+            files += [f for f in d.iterdir()
+                      if f.is_file() and _stem_belongs(f.stem, expected)]
+        except OSError:
+            continue
+    return files
 
 
 def find_task_files(task_id: str) -> list:
@@ -204,8 +248,10 @@ def compute_stats() -> dict:
             if finished >= month_start:
                 month_count += 1
 
+    # 递归统计:开了「按 UP 建子目录」后文件都在子目录里,只扫顶层会算成 0
     try:
-        disk_bytes = sum(f.stat().st_size for f in config.DOWNLOAD_DIR.iterdir() if f.is_file())
+        disk_bytes = sum(f.stat().st_size
+                         for f in config.DOWNLOAD_DIR.rglob("*") if f.is_file())
     except Exception:
         disk_bytes = 0
 

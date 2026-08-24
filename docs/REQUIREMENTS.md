@@ -1,8 +1,11 @@
 # bilibili download — 完整需求文档
 
-> 本文档描述项目当前**已实现的全部功能**,基于代码实际状态整理(v2.0.0, 2026-08-18)。
-> 共 13 次提交,8 个 Python 模块 + 1 个模板,38 个 API 接口,2679 行前端。
-> 单元测试 114 个全过。
+> 本文档描述项目当前**已实现的全部功能**,基于代码实际状态整理(v2.1.0, 2026-08-24)。
+> 14 个 Python 模块(3027 行)+ 前端三分离(模板 388 行 / CSS 533 行 /
+> 17 个 ES modules 共 2050 行),37 个 API 路径。单元测试 179 个全过。
+>
+> 改这份文档时请顺手核对数字:`wc -l *.py`、`pytest -q`、
+> `grep -o '@app.route("[^"]*"' app.py | sort -u | wc -l`。
 
 ---
 
@@ -17,7 +20,8 @@
 
 ### R1 技术栈
 - 后端:Python 3 + Flask + yt-dlp(下载引擎)+ ffmpeg(音视频合并)+ requests
-- 前端:原生 JS 单页(无框架,内联 CSS)+ EventSource(SSE 进度)
+- 前端:原生 ES modules 单页(无框架、无构建工具)+ EventSource(SSE 进度);
+  结构 / 样式 / 脚本三分离,页控制器注册到 `lib.js` 的公共框架
 - 本地运行,数据全部存在 `data/` 目录
 
 ---
@@ -135,14 +139,22 @@
 
 ### R17 删除(按模式切换)
 - **下载记录页**勾选任意条目 → 底部操作条出现「删除记录 / 删除记录 + 文件」
-  (`delSelected`,复用删除弹窗)
-- **页头「清除记录」**:弹窗三选项 — 只删记录 / 记录+文件 / 只清失败/失效
-- 删除时勾选期间列表重排会移位索引 → `_dlDirty` 延迟到清空勾选后再刷新
+  (`delSelected`,按按钮语义直接删,不再弹二次选择弹窗)
+- **页头两个常驻按钮**:「清除全部记录」(只删记录,不动文件)/
+  「清除失败/失效记录」(失败任务 + 文件已不在本地的完成任务)
+- 「删除记录 + 文件」删的是任务的**整族**文件(主文件 + 封面/字幕/弹幕),
+  且只删匹配到自己期望名的文件,不会波及标题相近的邻居视频
+- 勾选期间列表重排会移位索引 → `_dirty` 标记延迟到清空勾选后再刷新
+  (`onChecksEmpty` 回调)
 
 ### R18 文件定位
-- 完成卡片右下角**播放按钮** → `/api/task/<id>/reveal` → `open -R`
-  在 Finder 中定位该视频文件;按 UP 归档也能找到
-- 找不到时退回打开下载目录
+- 完成卡片右下角**播放按钮** → `/api/task/<id>/reveal` → 在系统文件管理器中
+  定位该视频文件;按 UP 归档(子目录)也能找到
+- 跨平台:macOS `open -R` / Windows `explorer /select,` / Linux 退化为
+  打开所在目录(`files.reveal_path`);命令缺失时静默失败,不影响其他功能
+- 找不到文件时退回打开下载目录,接口如实返回 `found: false`
+- 定位用的是任务的权威落盘路径(`actual_filename`),连同封面/字幕/弹幕
+  等副文件算作同一族(删除、体积统计口径一致)
 
 ### R19 统计面板
 - 顶部:`总下载数 / 总大小 / 本月 / 今日`
@@ -228,7 +240,10 @@
 
 ---
 
-## 九、API 接口清单(38 个)
+## 九、API 接口清单(37 个路径 / 38 个 route)
+
+> `/api/config` 一个路径两个方法(GET/POST),故 route 数比路径数多 1。
+> 另有 `/` 返回单页骨架。
 
 ### 登录(7)
 | 方法 | 路径 | 功能 |
@@ -241,15 +256,16 @@
 | POST | `/api/login/cookie-txt` | 导入 cookies.txt |
 | POST | `/api/login/logout` | 退出登录 |
 
-### 解析/下载(6)
+### 解析/下载(7)
 | 方法 | 路径 | 功能 |
 |---|---|---|
 | POST | `/api/parse` | 解析视频(返回标题/清晰度/预估大小/是否多P) |
 | POST | `/api/parse-part` | 解析指定分 P 的清晰度 |
 | POST | `/api/download` | 启动单视频下载(带 uploader_mid) |
 | POST | `/api/cancel/<task_id>` | 取消下载 |
-| GET | `/api/progress/<task_id>` | SSE 推送下载进度 |
-| POST | `/api/task/<task_id>/reveal` | 在 Finder 中定位该任务的文件 |
+| GET | `/api/progress/<task_id>` | SSE 推送下载进度(任务进终态后收流) |
+| POST | `/api/task/<task_id>/reveal` | 在文件管理器中定位该任务的文件 |
+| POST | `/api/task/<task_id>/resolve-conflict` | 处理落盘名冲突(加 (1) 改名 / 打开现有 / 忽略) |
 
 ### 批量(2)
 | 方法 | 路径 | 功能 |
@@ -266,7 +282,7 @@
 | POST | `/api/tasks/clean-invalid` | 清除下载失败 + 文件失效的记录 |
 | GET | `/api/stats` | 统计面板 |
 
-### 内容浏览(7)
+### 内容浏览(8)
 | 方法 | 路径 | 功能 |
 |---|---|---|
 | GET | `/api/history?page=&size=` | 观看历史(带观看进度) |
@@ -287,13 +303,14 @@
 | GET | `/api/cache/fav_seasons` | 读合集列表的上次结果 |
 | GET | `/api/cache/watchlater` | 读稍后再看的上次结果 |
 
-### UP 清单(5)
+### UP 清单(6)
 | 方法 | 路径 | 功能 |
 |---|---|---|
 | GET | `/api/up-list` | UP 清单列表(含 fetched_at / quality) |
 | POST | `/api/up-list/add` | 添加 UP(主页 URL 或 mid,打基线) |
 | POST | `/api/up-list/remove` | 移除 UP |
 | POST | `/api/up-list/set-quality` | 设置某 UP 自动下载的清晰度 |
+| POST | `/api/up-list/reset-seen` | 重置某 UP 的已见标记(下次检查视其全部投稿为新增) |
 | POST | `/api/up-list/check` | 手动触发一轮检查(后台线程) |
 
 ### 配置(2)
@@ -308,25 +325,39 @@
 
 ```
 bilibili-downloader/
-├── app.py              (~660 行) Flask 路由层
-├── bilibili_auth.py    (~470 行) 登录/内容API/限流
-├── downloader.py       (~610 行) yt-dlp 解析/下载/重试/进度/取消
-├── quality.py          (126 行)  清晰度标注(纯函数,有单测)
-├── config.py           (216 行) 运行时配置
-├── up_list.py          (~140 行) UP 清单数据层(per-UP quality)
+├── app.py              (501 行) Flask 路由层(@api_errors 统一异常出口)
+├── bilibili_auth.py    (206 行) 登录与会话(扫码/Edge/cookies.txt + cookiejar 缓存)
+├── bilibili_api.py     (394 行) B 站读接口客户端(历史/收藏/合集/关注/UP 投稿)
+├── downloader.py       (384 行) 下载执行引擎(线程/重试/进度/取消/通知)
+├── taskstore.py        (264 行) 任务表 + tasks.json 原子持久化 + 文件定位 + 统计
+├── parsing.py          (160 行) yt-dlp 解析(单视频/多P/播放列表)
+├── files.py            (232 行) 落盘名对齐/冲突处理/跨平台文件管理器唤起
+├── quality.py          (126 行) 清晰度标注与 format 归一化(纯函数)
+├── config.py           (182 行) 运行时配置(_FIELDS 字段表驱动)
+├── up_list.py          (139 行) UP 清单数据层(per-UP quality)
 ├── auto_refresh.py     (130 行) 自动下载轮询(串行,新投稿直入队)
-├── pagecache.py        (46 行)  页面数据缓存(打开秒显)
-├── extras.py           (170 行) 弹幕抓取(protobuf)+ bvid 提取
-├── templates/index.html(2679 行) 单页前端
-├── tests/              114 个单元测试
-│   ├── test_app.py
-│   ├── test_auth.py
-│   ├── test_auto_refresh.py
-│   ├── test_config.py
-│   ├── test_downloader.py
-│   ├── test_extras.py
-│   ├── test_quality.py
-│   └── test_up_list.py
+├── pagecache.py        (58 行)  页面数据缓存(打开秒显)
+├── storage.py          (48 行)  统一 JSON 持久化(原子写 + 损坏备份)
+├── extras.py           (203 行) 文件名清洗/组装 + bvid 提取 + 弹幕(protobuf)
+├── templates/index.html(388 行) 单页骨架(纯结构)
+├── static/
+│   ├── css/main.css    (533 行) 全部样式(含主题变量)
+│   └── js/             17 个 ES modules,共 2050 行
+│       ├── app.js      入口 + window 桥(内联 onclick 兼容层)
+│       ├── lib.js      页控制器框架(共享状态/无限滚/操作条/缓存优先)
+│       ├── pages/*.js  六页各一控制器
+│       └── *.js        util/icons/net/theme/quality/login/settings/drawer/newdl
+├── tests/              179 个单元测试(conftest.py 把运行时数据隔离到临时目录)
+│   ├── test_app.py                 (46) 路由 / 缓存层 / 前端结构 / window 桥
+│   ├── test_auth.py                (22) 登录、B 站接口、风控参数
+│   ├── test_auto_refresh.py        (15) 自动下载轮询 / 合规限频与文档一致
+│   ├── test_config.py              (5)  字段表驱动配置
+│   ├── test_downloader.py          (23) 重试/取消/状态集合/统计
+│   ├── test_extras.py              (8)  弹幕解析 / 文件名清洗
+│   ├── test_filename_alignment.py  (30) 落盘名对齐 / 冲突 / 文件定位
+│   ├── test_quality.py             (12) 清晰度归一化与降档
+│   ├── test_storage.py             (10) 原子写 / 损坏备份 / 运行时数据隔离自检
+│   └── test_up_list.py             (8)  清单数据层 / 清晰度单一来源
 ├── data/               运行时(gitignore)
 │   ├── config.json     用户设置
 │   ├── tasks.json      下载任务历史
@@ -343,6 +374,27 @@ bilibili-downloader/
 │   └── superpowers/     设计文档 + 实现计划
 └── requirements.txt
 ```
+
+### 模块依赖方向(单向,不成环)
+
+```
+storage / extras / quality          纯工具层(无项目内依赖)
+        ↑
+config ─┤                           运行时配置(字段表驱动)
+        ↑
+taskstore                           任务表 + 持久化 + 文件定位
+        ↑
+files ──┤                           落盘名对齐(依赖 taskstore)
+        ↑
+parsing / bilibili_api              解析 / B 站读接口(依赖 bilibili_auth)
+        ↑
+downloader                          下载执行(facade,再导出下游常用名)
+        ↑
+app                                 路由层
+```
+
+`build_filename` 住在 `extras.py` 而不是 `files.py`:`taskstore` 定位文件也要用它,
+而 `files` 依赖 `taskstore`——纯命名逻辑必须待在依赖链底部,否则成环。
 
 ---
 
@@ -370,3 +422,15 @@ bilibili-downloader/
 | v2.0 | 网格首屏无法滚动 | 视口算行数恰铺满一屏,滚动条不出现 | 首屏多渲染一行 + maybeFillScreen() |
 | v2.0 | `collected/list` 永远空 | 没带 `platform=web` 参数 | 接口必带 platform=web |
 | v2.0 | 改了代码不生效 | 旧进程占着 5050 端口 | 启动器启动前自动 kill 旧实例 |
+| v2.1 | 扫码确认了仍显示「未扫码」 | 二维码图接口自行 generate,产生了与轮询 key 不同的新 key | 图接口改用前端传入的配对 url 画码 + passport 域名白名单 |
+| v2.1 | 任务史可能被清零 | `_persist` 非原子写,崩溃留半截 JSON 且解析失败静默当空 | tmp+rename 原子写 + 独立写锁;损坏备份 `.corrupt-<ts>` |
+| v2.1 | 登出后旧身份最长残留 5 分钟 | 登出发生在 Edge cookie 提取期间,提取结果又写回缓存 | 会话域/数据域各自加锁且不嵌套,严格排序 |
+| v2.1 | 下载记录标题与磁盘文件名对不上 | yt-dlp `%(title).200B` 按字节截断,CJK 下边界错位 | 命名权收归 Python(build_filename)+ 落盘后强制对齐 |
+| v2.1 | 「批量下载」按钮点了没反应 | 模块化重构后 `batchDownload` 漏写 `export`,window 桥上是 undefined | 补 export;加桥↔export 双向一致性测试 |
+| v2.1 | 重试窗口内重复下载拦截失效、「清除全部记录」会删掉在跑任务 | 后端三份手写的活跃状态元组都漏了 `retrying` | 收敛为 `taskstore.ACTIVE/TERMINAL` 唯一来源 + 前后端一致性测试 |
+| v2.1 | 「删除记录 + 文件」可能删掉邻居视频的文件 | `_task_files` 用**未清洗**的 `title[:30]` 做前缀匹配 | 改用完整期望名 + 分隔符边界(`_stem_belongs`) |
+| v2.1 | 标题含 `/ : ?` 的任务永远定位不到文件 | 同上:拿原始 title 去匹配已被换成 `_` 的磁盘名 | 匹配前先过 `sanitize_filename` |
+| v2.1 | 删除后残留孤儿 .xml/.srt/.jpg,体积统计少算 | 有 `actual_filename` 时只返回主文件 | `_file_family` 把副文件纳入同一族 |
+| v2.1 | 非 macOS 上「定位文件」接口 500 | 硬编码 `open -R`;`check=False` 挡不住命令不存在 | `files.reveal_path/open_dir` 按平台分发并吞 OSError |
+| v2.1 | 取消/中断的任务 SSE 不收流 | 服务端只判 `done/failed`,靠前端主动 close 才停 | 收流条件改用 `taskstore.TERMINAL` |
+| v2.1 | 开了「按 UP 建子目录」后磁盘用量显示 0 | `disk_bytes` 只 `iterdir()` 扫顶层 | 改 `rglob("*")` 递归统计 |

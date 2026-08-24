@@ -3,27 +3,24 @@
 命名权在 Python 侧(设计 A.2/A.3):outtmpl 组装与下载后改名共用 build_filename,
 保证两端算出的期望名恒一致;落盘后再把磁盘文件强制对齐任务权威 title。
 """
+import logging
+import subprocess
+import sys
 from pathlib import Path
 from glob import escape as glob_escape
 
-from extras import sanitize_filename
 import config
+# build_filename 住在 extras(纯命名逻辑,依赖链底部;taskstore 定位文件也要用),
+# 这里再导出,保持 files.build_filename / downloader.build_filename 调用方不变。
+from extras import sanitize_filename, build_filename
 from taskstore import _tasks, _tasks_lock, _persist, _final_paths
+
+log = logging.getLogger("bd.files")
 
 
 # 主文件扩展名(用于从候选中挑出视频/音频本体,排除封面/字幕等副文件)
 _MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
                ".m4a", ".mp3", ".aac", ".opus", ".ogg"}
-
-
-def build_filename(title: str, page: int = 1) -> str:
-    """任务权威 title → 期望的落盘文件名 stem(不含目录/扩展名)。
-
-    outtmpl 组装(A.2)与下载后改名对齐(A.3)共用本函数,保证两端算出的
-    期望名恒一致。多 P 加 ` - P{n}` 后缀。
-    """
-    stem = sanitize_filename(title)
-    return f"{stem} - P{int(page)}" if page and int(page) > 1 else stem
 
 
 def tmpl_literal(s: str) -> str:
@@ -190,3 +187,46 @@ def resolve_rename_conflict(task_id: str, action: str) -> dict:
         return {"ok": False, "error": "后缀已试到 (9) 仍冲突,请手动改名"}
 
     return {"ok": False, "error": f"未知操作:{action}"}
+
+
+# ---------- 在系统文件管理器中打开/定位 ----------
+# 早先两处路由直接硬编码 macOS 的 `open -R`。subprocess 的 check=False 只忽略
+# 返回码,命令不存在照样抛 FileNotFoundError——非 macOS 上这两个接口会 500
+# (被 @api_errors 兜住,用户侧表现为"打开失败")。这里按平台选命令并吞掉
+# OSError:能定位就定位,不能也绝不影响主流程。
+
+def _run_quiet(argv: list[str]) -> bool:
+    """跑一条 GUI 唤起命令。成功发起返回 True;命令不存在/无权限返回 False。
+
+    不看返回码:Windows 的 explorer 即便成功也常返回非 0。
+    """
+    try:
+        subprocess.run(argv, check=False)
+        return True
+    except OSError as e:
+        log.warning("唤起文件管理器失败(%s):%s", " ".join(argv[:1]), e)
+        return False
+
+
+def reveal_path(path) -> bool:
+    """在文件管理器中定位并选中 path。返回是否成功发起。
+
+    Linux 没有通用的"选中某文件"协议,退化为打开其所在目录。
+    """
+    p = Path(path)
+    if sys.platform == "darwin":
+        return _run_quiet(["open", "-R", str(p)])
+    if sys.platform == "win32":
+        # /select,<path> 必须是同一个 argv 元素
+        return _run_quiet(["explorer", f"/select,{p}"])
+    return open_dir(p.parent if p.is_file() else p)
+
+
+def open_dir(path) -> bool:
+    """在文件管理器中打开目录。返回是否成功发起。"""
+    p = str(path)
+    if sys.platform == "darwin":
+        return _run_quiet(["open", p])
+    if sys.platform == "win32":
+        return _run_quiet(["explorer", p])
+    return _run_quiet(["xdg-open", p])

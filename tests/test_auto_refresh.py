@@ -94,7 +94,33 @@ def test_serial_interval_between_ups(monkeypatch):
     auto_refresh.refresh_once()
     expected = [auto_refresh.UP_INTERVAL] * (len(ups) - 1)
     assert sleeps == expected, "UP 之间应有防风控间隔"
-    assert auto_refresh.UP_INTERVAL >= 3.0, "合规要求:自动任务请求间隔不低于 3 秒"
+    assert auto_refresh.UP_INTERVAL >= 5.0, "合规要求:自动任务请求间隔不低于 5 秒"
+
+
+def test_compliance_doc_matches_rate_limits():
+    """COMPLIANCE.md 承诺的限频数字必须与代码常量一致。
+
+    回归:文档长期停在「UP 之间 ≥3 秒」,代码早已收紧到 5.0——合规文档写的比
+    实现松,对外承诺就失真了。两边任一处改动都应在这里对上。
+    """
+    import re
+    from pathlib import Path
+    import config
+    doc = (Path(__file__).resolve().parent.parent / "docs" / "COMPLIANCE.md"
+           ).read_text(encoding="utf-8")
+
+    m = re.search(r"UP 之间请求间隔 \*\*≥ (\d+(?:\.\d+)?) 秒\*\*", doc)
+    assert m, "COMPLIANCE.md 未找到 UP 间隔的承诺"
+    assert float(m.group(1)) == auto_refresh.UP_INTERVAL, (
+        f"文档写 ≥{m.group(1)}s,代码是 {auto_refresh.UP_INTERVAL}s")
+
+    m2 = re.search(r"轮询间隔下限 \*\*(\d+) 分钟\*\*", doc)
+    assert m2, "COMPLIANCE.md 未找到轮询下限的承诺"
+    assert int(m2.group(1)) == config.AUTO_REFRESH_MIN, (
+        f"文档写 {m2.group(1)} 分钟,代码是 {config.AUTO_REFRESH_MIN} 分钟")
+
+    # v2.0 已取消「追更开关 + 待确认」,文档不该再提勾选式追更开关
+    assert "自己主动勾选" not in doc, "文档仍在描述已废弃的追更勾选流程"
 
 
 def test_first_run_downloads_everything(monkeypatch):
