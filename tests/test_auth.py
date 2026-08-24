@@ -2,6 +2,7 @@ import json
 import pytest
 import yt_dlp
 import bilibili_auth
+import bilibili_api
 from bilibili_auth import parse_poll_response, POLL_CODES, save_session, load_session, clear_session
 
 
@@ -79,8 +80,8 @@ def _patch_fav_env(monkeypatch, medias, has_more=False, code=0):
         calls.append(params)
         return _Resp({"code": code, "data": {"medias": medias, "has_more": has_more}})
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth.requests, "get", fake_get)
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api.requests, "get", fake_get)
     return calls
 
 
@@ -93,7 +94,7 @@ def test_fetch_fav_content_parses_entries(monkeypatch):
         {"bvid": "BV2xx", "title": "", "attr": 2, "duration": 0,
          "cover": "", "upper": {"name": "UP2", "mid": 222}},
     ])
-    items = bilibili_auth.fetch_fav_content(123)
+    items = bilibili_api.fetch_fav_content(123)
     assert len(items) == 2
     assert items[0]["bvid"] == "BV1xx"
     assert items[0]["uploader_mid"] == 111
@@ -113,11 +114,11 @@ def test_fetch_fav_content_paginates(monkeypatch):
                         "upper": {"name": "U", "mid": 1}}],
             "has_more": p["has_more"]}})
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth.requests, "get", fake_get)
-    # fetch_fav_content 内部 import time as _t 打页间隔,测试里免等
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api.requests, "get", fake_get)
+    # fetch_fav_content 翻页间隔走 time.sleep,测试里免等
     monkeypatch.setattr("time.sleep", lambda s: None)
-    items = bilibili_auth.fetch_fav_content(123)
+    items = bilibili_api.fetch_fav_content(123)
     assert [i["bvid"] for i in items] == ["BVp1", "BVp2"]
 
 
@@ -125,7 +126,7 @@ def test_fetch_fav_content_api_error_raises(monkeypatch):
     """接口非 0 code(风控/无权限)应报错给路由层,而不是静默空列表。"""
     _patch_fav_env(monkeypatch, [], code=-403)
     with pytest.raises(RuntimeError):
-        bilibili_auth.fetch_fav_content(123)
+        bilibili_api.fetch_fav_content(123)
 
 
 # ---------- 我追的合集(collected/list + season/list,2026-08-18) ----------
@@ -145,10 +146,10 @@ def test_fetch_collected_seasons_requires_platform_web(monkeypatch):
         calls.append(params)
         return _Resp()
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth.requests, "get", fake_get)
-    monkeypatch.setattr(bilibili_auth, "_my_mid", lambda cj: 2974547)
-    seasons = bilibili_auth.fetch_collected_seasons()
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api.requests, "get", fake_get)
+    monkeypatch.setattr(bilibili_api, "_my_mid", lambda cj: 2974547)
+    seasons = bilibili_api.fetch_collected_seasons()
     assert calls[0]["platform"] == "web", "不带 platform=web 会永远拿到空列表"
     assert seasons == [{"id": 1761108, "title": "数理小品", "media_count": 30,
                         "cover": "https://i0.hdslb.com/bfs/s.jpg"}]
@@ -159,12 +160,12 @@ def test_fetch_collected_seasons_error_raises(monkeypatch):
         def json(self):
             return {"code": -403, "message": "访问权限不足"}
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth, "_my_mid", lambda cj: 1)
-    monkeypatch.setattr(bilibili_auth.requests, "get",
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api, "_my_mid", lambda cj: 1)
+    monkeypatch.setattr(bilibili_api.requests, "get",
                         lambda *a, **k: _Resp())
     with pytest.raises(RuntimeError):
-        bilibili_auth.fetch_collected_seasons()
+        bilibili_api.fetch_collected_seasons()
 
 
 def test_fetch_season_content_parses_and_paginates(monkeypatch):
@@ -179,10 +180,10 @@ def test_fetch_season_content_parses_and_paginates(monkeypatch):
     def fake_get(url, cookies=None, headers=None, params=None, timeout=None):
         return _Resp({"code": 0, "data": pages.pop(0)})
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth.requests, "get", fake_get)
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api.requests, "get", fake_get)
     monkeypatch.setattr("time.sleep", lambda s: None)
-    items = bilibili_auth.fetch_season_content(1761108)
+    items = bilibili_api.fetch_season_content(1761108)
     assert items[0]["bvid"] == "BV1"
     assert items[0]["uploader_mid"] == 46817116
     assert items[0]["thumbnail"].startswith("https://")
@@ -195,8 +196,8 @@ def test_fetch_up_card_parses_name_and_face(monkeypatch):
     class _Resp:
         def json(self):
             return {"code": 0, "data": {"card": {"name": "远古野", "face": "https://x/face.jpg"}}}
-    monkeypatch.setattr(bilibili_auth.requests, "get", lambda *a, **k: _Resp())
-    card = bilibili_auth.fetch_up_card(46817116)
+    monkeypatch.setattr(bilibili_api.requests, "get", lambda *a, **k: _Resp())
+    card = bilibili_api.fetch_up_card(46817116)
     assert card == {"uname": "远古野", "face": "https://x/face.jpg"}
 
 
@@ -204,13 +205,13 @@ def test_fetch_up_card_failure_returns_none(monkeypatch):
     class _Resp:
         def json(self):
             return {"code": -404}
-    monkeypatch.setattr(bilibili_auth.requests, "get", lambda *a, **k: _Resp())
-    assert bilibili_auth.fetch_up_card(1) is None
+    monkeypatch.setattr(bilibili_api.requests, "get", lambda *a, **k: _Resp())
+    assert bilibili_api.fetch_up_card(1) is None
 
     def boom(*a, **k):
         raise RuntimeError("net")
-    monkeypatch.setattr(bilibili_auth.requests, "get", boom)
-    assert bilibili_auth.fetch_up_card(1) is None
+    monkeypatch.setattr(bilibili_api.requests, "get", boom)
+    assert bilibili_api.fetch_up_card(1) is None
 
 
 # ---------- 模块级缓存补锁(2026-08-19 评审 P0:登出竞态残留旧身份) ----------
@@ -269,14 +270,15 @@ def test_session_and_fetch_caches_are_lock_protected():
     import inspect
     for fn, lock in (
         (bilibili_auth.get_cookiejar, "_session_lock"),
-        (bilibili_auth._get_wbi_ie, "_session_lock"),
+        (bilibili_api._get_wbi_ie, "_session_lock"),
         (bilibili_auth.clear_session, "_session_lock"),
-        (bilibili_auth.fetch_followings_all, "_fetch_lock"),
-        (bilibili_auth.fetch_follow_updates, "_fetch_lock"),
+        (bilibili_api.fetch_followings_all, "_fetch_lock"),
+        (bilibili_api.fetch_follow_updates, "_fetch_lock"),
+        (bilibili_api.reset_data_caches, "_fetch_lock"),
     ):
         assert lock in inspect.getsource(fn), f"{fn.__name__} 应持 {lock}"
-    assert "_fetch_lock" in inspect.getsource(bilibili_auth.clear_session), \
-        "clear_session 也要清数据域缓存"
+    assert "reset_data_caches" in inspect.getsource(bilibili_auth.clear_session), \
+        "clear_session 也要清数据域缓存(经 bilibili_api.reset_data_caches)"
 
 
 # ---------- fetch_* 公共骨架 + 归一化收敛(2026-08-19 评审 P2) ----------
@@ -293,19 +295,19 @@ def test_paged_get_pages_and_sleeps(monkeypatch):
     pages = [{"code": 0, "data": {"list": [1], "has_more": True}},
              {"code": 0, "data": {"list": [2], "has_more": False}}]
     pns, sleeps = [], []
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
 
     def fake_get(url, cookies=None, headers=None, params=None, timeout=None):
         pns.append(params["pn"])
         return _PagedResp(pages.pop(0))
 
-    monkeypatch.setattr(bilibili_auth.requests, "get", fake_get)
+    monkeypatch.setattr(bilibili_api.requests, "get", fake_get)
     monkeypatch.setattr("time.sleep", lambda s: sleeps.append(s))
 
     def parse(d, fetched):
         return d["list"], bool(d.get("has_more"))
 
-    out = bilibili_auth._paged_get("https://x/api", {}, what="测试", max_pages=5,
+    out = bilibili_api._paged_get("https://x/api", {}, what="测试", max_pages=5,
                                    ps=20, gap=0.3, parse=parse)
     assert out == [1, 2]
     assert pns == [1, 2]
@@ -322,16 +324,16 @@ def test_paged_get_mid_fetched_once(monkeypatch):
         mid_calls.append(1)
         return 2974547
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth, "_my_mid", fake_mid)
-    monkeypatch.setattr(bilibili_auth.requests, "get",
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api, "_my_mid", fake_mid)
+    monkeypatch.setattr(bilibili_api.requests, "get",
                         lambda *a, **k: _PagedResp(pages.pop(0)))
     monkeypatch.setattr("time.sleep", lambda s: None)
 
     def parse(d, fetched):
         return d["list"], bool(d.get("has_more"))
 
-    out = bilibili_auth._paged_get("https://x/api", {}, what="测试", max_pages=5,
+    out = bilibili_api._paged_get("https://x/api", {}, what="测试", max_pages=5,
                                    ps=20, mid_param="vmid", parse=parse)
     assert out == [1, 2]
     assert len(mid_calls) == 1, "mid 应只取一次,不是每页一次"
@@ -340,7 +342,7 @@ def test_paged_get_mid_fetched_once(monkeypatch):
 def test_video_item_normalizes_variants():
     """归一化器对齐各接口字段差异:owner/upper/顶层作者、pic/cover、
     时间戳键、失效标记、extra 覆盖。"""
-    vi = bilibili_auth._video_item
+    vi = bilibili_api._video_item
     a = vi({"bvid": "BV1", "title": "t", "pic": "http://i0/x.jpg",
             "owner": {"name": "U", "mid": 1}, "duration": 10, "view_at": 5})
     assert (a["bvid"], a["uploader"], a["uploader_mid"], a["duration"],
@@ -363,11 +365,11 @@ def test_fetch_family_uses_shared_skeleton():
     import inspect
     for fn in ("fetch_collected_seasons", "fetch_season_content",
                "fetch_fav_content", "fetch_followings", "fetch_followings_all"):
-        assert "_paged_get" in inspect.getsource(getattr(bilibili_auth, fn)), \
+        assert "_paged_get" in inspect.getsource(getattr(bilibili_api, fn)), \
             f"{fn} 应走公共分页骨架"
     for fn in ("fetch_history", "fetch_watchlater", "fetch_season_content",
                "fetch_fav_content", "fetch_up_videos"):
-        assert "_video_item" in inspect.getsource(getattr(bilibili_auth, fn)), \
+        assert "_video_item" in inspect.getsource(getattr(bilibili_api, fn)), \
             f"{fn} 的归一化应走 _video_item"
 
 
@@ -381,13 +383,13 @@ def test_followings_all_mid_once_and_pages(monkeypatch):
         mid_calls.append(1)
         return 2974547
 
-    monkeypatch.setattr(bilibili_auth, "get_cookiejar", lambda: object())
-    monkeypatch.setattr(bilibili_auth, "_my_mid", fake_mid)
-    monkeypatch.setattr(bilibili_auth.requests, "get",
+    monkeypatch.setattr(bilibili_api, "get_cookiejar", lambda: object())
+    monkeypatch.setattr(bilibili_api, "_my_mid", fake_mid)
+    monkeypatch.setattr(bilibili_api.requests, "get",
                         lambda *a, **k: _PagedResp(pages.pop(0)))
     monkeypatch.setattr("time.sleep", lambda s: None)
-    monkeypatch.setattr(bilibili_auth, "_followings_cache",
+    monkeypatch.setattr(bilibili_api, "_followings_cache",
                         {"items": [], "total": 0, "ts": 0})
-    r = bilibili_auth.fetch_followings_all(force=True, max_pages=3)
+    r = bilibili_api.fetch_followings_all(force=True, max_pages=3)
     assert [u["mid"] for u in r["items"]] == [1, 2] and r["total"] == 2
     assert len(mid_calls) == 1, "mid 只取一次(旧实现每页调 _my_mid 多打 nav 接口)"

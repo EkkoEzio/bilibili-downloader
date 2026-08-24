@@ -9,6 +9,7 @@ import pytest
 import yt_dlp
 
 import downloader
+import taskstore
 
 
 def _mk_task(tid, **kw):
@@ -27,7 +28,7 @@ def test_retry_loop_present():
     src = inspect.getsource(downloader._run_download)
     assert "for attempt in range(" in src, "缺少重试循环"
     assert "max_retries" in src, "缺少 max_retries 配置"
-    assert "_t.sleep" in src, "缺少退避 sleep"
+    assert "time.sleep" in src, "缺少退避 sleep"
     assert 't.get("cancel")' in src, "缺少取消标志检测"
     assert 't["status"] = "retrying"' in src, "缺少 retrying 状态标记"
     assert 't["error"] = str(last_err)' in src, "缺少最终 error 记录"
@@ -50,8 +51,10 @@ def test_cancel_exits_immediately():
 def test_retry_state_renders_in_frontend():
     """前端 statusCN 包含 retrying。"""
     base = Path(__file__).resolve().parent.parent
-    html = "\n".join((base / p).read_text(encoding="utf-8") for p in (
-        "templates/index.html", "static/js/app.js", "static/css/main.css"))
+    html = "\n".join(p.read_text(encoding="utf-8") for p in [
+        base / "templates" / "index.html",
+        base / "static" / "css" / "main.css",
+        *sorted((base / "static" / "js").rglob("*.js"))])
     assert "retrying" in html, "前端缺少 retrying 状态处理"
     # 验证 statusCN 中有中文标签
     assert "重试中" in html
@@ -82,7 +85,7 @@ def test_progress_hook_raises_when_task_deleted():
 
 def test_run_download_cancel_mid_attempt(monkeypatch, tmp_path):
     """下载进行中用户点取消:hook 抛 DownloadCancelled,任务落为 cancelled 且不记 finished_at。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
 
@@ -204,7 +207,7 @@ def test_base_opts_sort_by_up_and_extras(monkeypatch):
 
 
 def test_run_download_success_notifies_and_saves_danmaku(monkeypatch, tmp_path):
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -246,7 +249,7 @@ def test_run_download_success_notifies_and_saves_danmaku(monkeypatch, tmp_path):
 
 
 def test_run_download_success_notify_disabled(monkeypatch, tmp_path):
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -294,7 +297,7 @@ def test_task_files_scans_up_subdirectory(monkeypatch, tmp_path):
 def test_clean_invalid_records(monkeypatch, tmp_path):
     """失败 + 文件已不在本地的 done 记录删除;文件还在的 done、进行中的保留。"""
     persists = []
-    monkeypatch.setattr(downloader, "_persist", lambda: persists.append(1))
+    monkeypatch.setattr(taskstore, "_persist", lambda: persists.append(1))
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     (tmp_path / "还在的完成视频.mp4").write_bytes(b"x")
 
@@ -322,16 +325,16 @@ def test_persist_concurrent_writes_keep_valid_json(monkeypatch, tmp_path):
     且无 .tmp 残留——tasks.json 是下载史唯一载体,写坏即丢史。"""
     import json as _json
     import threading as _th
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     saved = dict(downloader._tasks)
     downloader._tasks.clear()
     try:
         for i in range(5):
             _mk_task(f"c{i}", status="done", title=f"视频{i}", progress=100)
-        threads = [_th.Thread(target=downloader._persist) for _ in range(16)]
+        threads = [_th.Thread(target=taskstore._persist) for _ in range(16)]
         [t.start() for t in threads]
         [t.join() for t in threads]
-        data = _json.loads(downloader.TASKS_FILE.read_text(encoding="utf-8"))
+        data = _json.loads(taskstore.TASKS_FILE.read_text(encoding="utf-8"))
         assert len(data) == 5, "并发写盘后历史应完整"
         assert not list(tmp_path.glob("*.tmp")), "不应残留临时文件"
     finally:
@@ -342,9 +345,9 @@ def test_persist_concurrent_writes_keep_valid_json(monkeypatch, tmp_path):
 def test_persist_write_is_atomic_via_tmp_rename(monkeypatch, tmp_path):
     """写盘走 storage.write_json(原子替换,详见 test_storage)。"""
     import inspect
-    src = inspect.getsource(downloader._persist)
+    src = inspect.getsource(taskstore._persist)
     assert "storage.write_json" in src, "必须走统一持久化层(原子写)"
-    assert downloader._persist_lock is not downloader._tasks_lock, \
+    assert taskstore._persist_lock is not taskstore._tasks_lock, \
         "写盘锁应独立于任务锁(快照在任务锁内,写盘不阻塞任务更新)"
 
 
@@ -353,11 +356,11 @@ def test_load_persisted_backs_up_corrupt_not_silent_wipe(monkeypatch, tmp_path):
     (旧行为:解析失败直接 return,下次写盘把整份下载史覆盖清零)。"""
     f = tmp_path / "tasks.json"
     f.write_text('{"broken": [', encoding="utf-8")
-    monkeypatch.setattr(downloader, "TASKS_FILE", f)
+    monkeypatch.setattr(taskstore, "TASKS_FILE", f)
     saved = dict(downloader._tasks)
     downloader._tasks.clear()
     try:
-        downloader._load_persisted()
+        taskstore._load_persisted()
         assert not downloader._tasks, "损坏文件不应加载出任务"
         backups = list(tmp_path.glob("tasks.json.corrupt-*"))
         assert backups, "损坏的 tasks.json 应留备份供手工找回"

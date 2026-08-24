@@ -68,3 +68,30 @@ def test_set_uname_fills_and_overwrites(store):
     assert store.set_uname(1, "远古野") is True
     assert store.list_ups()[0]["uname"] == "远古野"
     assert store.set_uname(404, "x") is False, "不存在的 UP 返回 False"
+
+
+def test_quality_choices_single_source():
+    """清晰度可选项的值集合在三个副本处必须一致:
+    后端 up_list.QUALITY_CHOICES / 前端 static/js/quality.js /
+    index.html 操作条静态 <option>(显示文案各端自理)。
+    改清晰度档位时三处一起改,漏改在这里炸。"""
+    import re
+    from pathlib import Path
+    import up_list
+    base = Path(__file__).resolve().parent.parent
+
+    backend = set(up_list.QUALITY_CHOICES)
+
+    js = (base / "static" / "js" / "quality.js").read_text(encoding="utf-8")
+    pairs = re.findall(r"\['([^']*)',\s*'([^']*)'\]", js)
+    assert pairs, "quality.js 的 QUALITY_OPTIONS 解析不到(改格式要同步改本测试)"
+    js_values = {v for v, _ in pairs}
+
+    html = (base / "templates" / "index.html").read_text(encoding="utf-8")
+    i = html.find('id="ab-quality"')
+    assert i > 0, "index.html 操作条缺少清晰度下拉"
+    bar = html[i:html.find("</select>", i)]
+    html_values = set(re.findall(r'<option value="([^"]*)"', bar))
+
+    assert backend == js_values, f"后端与前端 quality.js 不一致: {backend ^ js_values}"
+    assert backend == html_values, f"后端与操作条静态 HTML 不一致: {backend ^ html_values}"

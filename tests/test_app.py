@@ -38,9 +38,9 @@ def test_up_list_add_uses_user_card(client, monkeypatch, tmp_path):
     """添加 UP 时优先走用户卡片接口拿名称+头像(mid 人记不住,必须显示名称)。"""
     import up_list as up_list_module
     monkeypatch.setattr(up_list_module, "UP_LIST_FILE", tmp_path / "up_list.json")
-    monkeypatch.setattr("app.auth.fetch_up_card",
+    monkeypatch.setattr("app.bapi.fetch_up_card",
                         lambda mid: {"uname": "远古野", "face": "https://x/face.jpg"})
-    monkeypatch.setattr("app.auth.fetch_up_videos",
+    monkeypatch.setattr("app.bapi.fetch_up_videos",
                         lambda mid, ps=10, pn=1: [])
     r = client.post("/api/up-list/add", json={"input": "46817116"})
     body = r.get_json()
@@ -61,8 +61,8 @@ def test_up_list_add_baselines_last_seen(client, monkeypatch, tmp_path):
     不会把 UP 的历史存货一口气全下回来。"""
     import up_list as up_list_module
     monkeypatch.setattr(up_list_module, "UP_LIST_FILE", tmp_path / "up_list.json")
-    monkeypatch.setattr("app.auth.fetch_up_card", lambda mid: None)
-    monkeypatch.setattr("app.auth.fetch_up_videos",
+    monkeypatch.setattr("app.bapi.fetch_up_card", lambda mid: None)
+    monkeypatch.setattr("app.bapi.fetch_up_videos",
                         lambda mid, ps=10, pn=1: [_vid("BVold", 100)])
     r = client.post("/api/up-list/add", json={"input": "https://space.bilibili.com/42"})
     assert r.get_json()["ok"]
@@ -75,8 +75,8 @@ def test_up_list_add_baseline_falls_back_to_now(client, monkeypatch, tmp_path):
     """拿不到最新投稿(限流/私密)时用当前时刻兜底,同样不回补历史存货。"""
     import up_list as up_list_module
     monkeypatch.setattr(up_list_module, "UP_LIST_FILE", tmp_path / "up_list.json")
-    monkeypatch.setattr("app.auth.fetch_up_card", lambda mid: None)
-    monkeypatch.setattr("app.auth.fetch_up_videos", lambda mid, ps=10, pn=1: [])
+    monkeypatch.setattr("app.bapi.fetch_up_card", lambda mid: None)
+    monkeypatch.setattr("app.bapi.fetch_up_videos", lambda mid, ps=10, pn=1: [])
     before = int(time.time())
     r = client.post("/api/up-list/add", json={"input": "42"})
     assert r.get_json()["ok"]
@@ -157,7 +157,7 @@ def test_task_reveal_falls_back_to_download_dir(client, monkeypatch):
 # ---------- 我追的合集(2026-08-18) ----------
 
 def test_fav_seasons_route(client, monkeypatch):
-    monkeypatch.setattr("app.auth.fetch_collected_seasons",
+    monkeypatch.setattr("app.bapi.fetch_collected_seasons",
                         lambda: [{"id": 1761108, "title": "数理小品",
                                   "media_count": 30, "cover": "https://x/c.jpg"}])
     r = client.get("/api/fav-seasons").get_json()
@@ -172,14 +172,14 @@ def test_routes_do_not_pollute_real_cache(client, monkeypatch):
     from pathlib import Path
     real = Path(__file__).resolve().parent.parent / "data" / "cache" / "fav_seasons.json"
     snapshot = real.read_text(encoding="utf-8") if real.exists() else None
-    monkeypatch.setattr("app.auth.fetch_collected_seasons", lambda: [{"id": 999}])
+    monkeypatch.setattr("app.bapi.fetch_collected_seasons", lambda: [{"id": 999}])
     assert client.get("/api/fav-seasons").get_json()["ok"]
     after = real.read_text(encoding="utf-8") if real.exists() else None
     assert after == snapshot, "测试把 mock 数据写进了真实 data/cache"
 
 
 def test_season_content_route(client, monkeypatch):
-    monkeypatch.setattr("app.auth.fetch_season_content",
+    monkeypatch.setattr("app.bapi.fetch_season_content",
                         lambda sid: [{"bvid": "BV1", "title": "t", "url": "u"}])
     r = client.get("/api/season-content?season_id=1761108").get_json()
     assert r["ok"] and r["items"][0]["bvid"] == "BV1"
@@ -216,7 +216,7 @@ def test_qrcode_image_uses_passed_url_not_new_key(client, monkeypatch):
 def test_frontend_qrcode_img_passes_url():
     """前端二维码图应把 /api/login/qrcode 返回的 url 传给图片接口。"""
     html = _tpl()
-    assert "qrcode-image')}?url=${encodeURIComponent(r.url)}" in html
+    assert "/api/login/qrcode-image?url=${encodeURIComponent(r.url)}" in html
 
 
 # ---------- 页面缓存:缓存优先 + 后台拉新(2026-08-18(e)) ----------
@@ -236,7 +236,7 @@ def test_follow_updates_writes_cache(client, monkeypatch, tmp_path):
     """数据端点成功返回时把结果写入缓存,前端下次打开秒显。"""
     import pagecache
     monkeypatch.setattr(pagecache, "CACHE_DIR", tmp_path)
-    monkeypatch.setattr("app.auth.fetch_follow_updates",
+    monkeypatch.setattr("app.bapi.fetch_follow_updates",
                         lambda force=False: [{"bvid": "BV1", "title": "t"}])
     r = client.get("/api/follow-updates").get_json()
     assert r["ok"]
@@ -272,7 +272,7 @@ def test_pagecache_purge_stale_discards_30d(client, tmp_path, monkeypatch):
 def test_frontend_fast_apply_never_breaks_checking():
     """fast 无感替换必须带勾选守卫:用户已勾选条目时静默重渲染会错位勾选索引。"""
     html = _tpl()
-    assert "_libChecked.size === 0" in html, "fast 分支应检查无勾选才静默替换"
+    assert "state.checked.size === 0" in html, "fast 分支应检查无勾选才静默替换"
 
 
 # ---------- /api/stats ----------
@@ -282,7 +282,7 @@ def test_stats_month_is_calendar_month(client, monkeypatch, tmp_path):
     import datetime
     first = datetime.date.today().replace(day=1)
     month_start = int(time.mktime(first.timetuple()))
-    monkeypatch.setattr("downloader.list_tasks", lambda: [
+    monkeypatch.setattr("taskstore.list_tasks", lambda: [
         {"status": "done", "downloaded_bytes": 100, "finished_at": int(time.time()) - 3600},  # 今天
         {"status": "done", "downloaded_bytes": 100, "finished_at": month_start - 43200},      # 上月末
     ])
@@ -304,15 +304,16 @@ def test_app_annotations_resolve():
 # ---------- 前端结构(沿用仓库惯例:对模板做内容断言) ----------
 
 def _tpl():
-    """前端整体包:结构(index.html) + 样式 + 脚本拼接。
+    """前端整体包:结构(index.html) + 样式 + 全部脚本模块拼接。
 
-    2026-08-19 拆分后前端三分离,既有断言语义不变——仍是「整个前端」。
-    not in 断言同样覆盖三文件,语义更严格(哪里都不该出现)。"""
+    2026-08-19 前端三分离;2026-08-23 起 app.js 进一步拆成 ES modules
+    (公共框架 lib.js + pages/ 页控制器)。既有断言语义不变——仍是
+    「整个前端」。not in 断言同样覆盖全部文件,语义更严格(哪里都不该出现)。"""
     from pathlib import Path
     base = Path(__file__).resolve().parent.parent
     parts = [base / "templates" / "index.html",
              base / "static" / "css" / "main.css",
-             base / "static" / "js" / "app.js"]
+             *sorted((base / "static" / "js").rglob("*.js"))]
     return "\n".join(p.read_text(encoding="utf-8") for p in parts)
 
 
@@ -325,8 +326,10 @@ def test_frontend_split_into_static_files():
         "样式/脚本应走 static/,index.html 只留结构"
     assert 'href="/static/css/main.css' in html
     assert 'src="/static/js/app.js' in html
-    js = (base / "static" / "js" / "app.js").read_text(encoding="utf-8")
-    assert "function cachedLoad" in js, "脚本应完整迁移"
+    assert 'type="module"' in html, "脚本应以 ES module 入口加载"
+    js = "\n".join(p.read_text(encoding="utf-8")
+                   for p in sorted((base / "static" / "js").rglob("*.js")))
+    assert "cachedLoad" in js, "脚本应完整迁移"
     assert "{{" not in js and "{%" not in js, "静态 JS 里不该有 Jinja 语法"
 
 

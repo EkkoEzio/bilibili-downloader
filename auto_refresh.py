@@ -15,7 +15,7 @@ import threading
 import time
 from typing import Optional
 
-import bilibili_auth as auth
+import bilibili_api as bapi
 import config
 import downloader
 import up_list
@@ -55,7 +55,7 @@ def fetch_new(mid: int, last: Optional[dict] = None):
     collected = []
     got_bvids = set()
     for pn in range(1, MAX_PAGES + 1):
-        page = auth.fetch_up_videos(mid, ps=ps, pn=pn)
+        page = bapi.fetch_up_videos(mid, ps=ps, pn=pn)
         if not page:
             break
         for v in page:

@@ -24,7 +24,7 @@ def _patch_env(monkeypatch, ups, fetch_by_mid, last_seen=None):
         return ["t"] * len(items)
 
     monkeypatch.setattr(auto_refresh.up_list, "list_ups", fake_list_ups)
-    monkeypatch.setattr(auto_refresh.auth, "fetch_up_videos", fake_fetch)
+    monkeypatch.setattr(auto_refresh.bapi, "fetch_up_videos", fake_fetch)
     monkeypatch.setattr(auto_refresh.up_list, "get_last_seen",
                         lambda mid: last_seen.get(int(mid)) if last_seen else None)
     monkeypatch.setattr(auto_refresh.up_list, "mark_seen",
@@ -125,7 +125,7 @@ def _patch_fetch_calls(monkeypatch, pages_by_mid):
         calls.append((int(mid), ps, pn))
         return pages_by_mid.get((int(mid), pn), [])
 
-    monkeypatch.setattr(auto_refresh.auth, "fetch_up_videos", fake_fetch)
+    monkeypatch.setattr(auto_refresh.bapi, "fetch_up_videos", fake_fetch)
     return calls
 
 

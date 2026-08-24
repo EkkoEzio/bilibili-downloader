@@ -10,6 +10,7 @@ import pytest
 import yt_dlp
 
 import downloader
+import taskstore
 import extras
 
 _FMTS = [{"format_id": "1", "label": "720P", "kind": "av", "tbr": 1, "height": 720}]
@@ -131,7 +132,7 @@ def test_base_opts_placeholder_title_falls_back_to_live_template(monkeypatch):
 def test_run_download_keeps_anchored_title(monkeypatch, tmp_path):
     """formats 缺失时的二次解析只补空/占位 title,不覆盖已锚定的权威值;
     落盘与改名都用任务 title,UP 中途改标题不再造成「页面 A、磁盘 B」。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -172,7 +173,7 @@ def test_progress_hook_backfills_placeholder_title():
 
 def test_run_download_renames_file_to_task_title(monkeypatch, tmp_path):
     """yt-dlp 落盘名与 title 不一致时,完成后强制改名对齐,副文件一起改。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -202,7 +203,7 @@ def test_run_download_renames_file_to_task_title(monkeypatch, tmp_path):
 
 def test_run_download_align_glob_fallback(monkeypatch, tmp_path):
     """pp 钩子没捕获到路径时(兜底),按 stem 前缀在下载目录里找到再对齐。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -223,7 +224,7 @@ def test_run_download_align_glob_fallback(monkeypatch, tmp_path):
 
 def test_run_download_already_aligned_noop(monkeypatch, tmp_path):
     """落盘名已与 title 一致:幂等,只记录权威路径,不做任何改名。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -245,7 +246,7 @@ def test_run_download_already_aligned_noop(monkeypatch, tmp_path):
 
 def test_run_download_no_file_records_error(monkeypatch, tmp_path):
     """下载成功但没找到落盘文件:记 rename_error,不影响完成状态。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -262,7 +263,7 @@ def test_run_download_no_file_records_error(monkeypatch, tmp_path):
 # ---------- A.4 同名冲突:拒绝覆盖 ----------
 
 def _conflict_env(monkeypatch, tmp_path):
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
     _reset_dl_config(monkeypatch)
@@ -328,7 +329,7 @@ def client():
 
 def test_resolve_conflict_rename_with_index(client, monkeypatch, tmp_path):
     """「加 (1) 改名」:清冲突标记,actual_filename 指向新名。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     src = tmp_path / "yt-dlp落盘名.mp4"
     src.write_bytes(b"x" * 10)
@@ -352,7 +353,7 @@ def test_resolve_conflict_rename_with_index(client, monkeypatch, tmp_path):
 
 def test_resolve_conflict_cancel(client, monkeypatch, tmp_path):
     """「忽略」:只清标记,文件不动。"""
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     src = tmp_path / "源.mp4"
     src.write_bytes(b"x")
@@ -389,7 +390,7 @@ def test_resolve_conflict_open_existing(client, monkeypatch, tmp_path):
 
 
 def test_resolve_conflict_unknown_action(client, monkeypatch, tmp_path):
-    monkeypatch.setattr(downloader, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     _mk_task("rc4", status="done", title="t",
              rename_conflict={"source": "s", "expected": "e", "existing": "e"})
     try:
@@ -414,8 +415,10 @@ def test_task_files_prefers_actual_filename(monkeypatch, tmp_path):
 
 def test_frontend_has_conflict_ui():
     base = Path(__file__).resolve().parent.parent
-    html = "\n".join((base / p).read_text(encoding="utf-8") for p in (
-        "templates/index.html", "static/js/app.js", "static/css/main.css"))
+    html = "\n".join(p.read_text(encoding="utf-8") for p in [
+        base / "templates" / "index.html",
+        base / "static" / "css" / "main.css",
+        *sorted((base / "static" / "js").rglob("*.js"))])
     assert "resolveTaskConflict" in html, "前端缺少冲突处理函数"
     assert "名称冲突" in html, "前端缺少冲突提示"
     assert "自动改名失败" in html, "前端缺少改名失败提示"
