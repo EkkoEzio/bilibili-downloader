@@ -2,7 +2,7 @@
 
 > 本文档描述项目当前**已实现的全部功能**,基于代码实际状态整理(v2.1.0, 2026-08-24)。
 > 14 个 Python 模块(3027 行)+ 前端三分离(模板 388 行 / CSS 533 行 /
-> 17 个 ES modules 共 2050 行),37 个 API 路径。单元测试 179 个全过。
+> 17 个 ES modules 共 2050 行),37 个 API 路径。单元测试 183 个全过。
 >
 > 改这份文档时请顺手核对数字:`wc -l *.py`、`pytest -q`、
 > `grep -o '@app.route("[^"]*"' app.py | sort -u | wc -l`。
@@ -347,11 +347,12 @@ bilibili-downloader/
 │       ├── lib.js      页控制器框架(共享状态/无限滚/操作条/缓存优先)
 │       ├── pages/*.js  六页各一控制器
 │       └── *.js        util/icons/net/theme/quality/login/settings/drawer/newdl
-├── tests/              179 个单元测试(conftest.py 把运行时数据隔离到临时目录)
+├── tests/              183 个单元测试(conftest.py 把运行时数据隔离到临时目录)
 │   ├── test_app.py                 (46) 路由 / 缓存层 / 前端结构 / window 桥
 │   ├── test_auth.py                (22) 登录、B 站接口、风控参数
 │   ├── test_auto_refresh.py        (15) 自动下载轮询 / 合规限频与文档一致
 │   ├── test_config.py              (5)  字段表驱动配置
+│   ├── test_docs.py                (4)  CHANGELOG 结构 / README 版本横幅一致
 │   ├── test_downloader.py          (23) 重试/取消/状态集合/统计
 │   ├── test_extras.py              (8)  弹幕解析 / 文件名清洗
 │   ├── test_filename_alignment.py  (30) 落盘名对齐 / 冲突 / 文件定位

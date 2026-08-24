@@ -4,6 +4,8 @@
 
 ## [未发布]
 
+## [v2.1.1] - 2026-08-24
+
 一次全项目复查后的清理:修掉 v2.1 重构带进来的一个功能断链,
 把三处「同一份知识多副本」收敛成单一来源,并让两份长期漂移的文档重新对齐代码。
 
@@ -85,7 +87,7 @@
   对外承诺比实现松);以及仍在描述 v2.0 已废弃的「主动勾选自动追更」流程。
 - `CHANGELOG.md` 的 `[未发布]` 占位小节此前错放在 v2.1.0 与 v2.0.0 之间,已移回顶部。
 
-## [v2.0.0] - 2026-08-18
+## [v2.1.0] - 2026-08-24
 
 本版两条主线:**下载文件名对齐官方标题 + 可靠性六连修**(2.0 后的增量),
 以及一次贯穿前后端的**模块化重构**——行为不变、结构就位,为后续拓展铺路。
@@ -306,4 +308,6 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.1.1]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.1.1
+[v2.1.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.1.0
 [v2.0.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.0.0
