@@ -36,6 +36,38 @@ export function bvFromUrl(url) {
   return m ? m[0] : null;
 }
 
+/* ---------- 已下载判定的键规则((bvid, 分P) 粒度) ----------
+
+   与 bvFromUrl 同层的纯字符串逻辑,是前端键规则的唯一来源:downloads.js
+   只 import 不复制第二份(tests 有「downloads.js 不得出现 function dlKey」的断言)。
+
+   两侧取 page 的方式是刻意不对称的,改动前务必读懂:
+     - 查询侧(isDownloaded)入参只有 URL,page 只能从 ?p= 解析 → 用 pageFromUrl;
+     - 任务侧读 t.page,不能解析 t.url —— 任务表里的 url 是用户粘贴的原始链接
+       (通常不带 ?p=),page 才是权威值。
+   写反任一侧都会让判定悄悄退回「只看 BV」的缺陷形态,且不会报任何错。 */
+
+/* 已下载判定的键分隔符。必须与后端 extras.DL_KEY_SEP 一致(tests 有绑定断言)
+   —— 两侧键规则漂移会让角标与批量跳过各说各话,且不会报错。 */
+export const DL_KEY_SEP = '#p';
+
+/* 从视频 URL 取分 P 序号;无 ?p= / 非法值视为 1。语义与后端 extras.page_from_url 对齐。
+   带其它查询参数时分 P 以 `&p=` 出现(如 ?spm_id_from=333.999&p=2),故 `[?&]` 两种都认。
+   归一到 1 是「不带 ?p= 的单 P URL 仍判已下载」的前提:单 P 视频 URL 不带 ?p=,
+   其任务 page 是 1,两边都落到 1 才能对上。 */
+export function pageFromUrl(url) {
+  const m = /[?&]p=(\d+)/.exec(url || '');
+  return m ? parseInt(m[1], 10) : 1;
+}
+
+/* 「已下载」判定的唯一键:(bv, 分P) → "BVxxxxxxxxxx#p1"。语义与后端 extras.dl_key 对齐。
+   判定粒度必须是 (bv, page):只看 bv 会让合集下完 P1 后其余分 P 全被当已下载而跳过。
+   page 缺失 / 0 / null / undefined / NaN 一律归一为 1 —— parseInt 会先把入参转成字符串,
+   null / undefined / NaN 都得到 NaN,连同 0 一起被 `|| 1` 兜到 1。 */
+export function dlKey(bv, page) {
+  return bv + DL_KEY_SEP + (parseInt(page, 10) || 1);
+}
+
 /* 缓存优先刷新用的签名:长度 + 首尾标识,够判断"有没有新内容" */
 export function sig(arr) {
   if (!Array.isArray(arr) || arr.length === 0) return "0";

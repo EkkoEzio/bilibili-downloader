@@ -10,6 +10,7 @@ import pytest
 import yt_dlp
 
 import downloader
+import files
 import taskstore
 import extras
 
@@ -202,7 +203,7 @@ def test_run_download_renames_file_to_task_title(monkeypatch, tmp_path):
 
 
 def test_run_download_align_glob_fallback(monkeypatch, tmp_path):
-    """pp 钩子没捕获到路径时(兜底),按 stem 前缀在下载目录里找到再对齐。"""
+    """pp 钩子没捕获到路径时(兜底),按 stem 归属规则(精确 / 分隔符后缀)在下载目录里找到再对齐。"""
     monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
@@ -551,3 +552,366 @@ def test_task_files_includes_sidecars(monkeypatch, tmp_path):
     # 没有 actual_filename 的老任务走扫描路径,同样要覆盖整族
     names2 = {f.name for f in downloader._task_files({"title": "视频"})}
     assert names2 == {"视频.mp4", "视频.xml", "视频.jpg", "视频.zh-Hans.srt"}
+
+
+# ---------- B2 扫盘兜底:共享前缀不等于归属 ----------
+# Property 2(Bug Condition):兜底匹配与 stem 归属规则等价。
+#   isBugCondition_B2(期望名, 磁盘 stem) = pp 钩子未捕获权威路径
+#     且 磁盘 stem ≠ 期望名 且 磁盘 stem.startswith(期望名[:10])
+#
+# 缺陷现场:files._find_actual_file 的兜底分支写成
+#   prefix = [f for f in media if f.stem.startswith(expected_stem[:10])]
+# 「共享前 10 个字符」被当成了归属判据;期望名短于 10 字时切片等于整名,退化为
+# 无边界的整名前缀匹配(「测试」命中「测试2」)。
+#
+# 真实后果不是"找错了没关系":命中后 align_task_file 会把那个**另一个视频**的
+# 文件连同它同 stem 的封面 / 字幕 / 弹幕副文件一起改名成本任务的期望名。邻居视频
+# 的原文件名永久丢失(改名不是复制,磁盘上再也找不回来),两条下载记录同时指向
+# 同一个文件。这是不可恢复的数据损坏。
+#
+# 归属规则的唯一来源是 taskstore 里的 stem_belongs(精确相等,或期望名后紧跟
+# _STEM_SUFFIX_STARTS 里的分隔符)。下面引用的是它当前的名字 _stem_belongs:
+# 提升为公开名时会保留 `_stem_belongs = stem_belongs` 别名,两个名字指向同一个
+# 函数对象,所以这处引用在修复前后都成立、且始终是同一份规则。公开名本身的存在性
+# 由改名任务自己的 test_stem_belongs_public_alias 锁,不在本批测试的职责范围。
+
+def _clear_captured(task_id: str):
+    """清掉 pp 钩子捕获的权威路径。
+
+    isBugCondition_B2 的前提之一就是"没捕获到权威路径",必须让
+    _find_actual_file 真的走到扫盘兜底那一级;_final_paths 是从 taskstore
+    import 过来的同一个 dict,跨用例会留残留。
+    """
+    files._final_paths.pop(task_id, None)
+
+
+def test_find_actual_file_rejects_prefix_neighbour(monkeypatch, tmp_path):
+    """期望名是邻居视频文件名的前缀时,不得把邻居的文件认成自己的。(需求 2.4)
+
+    isBugCondition_B2 成立:未捕获权威路径、磁盘 stem「第01期特别版」≠ 期望名
+    「第01期」、二者共享前 10 个字符(期望名不足 10 字,切片即整名)。
+
+    旧兜底会返回邻居文件的 Path,align_task_file 随即把它改名成「第01期.mp4」,
+    邻居视频的原文件名永久丢失。期望行为:不认、不改名,返回 None。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    neighbour = tmp_path / "第01期特别版.mp4"
+    neighbour.write_bytes(b"y" * 20)
+    _clear_captured("b2p")
+    try:
+        got = files._find_actual_file("b2p", "第01期")
+    finally:
+        _clear_captured("b2p")
+    assert got is None, f"不属于本任务的邻居文件被认作落盘文件:{got}"
+    assert neighbour.is_file(), "邻居视频的文件必须原样留在磁盘上"
+    assert [p.name for p in tmp_path.iterdir()] == ["第01期特别版.mp4"], \
+        "邻居文件名必须逐字未变"
+
+
+def test_find_actual_file_rejects_short_name_prefix(monkeypatch, tmp_path):
+    """期望名短于 10 字时,旧兜底退化为整名无边界前缀匹配。(需求 2.5)
+
+    expected_stem[:10] 对「测试」等于整名,「测试2」startswith 成立 → 另一个
+    视频的文件被认作本任务的落盘文件并被改名。期望行为:判定为不属于本任务。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    other = tmp_path / "测试2.mp4"
+    other.write_bytes(b"z" * 20)
+    _clear_captured("b2s")
+    try:
+        got = files._find_actual_file("b2s", "测试")
+    finally:
+        _clear_captured("b2s")
+    assert got is None, f"「测试2」不属于期望名「测试」,却被认作落盘文件:{got}"
+    assert other.is_file() and other.name == "测试2.mp4", "邻居文件名必须逐字未变"
+
+
+# Property 2 的等价类遍历(替代 PBT:输入域被这四类穷尽,项目测试栈无 PBT 依赖)。
+# ② 逐个遍历 _STEM_SUFFIX_STARTS 本身,将来往唯一来源里加分隔符会自动纳入覆盖。
+_BELONG_CASES = (
+    # ① 精确相等 —— 走的是 _find_actual_file 的第一级精确匹配,未修复代码本就正确
+    [("第01期", "第01期"),
+     ("第01期开学第一课啦", "第01期开学第一课啦")]
+    # ② 期望名 + 合法分隔符后缀 —— 分 P 的 ` - P3`、字幕的 `.zh-Hans`、
+    #    改名冲突的 ` (1)`、yt-dlp 追加的 ` [下载]` 都是这一类(3.9 必须保持命中)
+    + [("标题", f"标题{sep}后缀") for sep in taskstore._STEM_SUFFIX_STARTS]
+    + [("标题", "标题 - P3"), ("标题", "标题.zh-Hans"), ("标题", "标题 (1)")]
+    # ③ 缺陷现场:共享前缀但不归属
+    #    前两条是"期望名后紧跟非分隔符字符";第三条是 [:10] 截断特有的形态 ——
+    #    期望名 11 字,磁盘 stem 只共享前 10 字、第 11 字起就是另一个视频的名字
+    + [("第01期", "第01期特别版"),
+       ("测试", "测试2"),
+       ("第01期开学第一课啦啦", "第01期开学第一课啦下集特别版")]
+    # ④ 完全无关 —— 两侧都不命中,修复前后一致
+    + [("第01期", "另一个视频"),
+       ("标题", "毫不相干的名字")]
+)
+
+
+@pytest.mark.parametrize("expected, disk_stem", _BELONG_CASES)
+def test_find_actual_file_matches_stem_belongs_rule(monkeypatch, tmp_path,
+                                                   expected, disk_stem):
+    """Property 2:扫盘兜底的命中结果与 stem 归属规则逐一等价。
+
+    (matched = diskStem) ⟺ stem_belongs(diskStem, expectedStem)
+
+    归属规则只有一份(taskstore),files 侧不得再写第二份判据 —— 旧的
+    expected_stem[:10] 前缀匹配就是那第二份,它比唯一来源宽松得多,把邻居
+    视频的文件连同副文件一起改名成本任务的期望名(原名永久丢失)。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    f = tmp_path / f"{disk_stem}.mp4"
+    f.write_bytes(b"x" * 10)
+    _clear_captured("b2eq")
+    try:
+        got = files._find_actual_file("b2eq", expected)
+    finally:
+        _clear_captured("b2eq")
+    # 无命中时 _find_actual_file 返回 None、stem_belongs 返回 False → 做真值等价
+    want = taskstore._stem_belongs(disk_stem, expected)
+    assert (got is not None) is bool(want), (
+        f"期望名 {expected!r} 对磁盘 stem {disk_stem!r}:兜底定位"
+        f"{'命中 ' + str(got) if got is not None else '未命中'},"
+        f"而归属规则 stem_belongs = {want}"
+    )
+    if want:
+        assert got == f
+    assert f.is_file(), "定位本身不得改动磁盘上的文件"
+
+
+def test_stem_belongs_public_alias():
+    """归属规则提升为公开名后,旧名仍指向同一个函数对象。(需求 2.4、2.5)
+
+    `_stem_belongs = stem_belongs` 这行别名是向后兼容契约(与同文件的
+    `_ACTIVE = ACTIVE` 同一处理方式):历史注释、CHANGELOG 与既有测试里对旧名的
+    引用不会断裂。断言 `is` 而不是行为相同 —— 必须是同一份规则,不许出现第二份
+    实现各自演进(B2 的根因正是"同一条规则的第二份实现漏改")。
+    """
+    assert taskstore.stem_belongs is taskstore._stem_belongs, \
+        "旧名 _stem_belongs 必须是公开名 stem_belongs 的别名,而非另一份实现"
+
+
+def test_find_actual_file_shares_stem_rule():
+    """files 侧不许再有第二份归属判据:规则从 taskstore import,不在本地重写。
+
+    单一来源纪律的静态守卫。B2 的根因不是判据写错了,而是**同一条规则存在第二份
+    实现**:v2.1 已在 taskstore 侧收紧为「期望名 + 分隔符边界」,files 侧那份却
+    留着「期望名前 10 个字符」的无边界前缀匹配,而且更宽松。行为断言只能覆盖被
+    想到的输入;这条断言覆盖的是「有没有第二份规则」本身 —— 谁把切片前缀兜底加
+    回来(哪怕只是"临时放宽一下"),这里立刻红。
+
+    因此 files.py 源码里连出现过那个切片写法的注释都不留:守卫做成朴素的子串
+    断言,不去区分代码与注释,才不会被自己的措辞绕过。旧写法在注释里用中文散文
+    描述(「拿期望名的前 10 个字符做无边界前缀匹配」),失败模式记录不丢。
+    """
+    src = (Path(__file__).resolve().parent.parent / "files.py").read_text(encoding="utf-8")
+    assert "[:10]" not in src, \
+        "files.py 不得再出现切片前缀兜底(哪怕在注释里),归属判定只有 stem_belongs 一份"
+    import_lines = [ln for ln in src.splitlines()
+                    if "taskstore" in ln or "stem_belongs" in ln]
+    assert any("from taskstore import" in ln for ln in import_lines), \
+        "files.py 应从 taskstore import 归属规则,而不是自己实现"
+    assert any("stem_belongs" in ln for ln in import_lines), \
+        "files.py 的 taskstore import 里必须包含 stem_belongs"
+    assert "def stem_belongs" not in src and "def _stem_belongs" not in src, \
+        "归属规则不得在 files.py 里重新定义 —— 唯一来源在 taskstore"
+
+
+def test_align_records_rename_error_when_no_belonging_file(monkeypatch, tmp_path):
+    """盘上只有邻居视频的整族文件时,整条下载链路退化为可见的 rename_error。
+
+    走完整 _run_download → align_task_file,锁两件事:
+
+    1. **邻居视频的文件一个字都不许改**,主文件与它的 `.jpg` / `.srt` / `.xml`
+       副文件都是。旧兜底命中邻居主文件后,_rename_with_sidecars 会把整族一起
+       改名成本任务的期望名,原名永久丢失、两条记录指向同一个文件。
+    2. **退化为 rename_error 不影响完成状态**(这是设计取舍,必须锁住):找不到
+       属于本任务的落盘文件时只写展示字段,任务照样 done。用"少数异常落盘形态
+       变成可见、可恢复的 rename_error"换掉"静默误改邻居文件的不可逆损坏"。
+    """
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
+    _reset_dl_config(monkeypatch)
+
+    # 另一个视频(另一条记录)的整族文件,本任务开始下载前就在磁盘上
+    neighbour = {ext: tmp_path / f"第01期特别版{ext}"
+                 for ext in (".mp4", ".jpg", ".srt", ".xml")}
+    for p in neighbour.values():
+        p.write_bytes(b"n" * 30)
+
+    # 落盘路径没被 pp 钩子捕获(→ 走扫盘兜底),且盘上没有属于本任务的文件
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _mk_ydl(lambda opts: None))
+    t = _mk_task("b2al", title="第01期")
+    try:
+        downloader._run_download("b2al", t["url"], "", _FMTS, 1)
+        assert t["status"] == "done", "改名对齐是尽力而为,失败不得影响完成状态"
+        assert t.get("rename_error"), \
+            "没有属于本任务的落盘文件时应写可见的 rename_error"
+        for ext, p in neighbour.items():
+            assert p.is_file(), f"邻居视频的 {ext} 文件必须原样留在磁盘上"
+        on_disk = sorted(p.name for p in tmp_path.iterdir() if p.suffix != ".json")
+        assert on_disk == sorted(p.name for p in neighbour.values()), \
+            "邻居整族文件名必须逐字未变,且不得凭空出现期望名的文件"
+    finally:
+        downloader._tasks.pop("b2al", None)
+        downloader._final_paths.pop("b2al", None)
+
+
+# ---------- B2 保持(Property 8):权威路径优先,不扫盘 ----------
+# 需求 3.7 的既有覆盖只到「捕获的路径被用上了」这一层:
+# test_run_download_renames_file_to_task_title 的落盘名(`漫士沉思录第12集`)在新旧
+# 两套规则下都扫不到,所以「先扫盘、扫不到再用捕获路径」这种把优先级写反的实现,
+# 在那条用例里照样能过 —— 它区分不出「优先」与「兜底」。
+#
+# 下面这条用一个**会被扫盘命中、而且体积更大**的邻居文件把两者拉开:
+#   - 期望名 `合集 第一季`;
+#   - pp 钩子捕获的是 `合集第一季.mp4`(yt-dlp 把空格吞了),100B,
+#     两套规则都扫不到它(缺空格 → 既非精确相等,也不是「期望名 + 分隔符后缀」);
+#   - 盘上另有 `合集 第一季 - P3.mp4`,5000B —— 那是**同一合集另一个分 P 的任务**
+#     的文件,余部 ` - P3` 以空格开头,stem_belongs 命中,旧的 [:10] 前缀也命中,
+#     且体积更大 → 任何扫盘分支的 max(size) 都会挑中它。
+#
+# 于是「先扫盘」的实现必然把 P3 的文件改名成 `合集 第一季.mp4`(P3 的原名永久丢失,
+# 两条记录指向同一个文件),而「捕获优先」的实现只动捕获到的那一个。断言落在
+# **最终谁背着期望名、内容是谁的字节**上,与实现细节无关。
+
+def test_run_download_prefers_captured_path_over_bigger_disk_candidate(
+        monkeypatch, tmp_path):
+    """pp 钩子已捕获权威路径且文件存在 → 用它,不扫盘。(需求 3.7)
+
+    isBugCondition_B2 不成立(权威路径已捕获),故本条锁的是既有正确行为:
+    捕获路径的优先级高于扫盘,哪怕盘上有个体积更大、且按归属规则命中的候选。
+    """
+    _conflict_env(monkeypatch, tmp_path)
+
+    # 同一合集另一个分 P 的落盘文件:按 stem 归属规则命中期望名,且体积更大
+    sibling = tmp_path / "合集 第一季 - P3.mp4"
+    sibling.write_bytes(b"p" * 5000)
+    captured = tmp_path / "合集第一季.mp4"  # yt-dlp 吞掉了空格
+
+    def writer(opts):
+        downloader._final_paths["cap1"] = str(captured)
+        captured.write_bytes(b"c" * 100)
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _mk_ydl(writer))
+    t = _mk_task("cap1", title="合集 第一季")
+    try:
+        downloader._run_download("cap1", t["url"], "", _FMTS, 1)
+        aligned = tmp_path / "合集 第一季.mp4"
+        assert t["status"] == "done"
+        assert aligned.is_file(), "捕获到的文件应被改名对齐到期望名"
+        assert aligned.read_bytes() == b"c" * 100, \
+            "背着期望名的必须是 pp 钩子捕获的那个文件,而不是扫盘挑出的体积更大者"
+        assert not captured.exists(), "是改名而不是复制"
+        assert t["actual_filename"] == str(aligned)
+        assert "rename_conflict" not in t and not t.get("rename_error")
+        # 别的分 P 的文件一个字节、一个字都不许动
+        assert sibling.is_file() and sibling.read_bytes() == b"p" * 5000, \
+            "扫盘一旦抢在捕获路径之前,这个更大的候选就会被改名成本任务的期望名"
+    finally:
+        downloader._tasks.pop("cap1", None)
+        downloader._final_paths.pop("cap1", None)
+
+# ---------- 副文件改名:多段扩展名(字幕语言标签)----------
+# 缺陷现场:files._rename_with_sidecars 给副文件算新名时用的是 `side.suffix`,
+# 而 pathlib 的 .suffix 只取**最后一段**扩展名。字幕由 yt-dlp 按
+# subtitleslangs=["zh-Hans", "zh-CN"] 落盘,名字形如 `<stem>.zh-Hans.srt`
+# ——两段扩展名。对 Path("视频.zh-Hans.srt"),.suffix 是 ".srt",`.zh-Hans`
+# 被算进了 stem。于是有两个后果:
+#
+# (a) 语言标签丢失:`旧名.zh-Hans.srt` → `新名.srt`。
+#
+# (b) 第二种语言变孤儿(更严重,不可自愈):两种语言都存在时,两个 side 算出
+#     **同一个** side_target = `新名.srt`。第一个改名成功,第二个撞上
+#     `if not side_target.exists()` 被跳过,永久留在旧 stem 下。而
+#     taskstore._file_family 是按**新** stem glob(`新名.*`)找整族的,再也
+#     匹配不到那个孤儿。后果链:「删除记录 + 文件」清不掉它(磁盘永久残留,
+#     v2.1 专门修过一次「删除后残留孤儿 .xml/.srt/.jpg」,同类问题从改名路径
+#     重新长出来),downloaded_bytes / 体积统计也少算这个文件。
+#
+# 修法:副文件取「从 source.stem 之后的整条扩展名链」而不是最后一段:
+#     side.name[len(source.stem):]
+# 切片的正确性依赖 glob 模式 —— 模式是 glob_escape(source.stem) + ".*",
+# 所以每个 side.name 必然以 source.stem 开头且紧跟一个 ".",切片结果就是完整
+# 的 `.xxx[.yyy]` 链。改这行时必须连 glob 模式一起看。
+#
+# 主文件那行 `target = source.with_name(new_stem + source.suffix)` **刻意**仍用
+# .suffix:落盘名若是 `视频.f137.mp4` 这类 yt-dlp 中间产物形态,我们希望改名后
+# 得到干净的 `新名.mp4` 而不是 `新名.f137.mp4`。主/副两处取法不同是设计,不是
+# 疏漏,不要「统一」掉。
+
+def test_rename_sidecars_keeps_subtitle_language_tag(monkeypatch, tmp_path):
+    """字幕副文件的语言标签必须随改名保留。
+
+    `旧名.zh-Hans.srt` 应改成 `新名.zh-Hans.srt`。未修复时 .suffix 只取
+    `.srt`,`.zh-Hans` 被当成 stem 的一部分丢掉 → 落成 `新名.srt`,播放器
+    再也认不出这是哪种语言的字幕轨。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    main = tmp_path / "旧名.mp4"
+    main.write_bytes(b"m" * 10)
+    (tmp_path / "旧名.zh-Hans.srt").write_bytes(b"s")
+
+    new_main = files._rename_with_sidecars(main, "新名")
+
+    assert new_main == tmp_path / "新名.mp4"
+    on_disk = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert on_disk == ["新名.mp4", "新名.zh-Hans.srt"], \
+        f"字幕语言标签应随改名保留,实际落盘:{on_disk}"
+
+
+def test_rename_sidecars_no_orphan_with_two_subtitle_langs(monkeypatch, tmp_path):
+    """两种语言的字幕都在时,不得有任何一个被留在旧 stem 下变成孤儿。
+
+    未修复时两个 side 算出同一个 side_target(`新名.srt`):先被 glob 到的那个
+    改名成功,另一个撞上 `if not side_target.exists()` 被静默跳过,永久留在
+    旧 stem 下(`旧名.zh-CN.srt` 或 `旧名.zh-Hans.srt`,取决于 glob 顺序)。
+
+    额外断言 taskstore._file_family(新主文件) 能找齐全部 3 个文件 —— 直接锁住
+    真实后果:_file_family 按**新** stem glob,匹配不到孤儿,「删除记录 + 文件」
+    清不掉它(磁盘永久残留),体积统计也少算它。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    main = tmp_path / "旧名.mp4"
+    main.write_bytes(b"m" * 10)
+    (tmp_path / "旧名.zh-Hans.srt").write_bytes(b"h")
+    (tmp_path / "旧名.zh-CN.srt").write_bytes(b"c")
+
+    new_main = files._rename_with_sidecars(main, "新名")
+
+    assert new_main == tmp_path / "新名.mp4"
+    on_disk = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert on_disk == ["新名.mp4", "新名.zh-CN.srt", "新名.zh-Hans.srt"], \
+        f"两种语言的字幕都应落到新 stem 下,实际落盘:{on_disk}"
+    # 旧 stem 下不许留任何东西 —— 孤儿一旦产生就再也追不回来
+    assert not list(tmp_path.glob("旧名.*")), \
+        f"旧 stem 下残留孤儿文件:{[p.name for p in tmp_path.glob('旧名.*')]}"
+    # 真实后果:整族定位(删除 / 体积统计的唯一来源)必须覆盖全部 3 个文件
+    fam = sorted(p.name for p in taskstore._file_family(new_main))
+    assert fam == ["新名.mp4", "新名.zh-CN.srt", "新名.zh-Hans.srt"], \
+        f"_file_family 漏掉了文件(删除清不掉 / 体积少算):{fam}"
+
+
+def test_rename_sidecars_single_suffix_unchanged(monkeypatch, tmp_path):
+    """保持:单段扩展名的副文件行为与修复前逐位相同。
+
+    封面 `.jpg`、弹幕 `.xml`、无语言标签的字幕 `.srt` 都只有一段扩展名,
+    `side.name[len(source.stem):]` 与 `side.suffix` 在这类文件上结果完全一致
+    (glob 模式保证 side.name 以 source.stem + "." 开头)。这条是基线:未修复
+    代码上它本来就绿,修复后必须仍绿 —— 不许为了修多段扩展名把单段搞坏。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    main = tmp_path / "旧名.mp4"
+    main.write_bytes(b"m" * 10)
+    (tmp_path / "旧名.jpg").write_bytes(b"c")   # 封面
+    (tmp_path / "旧名.xml").write_bytes(b"d")   # 弹幕
+    (tmp_path / "旧名.srt").write_bytes(b"s")   # 字幕(无语言标签)
+
+    new_main = files._rename_with_sidecars(main, "新名")
+
+    assert new_main == tmp_path / "新名.mp4"
+    on_disk = sorted(p.name for p in tmp_path.iterdir() if p.is_file())
+    assert on_disk == ["新名.jpg", "新名.mp4", "新名.srt", "新名.xml"], \
+        f"单段扩展名副文件的改名行为不应改变,实际落盘:{on_disk}"
+    assert not list(tmp_path.glob("旧名.*")), "旧 stem 下不得残留"

@@ -109,27 +109,46 @@ export function renderPage() {
   (ctrl.render || renderDefaultList)(d);
 }
 
-/* 标准视频卡列表:搜索过滤 + _shown 分块 + meta 计数 + 不足一屏自动补齐 */
+/* 搜索匹配谓词(标题或 UP 名命中);q 已由 getLibSearchQuery() 做过 trim + toLowerCase */
+function matchesQuery(it, q) {
+  const t = (it.title || '').toLowerCase();
+  const u = (it.uploader || '-').toLowerCase();
+  return t.includes(q) || u.includes(q);
+}
+
+/* 当前应渲染的 (条目, 原始下标) 对 —— pairs 构造的唯一来源。
+   idx 必须是条目在 state.items 里的原始下标:勾选框的 data-libidx、
+   toggleLibCheck、state.checked、delSelected / libDownload 全按原始下标索引
+   state.items。曾对过滤后的数组 forEach 取遍历位置当下标(拿到的是「第几个
+   命中」),搜索态下删除 / 下载会打到另一条记录 —— 删除还会连带 unlink 那条
+   记录的磁盘文件(视频 + 封面 + 字幕 + 弹幕),不可恢复。
+   所以这里遍历 state.items 本身,idx 天然就是原始下标;搜索态按谓词筛选,
+   非搜索态按 idx < state.shown 截前缀(等价于 slice(0, state.shown))。 */
+export function visiblePairs(q) {
+  const pairs = [];
+  state.items.forEach((it, idx) => {
+    if (q ? matchesQuery(it, q) : idx < state.shown) pairs.push({ it, idx });
+  });
+  return pairs;
+}
+
+/* 标准视频卡列表:搜索过滤 + _shown 分块 + meta 计数 + 不足一屏自动补齐。
+   pairs 一律走上面那份唯一来源,不在这里自建第二份过滤 / 建对规则。 */
 export function renderDefaultList(d = libDom()) {
   if (!d || !d.list) return;
   const ctrl = page();
   const q = getLibSearchQuery();
-  let filtered = state.items;
-  if (q) {
-    filtered = state.items.filter(it => {
-      const t = (it.title || '').toLowerCase();
-      const u = (it.uploader || '-').toLowerCase();
-      return t.includes(q) || u.includes(q);
-    });
-  }
+  /* 这行必须留在取窗之前:非搜索态的入选谓词是 idx < state.shown,
+     shown 还是 0 时谓词恒假,首屏会渲染成空列表。旧代码把它放在过滤块之后、
+     取窗之前,顺序不可挪动。 */
   if (!state.shown) state.shown = curChunk();
-  const source = q ? filtered : state.items.slice(0, state.shown);
-  const pairs = [];
-  source.forEach((it, idx) => pairs.push({ it, idx }));
+  const pairs = visiblePairs(q);
   renderLibList(pairs, d.list);
   if (d.meta) {
+    /* 搜索态的「匹配 N」就是 pairs 的条数:搜索态下 pairs 是全部命中项、
+       不受 state.shown 截断,与旧代码单独维护的 filtered.length 同值。 */
     d.meta.textContent = q
-      ? `共 ${state.items.length} 条 · 匹配 ${filtered.length}`
+      ? `共 ${state.items.length} 条 · 匹配 ${pairs.length}`
       : (ctrl.showCount === false ? '' : `共 ${state.items.length} 条`);
   }
   maybeFillScreen();
@@ -179,7 +198,19 @@ export function advanceDefaultChunk() {
     return false;
   }
   state.shown += curChunk();
-  renderLibList(state.items.slice(0, state.shown).map((it, idx) => ({ it, idx })), libDom().list);
+  /* 复用 visiblePairs():「(条目, 原始下标)」这条规则全项目只留一份,
+     旧写法 state.items.slice(0, state.shown).map((it, idx) => …) 结果虽然正确
+     (从 0 起的前缀切片,位置恰好等于原始下标),但是同一规则的第二份副本,
+     下次改规则时漏掉这里就会重新长出 B1 那类下标错位。
+     这里只调 visiblePairs() + renderLibList(),**不**调 renderDefaultList():
+     renderDefaultList 末尾有 maybeFillScreen(),而 maybeFillScreen 又回调
+     advanceDefaultChunk(),会形成 renderDefaultList → maybeFillScreen →
+     advanceDefaultChunk 的间接递归 —— _filling 虽然挡得住,但那层保护依赖
+     调用路径,脆弱。
+     q 取 getLibSearchQuery():两个调用方 maybeFillScreen / maybeLoadMore 都对
+     非空搜索词提前返回(搜索态不走无限滚),此处 q 恒为空字符串,
+     visiblePairs('') 与旧代码无条件的前缀切片逐位等价。 */
+  renderLibList(visiblePairs(getLibSearchQuery()), libDom().list);
   return true;
 }
 

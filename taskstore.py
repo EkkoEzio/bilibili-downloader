@@ -95,13 +95,33 @@ def find_active_by_url(url: str, label: str, page: int = 1) -> Optional[str]:
 
 
 def is_downloaded(url: str) -> bool:
-    """该视频(BV 号)是否已有 done 任务——列表「已下载」标记与批量跳过用。"""
+    """该 (BV 号, 分 P) 是否已有 done 任务——列表「已下载」标记与批量跳过用。
+
+    判定粒度必须是 (bvid, page):只比 BV 号会让合集下完 P1 后其余分 P 全被挂上
+    「已下载」角标并在批量提交时被跳过,自动下载也漏下新分 P。键规则的唯一来源
+    是 extras.dl_key / extras.page_from_url,不在这里另拼一份。
+
+    两侧取 page 的方式不对称,这是刻意的:
+    - 查询侧只能从 URL 的 ?p= 解析(本函数入参只有 URL,别处拿不到分 P);
+    - 任务侧必须读 t["page"],**不能解析 t["url"]** —— start_download(url, label,
+      page=3) 存进任务表的 url 是用户粘贴的原始链接(通常不带 ?p=),page 才是
+      权威值;若任务侧也去解析 url,这条任务会被算成 P1,判定照样全错,只是错的
+      方向反过来(P3 判未下载、P1 判已下载)。
+    任务 url 取不到 BV(短链 / av 号原样入库)时跳过该任务:它不归属任何 BV,
+    不得拼出带 None 的键去参与比较,否则「有过一次短链下载」会把别的视频标成已下载。
+
+    锁内只做纯字符串运算(与改动前同级),不碰 IO、不调 _persist()。
+    """
     bv = bvid_from_url(url)
     if not bv:
         return False
+    key = extras.dl_key(bv, extras.page_from_url(url))
     with _tasks_lock:
         for t in _tasks.values():
-            if t.get("status") == "done" and bvid_from_url(t.get("url") or "") == bv:
+            if t.get("status") != "done":
+                continue
+            tbv = bvid_from_url(t.get("url") or "")
+            if tbv and extras.dl_key(tbv, int(t.get("page") or 1)) == key:
                 return True
     return False
 
@@ -112,13 +132,21 @@ def is_downloaded(url: str) -> bool:
 _STEM_SUFFIX_STARTS = (" ", ".", "-", "_", "(", "[")
 
 
-def _stem_belongs(stem: str, expected: str) -> bool:
-    """磁盘文件的 stem 是否属于期望名 expected(精确相等,或带分隔符后缀)。"""
+def stem_belongs(stem: str, expected: str) -> bool:
+    """磁盘文件的 stem 是否属于期望名 expected(精确相等,或带分隔符后缀)。
+
+    全项目唯一来源:taskstore._task_files(定位 / 删除)与 files._find_actual_file
+    (下载后改名对齐)共用。曾各写一份,files 侧那份用 expected[:10] 前缀匹配,
+    会把邻居视频的文件连同副文件一起改名成本任务的期望名(不可逆)。
+    """
     if stem == expected:
         return True
     if not stem.startswith(expected):
         return False
     return stem[len(expected):].startswith(_STEM_SUFFIX_STARTS)
+
+
+_stem_belongs = stem_belongs  # 旧名保留,避免下游 import 断裂
 
 
 def _file_family(main: Path) -> list:
@@ -142,7 +170,7 @@ def _task_files(t: dict) -> list:
     「前缀截断错位 → Reveal 找不到文件」的老问题)。老任务没有这个字段时,
     按 build_filename 算出的期望名扫下载目录及一层子目录(SORT_BY_UP 归档)。
 
-    匹配规则见 _stem_belongs。早先是拿**未清洗**的 title[:30] 做
+    匹配规则见 stem_belongs。早先是拿**未清洗**的 title[:30] 做
     name.startswith,有两个后果:标题含 / : ? 等非法字符的任务永远匹配不上
     (磁盘上这些字符已被换成 _),以及任何共享前 30 字的两个视频互相误配——
     后者叠加 delete_file=True 会删掉邻居的文件。
@@ -165,7 +193,7 @@ def _task_files(t: dict) -> list:
     for d in dirs:
         try:
             files += [f for f in d.iterdir()
-                      if f.is_file() and _stem_belongs(f.stem, expected)]
+                      if f.is_file() and stem_belongs(f.stem, expected)]
         except OSError:
             continue
     return files
@@ -222,15 +250,18 @@ def clean_invalid_records() -> dict:
 
 
 def compute_stats() -> dict:
-    """统计面板数据:总下载数、总字节数、本月/今日 数。本月=自然月。
+    """统计面板数据:总下载数、总字节数、本月/今日 数。本月=自然月,今日=自然日。
 
     历史 done 任务没有 downloaded_bytes 字段时,总字节用下载目录磁盘实测值兜底。
     """
     import datetime
-    now = int(time.time())
     today = datetime.date.today()
     month_start = int(time.mktime(datetime.date(today.year, today.month, 1).timetuple()))
-    day_start = now - 86400
+    # 本地自然日 00:00,与 month_start 同一套 datetime / time.mktime 写法
+    # (date.timetuple() 的时分秒为 0,time.mktime 按本地时区解释)。
+    # 曾用 now - 86400,那是滚动 24 小时窗口:昨晚 23:00 完成的任务今早仍被算作
+    # 「今日」,与同一份统计里「本月 = 自然月」的口径自相矛盾。
+    day_start = int(time.mktime(today.timetuple()))
 
     total_count = 0
     total_bytes = 0

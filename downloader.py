@@ -19,7 +19,7 @@ import config
 from quality import best_video_audio_choice
 
 from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
-                       _load_persisted, _task_files,
+                       _load_persisted, _task_files, TERMINAL,
                        get_task, list_tasks, find_active_by_url, is_downloaded,
                        find_task_files, delete_tasks, clear_tasks,
                        clean_invalid_records)
@@ -157,10 +157,15 @@ def _progress_hook(task_id: str):
 
 
 def _finalize_cancelled(task_id: str) -> None:
-    """把未终结的任务落为已取消(取消发生在下载回调之外时的兜底)。"""
+    """把未终结的任务落为已取消(取消发生在下载回调之外时的兜底)。
+
+    终态判断走 taskstore.TERMINAL 唯一来源。曾硬编码 ("done","failed","cancelled")
+    漏了 interrupted:那会把一个已终结的 interrupted 覆盖成 cancelled,与「已终结的
+    任务状态不被覆盖」相悖。改用 TERMINAL 后 interrupted 同样被视为已终结。
+    """
     with _tasks_lock:
         t = _tasks.get(task_id)
-        if t and t["status"] not in ("done", "failed", "cancelled"):
+        if t and t["status"] not in TERMINAL:
             t["status"] = "cancelled"
     _persist()
 
@@ -373,10 +378,18 @@ def start_batch(items: list[dict], label: str, max_concurrent: int = None) -> li
 
 
 def cancel_download(task_id: str) -> bool:
-    """标记任务取消。yt-dlp 线程会在下个分片边界停止(无法强杀,靠标志位)。"""
+    """标记任务取消。yt-dlp 线程会在下个分片边界停止(无法强杀,靠标志位)。
+
+    终态判断走 taskstore.TERMINAL 唯一来源。曾硬编码 ("done","failed","cancelled")
+    漏了 interrupted:对中断任务调取消会把它改成 cancelling(活跃态)却没有任何线程
+    去收尾(interrupted 由 _load_persisted 在重启时写入,对应线程早已不存在)
+    → 永久僵尸态,连带两个后果:find_active_by_url 从此拦截同 URL + 清晰度 + 分 P 的
+    新下载(409,视频再也下不了),clear_tasks 又把它当活跃任务跳过(「清除全部记录」
+    也删不掉这条)。
+    """
     with _tasks_lock:
         t = _tasks.get(task_id)
-        if not t or t["status"] in ("done", "failed", "cancelled"):
+        if not t or t["status"] in TERMINAL:
             return False
         t["cancel"] = True
         t["status"] = "cancelling"

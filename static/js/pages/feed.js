@@ -208,17 +208,32 @@ export async function upRemove(mid) {
   if (r.ok && state.mode === 'feed' && _feedSource === 'mine') loadMyUps();
 }
 
+/* 手动「立即检查新视频」:按后端如实回报的 started 给反馈。
+
+   这里原先有个写死的固定禁用窗口(缺陷 B4 的症状,需求 2.10 已删除):当时后端
+   无论有没有真的启动新一轮都只回 {"ok": true},前端拿不到任何信息,只能靠
+   「猜一轮大概跑多久」把按钮假装成忙着。这个猜既不准也没用 ——
+   真实一轮耗时随清单长度线性增长(UP 之间 sleep 5 秒,30 个 UP 就是两分半往上),
+   窗口猜短了到点解禁后再点照样叠加一轮,猜长了纯让人白等;而它压根拦不住请求,
+   只是把按钮画成灰色。假窗口治的是症状,病根在后端不肯说实话。
+   现在「绝不并发、绝不排队」由后端的非阻塞锁保证(auto_refresh.refresh_once),
+   路由如实回报 started,前端照着说实话即可;按钮的禁用范围收回到「请求在途」
+   这段真实区间 —— 路由只起个后台线程就返回,毫秒级。 */
 export async function upCheckNow(btn) {
+  const old = btn ? btn.innerHTML : '';
+  if (btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>检查中...'; }
   try {
-    await postEmpty('/api/up-list/check');
-    if (btn) {
-      const old = btn.innerHTML;
-      btn.disabled = true;
-      btn.innerHTML = '<span class="spinner"></span>检查中...';
-      // 串行检查耗时取决于 UP 数,先给个固定反馈窗口,期间队列轮询会带回新任务
-      setTimeout(() => { btn.disabled = false; btn.innerHTML = old; }, 30000);
-    }
-  } catch (e) { alert(e.message); }
+    const r = await postEmpty('/api/up-list/check');
+    // started === false:后端已有一轮在跑,本次未启动新一轮 —— 如实告知,别让人以为白点了
+    alert(r && r.started === false
+      ? '已有检查在进行中,本次未启动新一轮。稍后队列会自动带回新任务。'
+      : '已在后台开始检查,新视频会自动进入下载队列。');
+  } catch (e) {
+    alert(e.message);
+  } finally {
+    // 一轮检查在后台跑,结果由队列轮询带回,前端不必等它跑完,请求一回来就解禁
+    if (btn) { btn.disabled = false; btn.innerHTML = old; }
+  }
 }
 
 /* ---------- 页控制器 ---------- */

@@ -3,7 +3,7 @@
 import { registerPage, state, libDom, renderPage, setItemExtras, LIB_PAGES, goPage } from '../lib.js';
 import { getJSON, postJSON, postEmpty } from '../net.js';
 import { icon } from '../icons.js';
-import { escapeHtml, escapeAttr, formatBytes, bvFromUrl } from '../util.js';
+import { escapeHtml, escapeAttr, formatBytes, bvFromUrl, dlKey, pageFromUrl } from '../util.js';
 
 const TASK_ACTIVE = ['queued', 'downloading', 'merging', 'cancelling', 'retrying'];
 const TASK_STATUS_CN = {
@@ -12,12 +12,28 @@ const TASK_STATUS_CN = {
   cancelled: '已取消', interrupted: '已中断',
 };
 
-/* 已下载判定(列表角标 + 批量跳过):done 任务的 BV 集合 */
-let _doneBvids = new Set();
+/* 已下载判定(列表角标 + 批量跳过):done 任务的 (BV, 分P) 键集合。
+   只按 BV 建集合会让合集下完 P1 后其余分 P 全被当已下载 —— 角标全挂上、
+   批量提交时被整批过滤掉并提示「所选项均已下载过」,多 P / 合集主场景直接不可用。
+   键规则(dlKey / pageFromUrl)的唯一来源在 ../util.js,这里只 import 不复制。 */
+let _doneKeys = new Set();
 
+/* 集合构建的唯一来源(loadDownloads 与 pollTasks 共用,不许各写一份)。
+   任务侧的 page 读 t.page —— /api/tasks 的任务对象已含该字段(start_download /
+   start_batch 都写、_persist 也不剔除),不能从 t.url 解析:任务表里的 url 是用户
+   粘贴的原始链接,常不带 ?p=,解析它会把所有任务都算成 P1,判定照样全错。
+   任务 url 取不到 BV(短链 / av 号原样入库)时整条丢掉,不拼出带 null 的键。 */
+function doneKeySet(tasks) {
+  return new Set(tasks.filter(t => t.status === 'done')
+    .map(t => { const bv = bvFromUrl(t.url); return bv ? dlKey(bv, t.page || 1) : null; })
+    .filter(Boolean));
+}
+
+/* 查询侧的 page 只能从 URL 的 ?p= 解析(入参只有 URL,拿不到任务对象)。
+   与任务侧取法不对称是刻意的,写反任一侧都会悄悄退回「只看 BV」的缺陷形态。 */
 function isDownloaded(url) {
   const bv = bvFromUrl(url);
-  return !!bv && _doneBvids.has(bv);
+  return !!bv && _doneKeys.has(dlKey(bv, pageFromUrl(url)));
 }
 
 export async function loadDownloads() {
@@ -26,14 +42,19 @@ export async function loadDownloads() {
   try {
     const r = await getJSON('/api/tasks');
     const tasks = r.tasks || [];
-    _doneBvids = new Set(tasks.filter(t => t.status === 'done')
-      .map(t => bvFromUrl(t.url)).filter(Boolean));
+    _doneKeys = doneKeySet(tasks);
     updateBadge(tasks);
     // 进行中在最前(时间倒序),其余(完成/失败/取消)按完成时间倒序
     state.items = tasks.map(t => {
       const it = {
         task_id: t.task_id, status: t.status,
         url: t.url, title: t.title || '(解析中)', label: t.label || '',
+        /* page 必须进白名单:它是任务的权威分 P 值(/api/tasks 已返回),
+           libDownload 重下这条记录时靠它提交正确的分 P。漏掉这一行 it.page 就是
+           undefined,提交会静默退回 P1(缺陷 C2)。
+           读 t.page 而不是解析 t.url —— 任务表里的 url 是用户粘贴的原始链接,
+           常不带 ?p=,解析它会把所有任务都算成 P1,与漏掉字段等价。 */
+        page: t.page || 1,
         uploader: t.uploader || '', uploader_mid: t.uploader_mid || 0,
         thumbnail: t.thumbnail || '', duration: t.duration || 0,
         view_at: t.finished_at || t.created_at || 0,
@@ -99,8 +120,7 @@ function maybeReload() {
 export async function pollTasks() {
   try {
     const tasks = await getJSON('/api/tasks').then(r => r.tasks || []);
-    _doneBvids = new Set(tasks.filter(t => t.status === 'done')
-      .map(t => bvFromUrl(t.url)).filter(Boolean));
+    _doneKeys = doneKeySet(tasks);
     updateBadge(tasks);
     if (state.mode === 'downloads'
         && !document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
@@ -276,9 +296,18 @@ export async function libDownload() {
   if (checked.length === 0) { alert('请至少勾选一项'); return; }
   const qSel = document.querySelector('.lib-quality');
   const label = qSel ? qSel.value : '';
+  /* page 的 `||` 兜底同时服务两类条目(libDownload 是六个内容页共用的提交口):
+       - 任务记录(下载记录页):state.items 由 loadDownloads 从 /api/tasks 构造,
+         带 page 字段 → 走 it.page。这里**不能**改成解析 it.url:任务表里的 url
+         是用户粘贴的原始链接,常不带 ?p=,解析它会把 P3 的记录也算成 P1,
+         后端就按 P1 拼文件名、按错的 page 判去重(缺陷 C2)。
+       - 接口条目(收藏夹 / 稍后再看 / 观看历史 / 关注动态 / 追更合集):
+         这些页的条目没有 page 字段 → 退到 pageFromUrl(it.url)。它们的 url 由
+         bilibili_api 拼成 .../video/{bvid},从不带 ?p= → 得 1,与修复前逐位相同。
+     取 page 的方式沿用 B3 的不对称原则:任务侧读存储字段,查询侧才解析 URL。 */
   let items = checked.map(cb => {
     const it = state.items[parseInt(cb.dataset.libidx)];
-    return { url: it.url, title: it.title, page: 1,
+    return { url: it.url, title: it.title, page: it.page || pageFromUrl(it.url),
              thumbnail: it.thumbnail || '', uploader: it.uploader || '',
              uploader_mid: it.uploader_mid || 0, duration: it.duration || 0 };
   });

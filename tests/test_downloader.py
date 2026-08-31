@@ -2,6 +2,7 @@
 
 不依赖 yt-dlp mock(易死锁),改用源码静态分析 + 简单业务测试。
 """
+import ast
 import inspect
 from pathlib import Path
 
@@ -9,6 +10,7 @@ import pytest
 import yt_dlp
 
 import downloader
+import extras
 import taskstore
 
 
@@ -202,16 +204,756 @@ def test_list_tasks_returns_copies():
 # ---------- 已下载判定 / 下载 opts / 通知与弹幕钩子(2026-08-15 批次) ----------
 
 def test_is_downloaded():
-    """done 任务的 bvid 命中即视为已下载;进行中/失败的不算。"""
-    _mk_task("dd1", status="done", url="https://www.bilibili.com/video/BV1xx411c7mD")
+    """(BV 号, 分 P) 命中 done 任务才算已下载;进行中/失败的不算。
+
+    旧断言曾期望 `.../BV1xx411c7mD?p=3` 为 True —— 任务 dd1 是 (BV1, page=1)、
+    查询是 (BV1, page=3),它能判 True 全靠「只比 BV 号」。**那是缺陷 B3 的表现,
+    这条断言本身把缺陷当成了规格**:合集下完 P1 后,其余分 P 全被挂上「已下载」
+    角标并在批量提交时被跳过(1.6 / 1.7),自动下载也漏下新分 P(1.8)。
+
+    现改为断言 `?p=3` 为 False(B3 的 Fix Checking,需求 2.6 / 2.7),并补一行
+    不带 `?p=` 的 True 覆盖 3.12(单 P 视频 URL + 任务 page=1 仍判已下载)。
+
+    Validates: Requirements 2.6, 2.7, 3.12, 3.15
+    """
+    _mk_task("dd1", status="done", url="https://www.bilibili.com/video/BV1xx411c7mD")  # page=1
     _mk_task("dd2", status="downloading", url="https://www.bilibili.com/video/BV2xx411c7mD")
     try:
-        assert downloader.is_downloaded("https://www.bilibili.com/video/BV1xx411c7mD?p=3") is True
+        # 判定粒度是 (BV, 分P):同 BV 的其他分 P 不算已下载
+        assert downloader.is_downloaded("https://www.bilibili.com/video/BV1xx411c7mD?p=3") is False
+        assert downloader.is_downloaded("https://www.bilibili.com/video/BV1xx411c7mD") is True  # 3.12
         assert downloader.is_downloaded("https://www.bilibili.com/video/BV2xx411c7mD") is False
         assert downloader.is_downloaded("https://www.bilibili.com/video/BV3xx411c7mD") is False
     finally:
         downloader._tasks.pop("dd1", None)
         downloader._tasks.pop("dd2", None)
+
+
+# ---------- 已下载判定的粒度是 (bvid, page)(缺陷 B3) ----------
+
+def test_is_downloaded_is_per_page():
+    """同一 BV 下,只有已完成的那个分 P 算已下载,其余分 P 判未下载。
+
+    Property 3: Bug Condition —— 已下载判定的粒度是 (bvid, page)。
+    对应 isBugCondition_B3:同 BV 存在 done 任务但分 P 不同,且被判定的那个
+    分 P 自己没有 done 任务。
+
+    未修复现场(taskstore.is_downloaded):
+        if t.get("status") == "done" and bvid_from_url(t.get("url") or "") == bv:
+            return True
+    任务表里 `page` 字段一直存在(start_download / start_batch 都写),URL 里
+    `?p=` 一直存在(parse_part 生成、resolve_playlist 产出),但判定把这个维度
+    整个丢掉了 —— 于是 (BV1, page=1) 一条 done 任务就把 BV1 的全部分 P 判成
+    已下载,反例即下面第一条断言(`?p=2` 未修复时返回 True)。
+
+    Validates: Requirements 2.6, 2.7, 3.12, 3.13
+    """
+    url = "https://www.bilibili.com/video/BV1xx411c7mD"
+    _mk_task("pp1", status="done", url=url, page=1)
+    try:
+        assert downloader.is_downloaded(url) is True, "不带 ?p= 视为 P1,与任务 page=1 相同(3.12)"
+        assert downloader.is_downloaded(url + "?p=1") is True, "显式 ?p=1 与任务 page=1 相同(3.13)"
+        assert downloader.is_downloaded(url + "?p=2") is False, \
+            "P1 已下载不代表 P2 已下载(未修复时这里返回 True —— B3 的反例)"
+        assert downloader.is_downloaded(url + "?p=3") is False
+
+        # 再补一条 (BV1, page=3) 的 done 任务:此后只有 P3 跟着变成已下载
+        _mk_task("pp3", status="done", url=url, page=3)
+        assert downloader.is_downloaded(url + "?p=3") is True, "(BV, 分P) 完全相同 → 已下载(3.13)"
+        assert downloader.is_downloaded(url + "?p=2") is False, "P2 仍无 done 任务"
+        assert downloader.is_downloaded(url) is True, "P1 的 done 任务仍在"
+    finally:
+        downloader._tasks.pop("pp1", None)
+        downloader._tasks.pop("pp3", None)
+
+
+def test_is_downloaded_uses_task_page_field_not_task_url():
+    """任务侧的分 P 必须读 `t["page"]`,不能解析 `t["url"]` —— 两侧取法刻意不对称。
+
+    Property 3: Bug Condition —— 已下载判定的粒度是 (bvid, page)。
+
+    这条锁的是实现里最容易搞错的一处:`start_download(url, label, page=3)` 存进
+    任务表的 `url` 是用户粘贴的原始链接(**通常不带 `?p=`**),`page` 才是权威值。
+    若任务侧也从 URL 解析,这条任务会被算成 P1 —— 判定照样全错,只是错的方向反过来
+    (P3 判未下载、P1 判已下载)。而查询侧只能从 URL 解析,因为 is_downloaded(url)
+    的入参只有 URL。
+
+    因此本用例故意让「任务 url 不带 ?p= 但 page=3」:
+      - 查询 `?p=3` 必须为 True  → 证明任务侧读了 t["page"]
+      - 查询不带 `?p=` 必须为 False → 证明任务侧没拿 t["url"] 当 P1 用
+    两条断言必须同时成立,任一侧写反都会挂一条。
+
+    Validates: Requirements 2.6, 2.7, 2.8
+    """
+    url = "https://www.bilibili.com/video/BV1xx411c7mD"  # 任务侧 url 不带 ?p=
+    _mk_task("np3", status="done", url=url, page=3)
+    try:
+        assert downloader.is_downloaded(url + "?p=3") is True, \
+            "任务侧应读 t['page'](=3);若解析 t['url'] 会得到 1,这条会挂"
+        assert downloader.is_downloaded(url) is False, \
+            ("查询侧无 ?p= 视为 P1,与任务的 P3 不同 → 未下载"
+             "(未修复时返回 True —— B3 的反例)")
+    finally:
+        downloader._tasks.pop("np3", None)
+
+
+@pytest.mark.parametrize("task_page,url_suffix", [
+    (1, ""),        # 单 P 视频:两侧都是 P1 → 已下载(3.12)
+    (1, "?p=1"),    # 显式 ?p=1 与 page=1 同键 → 已下载(3.13)
+    (1, "?p=2"),    # P1 已下载,查 P2 → 未下载(2.6 / 2.7)
+    (1, "?p=10"),   # 多位数分 P,同样不该被 P1 顶掉
+    (2, ""),        # 任务是 P2,查询无 ?p=(视为 P1)→ 未下载
+    (2, "?p=1"),
+    (2, "?p=2"),    # 同键 → 已下载
+    (3, "?p=3"),    # 同键 → 已下载
+    (3, "?p=2"),
+    (10, "?p=10"),  # 多位数同键 → 已下载
+])
+def test_is_downloaded_matches_dl_key_equality(task_page, url_suffix):
+    """遍历 (任务 page, URL 是否带 ?p=, URL 的 page) 的完整等价类:
+    is_downloaded 的结果必须恰好等于两侧 dl_key 的相等性。
+
+    Property 3: Bug Condition —— 已下载判定的粒度是 (bvid, page)。
+    Property 9: Preservation —— 单 P 与同分 P 的已下载判定。
+
+    这是 Property 3 / 9 的等价类遍历(项目不引入 PBT 框架,见 design.md
+    「Property-Based Tests」):键相等的组合必须判已下载(Preservation,含 3.12 的
+    「不带 ?p= 的单 P URL + 任务 page=1」与 3.13 的「(BV, 分P) 完全相同」),
+    键不等的组合必须判未下载(Fix Checking)。断言的右边直接由 extras.dl_key /
+    extras.page_from_url 算出 —— 判定与键规则由同一份实现驱动,任何一侧偷偷换
+    口径(例如任务侧改成解析 t["url"])都会在某个组合上露出来。
+
+    键规则(extras.DL_KEY_SEP / page_from_url / dl_key)由任务 9.1 引入;
+    在它落地前本用例的守卫断言先挂,失败信息即「键规则尚未引入」。
+    守卫写在**测试体内**(而不是模块顶层 import 具名函数),否则收集阶段
+    就 AttributeError,会把整个文件的其它用例一起带挂。
+
+    Validates: Requirements 2.6, 2.7, 3.12, 3.13
+    """
+    for name in ("dl_key", "page_from_url"):
+        assert hasattr(extras, name), (
+            f"extras.{name} 尚未引入(任务 9.1):已下载判定的键规则唯一来源缺失,"
+            "后端判定与前端集合会各写一份且不会报错")
+
+    bv = "BV1xx411c7mD"
+    url = f"https://www.bilibili.com/video/{bv}"
+    _mk_task("eq1", status="done", url=url, page=task_page)
+    try:
+        query = url + url_suffix
+        task_key = extras.dl_key(bv, task_page)
+        query_key = extras.dl_key(bv, extras.page_from_url(query))
+        expected = task_key == query_key
+        assert downloader.is_downloaded(query) is expected, (
+            f"任务键 {task_key} / 查询键 {query_key} → 期望 {expected};"
+            "is_downloaded 的判定必须与 dl_key 的相等性一致")
+    finally:
+        downloader._tasks.pop("eq1", None)
+
+
+# ---------- 已下载判定的保持基线(缺陷 B3 · Property 9) ----------
+#
+# 与上一节的分工:上一节(任务 7)锁的是「修好之后才成立」的行为,它们在未修复
+# 代码上是红的,因此当不了基线;而且等价类遍历依赖任务 9.1 才引入的 extras.dl_key,
+# 键规则落地前连守卫都过不去。下面这批相反 —— 它们在**未修复**代码上就全绿,
+# 记录的是 B3 修复**不许动**的那部分语义(3.12–3.15)。修复后必须逐条仍绿。
+#
+# 断言里刻意不出现 dl_key / page_from_url:基线要能在旧实现上独立成立,一旦引用
+# 新键规则就变成了「用新实现证明新实现」,失去保持测试的意义。
+
+# 非 done 的全部状态,直接从状态机的唯一来源取(taskstore.ACTIVE / TERMINAL),
+# 不在测试里抄一份字面量:将来新增状态会自动纳入覆盖。缺陷 B5 的根因正是「硬编码
+# 的终态副本漏了 interrupted」,测试自己再抄一份就是同一个坑。
+_NON_DONE_STATUSES = tuple(s for s in taskstore.ACTIVE + taskstore.TERMINAL
+                           if s != "done")
+
+
+def test_non_done_statuses_derived_from_state_machine():
+    """守卫:参数化用的状态集合真的是「状态机全集减去 done」。
+
+    parametrize 的参数列表若意外算成空,pytest 不报错、只会收集 0 个用例——
+    3.15 的覆盖就静悄悄消失了。这条守卫把那种失效变成显式失败,同时点名核对
+    3.15 列举的五类状态(排队 / 下载中 / 失败 / 取消 / 中断)确实都在集合里。
+
+    Validates: Requirements 3.15
+    """
+    assert "done" in taskstore.TERMINAL, "done 应是终态之一"
+    assert "done" not in _NON_DONE_STATUSES, "基线遍历的是 done 之外的状态"
+    assert set(_NON_DONE_STATUSES) == (
+        set(taskstore.ACTIVE + taskstore.TERMINAL) - {"done"}), \
+        "状态集合必须由 taskstore.ACTIVE / TERMINAL 推导,不得手写副本"
+    for s in ("queued", "downloading", "failed", "cancelled", "interrupted"):
+        assert s in _NON_DONE_STATUSES, f"3.15 点名的状态 {s} 未被覆盖"
+
+
+def test_is_downloaded_single_page_url_preserved():
+    """3.12 保持基线:不带 `?p=` 的单 P URL,其 BV 已有 done 任务 → 仍判已下载。
+
+    Property 9: Preservation —— 单 P 与同分 P 的已下载判定。
+
+    这是「已下载」判定覆盖面最大的一条:绝大多数视频是单 P,列表页给出的 URL
+    不带 `?p=`,任务表里对应的 `page` 就是 1。B3 的修复给判定加了 page 维度,
+    最容易踩的坑是把「无 `?p=`」当成「分 P 未知」而判未下载 —— 那会让所有单 P
+    视频的角标一夜消失、批量下载重复入队。归一规则必须是「无 `?p=` 即 P1」,
+    与任务侧 page 缺省 1 对齐,两边落到同一个键。
+
+    带尾斜杠、带其它查询参数(无 `p=`)是列表页真实产出的 URL 形态,一并锁住。
+
+    Validates: Requirements 3.12, 3.13
+    """
+    url = "https://www.bilibili.com/video/BV1xx411c7mD"
+    _mk_task("pv1", status="done", url=url, page=1)
+    try:
+        assert downloader.is_downloaded(url) is True, "无 ?p= 的单 P URL 应视为 P1(3.12)"
+        assert downloader.is_downloaded(url + "/") is True, "尾斜杠形态同样命中"
+        assert downloader.is_downloaded(url + "?spm_id_from=333.999") is True, \
+            "带其它查询参数但无 p= → 仍是 P1,不得因为「有查询串」就判未下载"
+        assert downloader.is_downloaded(url + "?p=1") is True, \
+            "显式 ?p=1 与任务 page=1 是同一分 P(3.13)"
+    finally:
+        downloader._tasks.pop("pv1", None)
+
+
+@pytest.mark.parametrize("task_url_has_page", [False, True])
+@pytest.mark.parametrize("page", [1, 3, 12])
+def test_is_downloaded_same_page_preserved(task_url_has_page, page):
+    """3.13 保持基线:(BV 号, 分 P) 与某个 done 任务完全相同 → 仍判已下载。
+
+    Property 9: Preservation —— 单 P 与同分 P 的已下载判定。
+
+    任务表里 `url` 有两种真实形态,判定对两者都必须成立:
+      - 不带 `?p=`:`start_download(url, label, page=N)` 存的是用户粘贴的原始
+        链接,分 P 只体现在 `page` 字段;
+      - 带 `?p=N`:`start_batch` 存的是 `resolve_playlist` 产出的条目 URL,
+        `page` 与 URL 里的序号一致。
+    参数化把两种形态 × 单 P / 多 P / 多位数分 P 全跑一遍,任务侧无论从哪儿取
+    page,同分 P 的查询都必须判已下载 —— 这条一挂就说明修复把「已经下过的那一 P」
+    也判成了未下载,用户会重复下载同一个文件。
+
+    Validates: Requirements 3.13
+    """
+    bv = "BV1xx411c7mD"
+    base = f"https://www.bilibili.com/video/{bv}"
+    task_url = f"{base}?p={page}" if task_url_has_page else base
+    _mk_task("sp1", status="done", url=task_url, page=page)
+    try:
+        assert downloader.is_downloaded(f"{base}?p={page}") is True, \
+            f"任务 (BV, P{page}) 已完成,查询同一分 P 必须判已下载(任务 url={task_url})"
+    finally:
+        downloader._tasks.pop("sp1", None)
+
+
+@pytest.mark.parametrize("query", [
+    "https://b23.tv/abc123",                    # 短链未展开(项目不做展开,原样入库)
+    "https://b23.tv/x",
+    "https://www.bilibili.com/video/av170001",  # 老 av 号
+    "https://www.bilibili.com/video/AV170001",
+    "https://example.com/nothing",              # 压根不是 B 站链接
+    "",
+    None,                                       # 调用方可能传 t.get("url")
+])
+def test_is_downloaded_without_bvid_preserved(query):
+    """3.14 保持基线:URL 里提取不到 BV(短链 / av 号)→ 判未下载,且不抛异常。
+
+    Property 9: Preservation —— 单 P 与同分 P 的已下载判定。
+
+    既有 tests/test_extras.py::test_bvid_from_url 只测了 `bvid_from_url` 本身
+    返回 None,没有任何用例验过 `is_downloaded` 在这种输入下的行为 —— 3.14 此前
+    是纯盲区。这里补上,并特意让任务表里**存在**一条正常的 done 任务:判定必须
+    因为「查询侧取不到 BV」而返回 False,不能因为「表里有 done 任务」就误判已下载,
+    也不能因为 BV 为 None 就在拼键 / 比较时炸掉(短链是用户最常粘贴的形态,
+    一炸就是整个列表页角标渲染失败)。
+
+    Validates: Requirements 3.14
+    """
+    _mk_task("nb1", status="done",
+             url="https://www.bilibili.com/video/BV1xx411c7mD", page=1)
+    try:
+        assert downloader.is_downloaded(query) is False, \
+            f"{query!r} 取不到 BV,应判未下载(且不得抛异常)"
+    finally:
+        downloader._tasks.pop("nb1", None)
+
+
+def test_is_downloaded_task_without_bvid_never_matches():
+    """3.14 的镜像面:done 任务的 url 取不到 BV 时,它不归属任何 BV。
+
+    Property 9: Preservation —— 单 P 与同分 P 的已下载判定。
+
+    这是真实场景:用户粘贴 b23.tv 短链下载,任务表里存的就是那条短链(项目不做
+    短链展开)。这样一条 done 任务不能被算到任意一个 BV 头上 —— 否则「有过一次
+    短链下载」就会把别的视频标成已下载。未修复实现靠 `bvid_from_url(t["url"])`
+    返回 None 与查询 BV 不相等来排除它,修复后同样必须排除。
+
+    Validates: Requirements 3.14
+    """
+    _mk_task("tb1", status="done", url="https://b23.tv/abc123", page=1)
+    try:
+        assert downloader.is_downloaded(
+            "https://www.bilibili.com/video/BV1xx411c7mD") is False, \
+            "任务 url 取不到 BV → 不归属任何 BV,不得把别的视频标成已下载"
+    finally:
+        downloader._tasks.pop("tb1", None)
+
+
+@pytest.mark.parametrize("status", _NON_DONE_STATUSES)
+def test_is_downloaded_non_done_status_preserved(status):
+    """3.15 保持基线:只有 done 才算已下载,其余状态一概不计入。
+
+    Property 9: Preservation —— 单 P 与同分 P 的已下载判定。
+
+    既有 test_is_downloaded 只造过一条 `downloading` 任务(且那条断言在未修复
+    代码上根本执行不到 —— 测试在它前面的 `?p=3` Fix Checking 断言处就挂了),
+    `queued` / `merging` / `cancelling` / `retrying` / `failed` / `cancelled` /
+    `interrupted` 全无覆盖。状态从 taskstore.ACTIVE / TERMINAL 推导,将来新增
+    状态自动纳入。
+
+    每个状态先断言未下载,再把**同一条任务**改成 done 断言已下载:这个翻转是防
+    「假绿」的锚点 —— 只断言 False 的话,URL 写错、BV 拼错、任务没进表都会让它
+    照样通过,反而把 3.15 的覆盖变成空气。
+
+    Validates: Requirements 3.15
+    """
+    url = "https://www.bilibili.com/video/BV1xx411c7mD"
+    _mk_task("ns1", status=status, url=url, page=1)
+    try:
+        assert downloader.is_downloaded(url) is False, \
+            f"{status} 不是完成态,不得计入已下载(3.15)"
+        downloader._tasks["ns1"]["status"] = "done"
+        assert downloader.is_downloaded(url) is True, \
+            "同一条任务改成 done 后必须判已下载 —— 否则上一条 False 是假绿"
+    finally:
+        downloader._tasks.pop("ns1", None)
+
+
+# ---------- 终态任务不可被拉回活跃态(缺陷 B5 · Property 5) ----------
+#
+# B5 的完整后果链 —— 这一节每条断言都盯着链上的一环:
+#
+#   1. 服务重启 → `_load_persisted()` 把上次进程被杀时仍处于活跃态的任务统一
+#      标记为 `interrupted`(这是正常语义,不是缺陷)。
+#   2. 对这条 `interrupted` 任务调 `/api/cancel/<id>`。任务卡因 `interrupted ∉
+#      TASK_ACTIVE` 不显示「取消」按钮,但接口本身可达:SSE 重连、脚本、旧页面
+#      缓存都能打到它。
+#   3. `cancel_download` 的硬编码终态副本 `("done", "failed", "cancelled")` 漏了
+#      `interrupted`,于是判它「还没结束」→ 置 `cancel` 标志、状态改成 `cancelling`。
+#   4. `cancelling ∈ ACTIVE`,可是此刻压根没有下载线程在跑,没有任何人会来收尾
+#      → **永久僵尸态**。
+#   5. 僵尸态同时引爆两个下游后果(需求 1.12):
+#        a. `find_active_by_url` 认为同 URL + 清晰度 + 分 P「正在下载中」→ 新的
+#           下载请求被 409 拦截,这个视频从此下不了;
+#        b. `clear_tasks` 只清 `status not in _ACTIVE` 的记录 → 这条记录也删不掉。
+#      用户既下不了这个视频、也删不掉这条记录,唯一出路是手改 data/tasks.json。
+#
+# 根因与 v2.1 修过的那批完全同源:状态集合有硬编码副本。当时收敛了三处**活跃态**
+# 副本(都漏 `retrying`),`downloader.py` 里两处**终态**副本没被纳入排查范围。
+#
+# 全状态遍历用的集合从 taskstore.ACTIVE / TERMINAL 推导(与上面 _NON_DONE_STATUSES
+# 同一条纪律):测试自己抄一份字面量,等于把 B5 的根因原封不动搬进测试里。
+_ALL_STATUSES = tuple(taskstore.ACTIVE) + tuple(taskstore.TERMINAL)
+
+# 旧硬编码副本的历史原文。这一份**故意不从 TERMINAL 推导** —— 它记录的是「当年
+# 写下的那三个字面量」这一历史事实,推导反而会让下面的守卫自我印证、失去意义。
+# 守卫负责把它与当前 TERMINAL 绑起来(差集必须恰好是 interrupted)。
+_LEGACY_TERMINAL = ("done", "failed", "cancelled")
+
+
+def _string_collection_lines(src: str, values) -> list[int]:
+    """AST 扫描:返回源码里「元素全为字符串、取值集合恰等于 values」的字面量行号。
+
+    不用 `in` 做字符串包含判断,原因有两条:
+    - 逗号后空格、单双引号、末尾多余逗号、写成 list/set —— 同一份硬编码副本有
+      多种写法,字符串匹配只能抓到一种;
+    - 修复后的 docstring 会引用旧写法来解释缺陷(design.md 的 Fix Implementation
+      就这么写的),字符串匹配会把那段说明误判成第三份副本。
+    AST 只看真正会被执行的字面量,两个问题一并消掉。
+    """
+    want = set(values)
+    lines = []
+    for node in ast.walk(ast.parse(src)):
+        if not isinstance(node, (ast.Tuple, ast.List, ast.Set)):
+            continue
+        strs = [e.value for e in node.elts
+                if isinstance(e, ast.Constant) and isinstance(e.value, str)]
+        if len(strs) == len(node.elts) and set(strs) == want:
+            lines.append(node.lineno)
+    return lines
+
+
+def test_all_statuses_derived_from_state_machine():
+    """守卫:全状态遍历的集合真是 ACTIVE ∪ TERMINAL,且旧副本的差集恰是 interrupted。
+
+    parametrize 的参数列表若意外算成空,pytest 不报错、只收集 0 个用例 —— Property 5
+    的穷举覆盖就静悄悄消失了。这条守卫把那种失效变成显式失败。
+
+    后半段把 `_LEGACY_TERMINAL`(旧硬编码副本的历史原文)与当前 `taskstore.TERMINAL`
+    绑起来,等价于把 `isBugCondition_B5` 写成可执行断言:差集恰好是 `interrupted`,
+    也就是「旧副本漏掉的那一个状态」。将来给 TERMINAL 加了新终态而没同步收敛,这条
+    会立刻报出来。
+
+    Validates: Requirements 2.11, 2.12
+    """
+    assert _ALL_STATUSES, "状态全集为空:遍历会收集 0 个用例,覆盖形同虚设"
+    assert set(_ALL_STATUSES) == set(taskstore.ACTIVE) | set(taskstore.TERMINAL), \
+        "状态全集必须由 taskstore.ACTIVE / TERMINAL 推导,不得手写副本"
+    assert len(_ALL_STATUSES) == len(set(_ALL_STATUSES)), \
+        f"活跃态与终态不得重叠:{sorted(set(taskstore.ACTIVE) & set(taskstore.TERMINAL))}"
+
+    assert set(_LEGACY_TERMINAL) < set(taskstore.TERMINAL), \
+        "旧硬编码副本应是 TERMINAL 的真子集(这正是它「漏了一个」的含义)"
+    assert set(taskstore.TERMINAL) - set(_LEGACY_TERMINAL) == {"interrupted"}, \
+        ("isBugCondition_B5 的输入域应恰为 {'interrupted'};若不是,说明 TERMINAL "
+         "又加了新终态,两处硬编码副本会再漏一次")
+
+
+def test_cancel_rejects_terminal_states():
+    """已处于终态的任务,取消必须被拒且状态一字不变 —— 含 `interrupted`。
+
+    Property 5: Bug Condition —— 终态任务不可被拉回活跃态。
+
+    对应 `isBugCondition_B5`:状态 ∈ TERMINAL 但 ∉ 旧硬编码副本
+    `("done", "failed", "cancelled")`,也就是 `interrupted`。
+
+    未修复现场(downloader.py:379,cancel_download):
+        if not t or t["status"] in ("done", "failed", "cancelled"):
+            return False
+    `interrupted` 不在这个三元组里 → 判它「还没结束」→ 置 `cancel`、改成
+    `cancelling` 并返回 True。**反例即 interrupted 那一轮**:未修复时返回 `True`、
+    状态变成 `cancelling`,而没有任何下载线程会来收尾(`interrupted` 是重启后的
+    历史记录,对应线程早就没了)→ 永久僵尸态。
+
+    `done` / `failed` / `cancelled` 三轮在未修复代码上就是绿的,它们是需求 3.22 的
+    保持基线,修复后必须逐条仍绿。状态集合直接取 `taskstore.TERMINAL`,新增终态
+    自动纳入覆盖。
+
+    顺带断言 `cancel` 标志未被置位:光看 `status` 不够 —— 标志一旦置上,后续任何
+    走到 `_progress_hook` / `_run_download` 的路径都会把这条任务当「用户已取消」。
+
+    Validates: Requirements 2.11, 2.12, 3.22
+    """
+    assert "interrupted" in taskstore.TERMINAL, \
+        "interrupted 必须是终态之一,否则本用例没在测 B5"
+    ids = {s: f"ct_{s}" for s in taskstore.TERMINAL}
+    try:
+        for status, tid in ids.items():
+            _mk_task(tid, status=status)
+        for status, tid in ids.items():
+            assert downloader.cancel_download(tid) is False, \
+                (f"{status} 已是终态,取消必须返回 False"
+                 f"{'(未修复时返回 True —— B5 的反例)' if status == 'interrupted' else ''}")
+            assert downloader._tasks[tid]["status"] == status, \
+                (f"{status} 的状态被取消操作改写成 "
+                 f"{downloader._tasks[tid]['status']!r} —— 终态任务不得被拉回活跃态")
+            assert downloader._tasks[tid]["cancel"] is False, \
+                f"{status} 已是终态,不该被置 cancel 标志"
+    finally:
+        for tid in ids.values():
+            downloader._tasks.pop(tid, None)
+
+
+def test_interrupted_task_not_blocking_and_clearable():
+    """`interrupted` 任务:取消被拒之后,既不拦截同 URL 新下载,也能被清除。
+
+    Property 5: Bug Condition —— 终态任务不可被拉回活跃态。
+
+    这条走的是需求 2.12 的**完整后果链**,不是只看 `cancel_download` 的返回值:
+    取消前 `interrupted ∉ ACTIVE`,拦截与清除本来就把它当已结束(那是既有的正确
+    行为,先断言下来当锚点);一旦 `cancel_download` 把它改成 `cancelling`(活跃态),
+    同一份数据上两处判断立刻反转 —— 这才是用户真正踩到的坑(需求 1.12)。
+
+    未修复时的反例链:
+        cancel_download("zb1") → True,状态 interrupted → cancelling
+        → find_active_by_url(url, label, page) 返回 "zb1"(而不是 None)
+          → /api/download 同 URL + 清晰度 + 分 P 被 409 拦截,视频从此下不了
+        → clear_tasks(delete_file=False) 返回 0(而不是 1)
+          → 「清除全部记录」把它当活跃任务跳过,这条记录也删不掉
+    第一条断言就会挂在 `find_active_by_url` 上。
+
+    隔离说明:`clear_tasks` 会遍历整张 `_tasks` 表并删掉所有非活跃记录。
+    tests/conftest.py 的 autouse fixture 给每个用例一张干净的任务表(结束后原样
+    还回去),`_persist()` 落盘也被重定向到 tmp_path —— 所以这里的 `== 1` 是精确的,
+    也不会碰到用户真实的下载史。
+
+    Validates: Requirements 2.11, 2.12
+    """
+    url = "https://www.bilibili.com/video/BV1xx411c7mD"
+    label, page = "1080P 高码率", 2
+    _mk_task("zb1", status="interrupted", url=url, label=label, page=page,
+             error="服务重启,任务中断")
+    try:
+        # 锚点:取消之前,两处判断本来就把 interrupted 当已结束
+        assert downloader.find_active_by_url(url, label, page) is None, \
+            "interrupted ∉ ACTIVE,取消前就不该拦截 —— 这条挂说明前提假设已变"
+
+        # 2.11:取消必须被拒,状态保持 interrupted
+        assert downloader.cancel_download("zb1") is False, \
+            "interrupted 已是终态,取消必须被拒(未修复时返回 True —— B5 的反例)"
+        assert downloader._tasks["zb1"]["status"] == "interrupted", \
+            (f"状态被改成 {downloader._tasks['zb1']['status']!r};"
+             "未修复时是 cancelling —— 活跃态却无人收尾,即永久僵尸态")
+
+        # 2.12 后果 a:不拦截同 URL + 清晰度 + 分 P 的新下载
+        assert downloader.find_active_by_url(url, label, page) is None, \
+            "僵尸 cancelling 任务把同 URL 的新下载 409 拦掉了(1.12)"
+
+        # 2.12 后果 b:记录可被「清除全部记录」清掉
+        assert downloader.clear_tasks(delete_file=False) == 1, \
+            "僵尸 cancelling 任务被当成活跃任务,清除全部记录清不掉它(1.12)"
+        assert "zb1" not in downloader._tasks, "记录应已从任务表移除"
+    finally:
+        downloader._tasks.pop("zb1", None)
+
+
+@pytest.mark.parametrize("status", _ALL_STATUSES)
+def test_cancel_result_matches_terminal_membership(status):
+    """遍历 ACTIVE ∪ TERMINAL 的每个状态:`cancel_download` 的返回值必须恰好等于
+    `status not in TERMINAL`,且终态任务的状态不被改写。
+
+    Property 5: Bug Condition —— 终态任务不可被拉回活跃态。
+    Property 11: Preservation —— 活跃态与其余终态的取消语义。
+
+    这是 Property 5 + 11 的**穷举形式**(项目不引入 PBT 框架,见 design.md
+    「Property-Based Tests」:B5 的输入域就是状态机的有限全集,遍历即穷举,比随机
+    生成更强)。期望值不写死,而是由 `taskstore.TERMINAL` 现算 —— 判定与状态机由
+    同一份唯一来源驱动,将来新增状态会自动被覆盖,不需要回来补用例。
+
+    分支断言:
+    - 终态(`done` / `failed` / `cancelled` / `interrupted`):返回 False、`status`
+      一字不变、`cancel` 标志不置位。`interrupted` 这一轮在未修复代码上是红的
+      (返回 True 且状态变 `cancelling`),就是 B5 的反例;其余三轮是 3.22 的基线。
+    - 活跃态(`queued` / `downloading` / `merging` / `cancelling` / `retrying`):
+      返回 True、状态变 `cancelling`、`cancel` 置位,由下载线程收尾为 `cancelled`
+      (3.21)。这五轮在未修复代码上全绿,修复后必须逐条仍绿 —— 万一把判断写成
+      `not in ACTIVE` 之类的反向条件,这五轮会集体报警。
+
+    Validates: Requirements 2.11, 2.12, 3.21, 3.22
+    """
+    t = _mk_task("sw1", status=status)
+    try:
+        terminal = status in taskstore.TERMINAL
+        assert downloader.cancel_download("sw1") is (not terminal), \
+            (f"{status}:取消返回值应为 {not terminal}"
+             f"({'终态须拒绝' if terminal else '活跃态须接受'})")
+        if terminal:
+            assert t["status"] == status, \
+                f"{status} 被取消操作改写成 {t['status']!r} —— 终态不得被拉回活跃态"
+            assert t["cancel"] is False, f"{status} 已终结,不该被置 cancel 标志"
+        else:
+            assert t["status"] == "cancelling", \
+                f"{status} 取消后应置 cancelling,实际 {t['status']!r}"
+            assert t["cancel"] is True, f"{status} 取消后应置 cancel 标志(3.21)"
+    finally:
+        downloader._tasks.pop("sw1", None)
+
+
+def test_terminal_checks_use_single_source():
+    """单一来源纪律:`downloader.py` 不得再有硬编码终态副本,两处判断都走 TERMINAL。
+
+    Property 5: Bug Condition —— 终态任务不可被拉回活跃态。
+
+    行为断言(上面三条)证明「现在是对的」,这条证明「不会再错第二次」:B5 的根因
+    不是某个 `if` 写错,而是**终态集合有第二、第三份手写副本**。v2.1 收敛活跃态副本
+    时正是因为只盯着行为、没锁住来源,才留下 downloader.py 里这两处终态副本
+    (`_finalize_cancelled` / `cancel_download` 各一份,都漏 `interrupted`)。
+    只要副本还在,下次给 TERMINAL 加终态就会再漏一次,而且不会有任何报错。
+
+    断言写法的选择(先 grep 过现场):字面元组 `("done", "failed", "cancelled")` 在
+    `downloader.py` 里恰好出现 2 次,全在这两个目标函数内 —— 因此断言范围取
+    **整个文件**而不是只取这两个函数的源码,这样第三处副本(比如将来在
+    `_run_download` 里新加一处)也会被抓到。判定用 AST 而不是字符串包含,理由见
+    `_string_collection_lines`;顺带避开了 `_run_download` 里那行
+    `t["status"] = "cancelled" if t.get("cancel") else "done"` —— 它是三元表达式,
+    不是元组字面量,不该被误伤。
+
+    Validates: Requirements 2.11, 2.12
+    """
+    path = Path(inspect.getsourcefile(downloader))
+    hits = _string_collection_lines(path.read_text(encoding="utf-8"), _LEGACY_TERMINAL)
+    assert not hits, (
+        f"{path.name} 仍有硬编码终态副本(行 {hits}):"
+        f"{_LEGACY_TERMINAL} 漏了 {sorted(set(taskstore.TERMINAL) - set(_LEGACY_TERMINAL))};"
+        "应改用 taskstore.TERMINAL 唯一来源")
+
+    for fn in (downloader.cancel_download, downloader._finalize_cancelled):
+        src = inspect.getsource(fn)
+        assert "TERMINAL" in src, \
+            f"{fn.__name__} 的终态判断应复用 taskstore.TERMINAL,不要手写状态列表"
+
+
+# ---------- 取消语义的保持基线(缺陷 B5 · Property 11) ----------
+#
+# 与上一节的分工:上一节(任务 13)锁的是「修好之后才成立」的行为 —— 它包含
+# `interrupted` 那一轮,在未修复代码上是红的,因此当不了基线。下面这批相反:
+# 它们在**未修复**代码上就全绿,记录的是 B5 修复**不许动**的那部分语义
+# (3.21–3.23 的非缺陷输入面)。`("done","failed","cancelled")` 是 TERMINAL 的
+# 真子集,唯一差集是 `interrupted`,所以这些输入的新旧结果必然逐位相同。
+#
+# 3.21–3.24 在本文件里的覆盖归属(核对过,避免重复造第二份断言):
+#
+#   3.21 活跃态取消 → cancelling,并由下载线程收尾为 cancelled
+#        前半句:test_cancel_result_matches_terminal_membership 的 5 个活跃态轮次
+#        后半句:**此前无覆盖** → test_cancel_preserves_active_states(本节新增,
+#                把 cancel_download → _finalize_cancelled 的完整转移链跑通)
+#   3.22 done / failed / cancelled 取消 → False 且状态不变
+#        test_cancel_result_matches_terminal_membership 的 3 个终态轮次(已绿)
+#        + test_cancel_rejects_terminal_states 的同名三轮(该用例整体因
+#        interrupted 轮次为红,故只把参数化那三条当基线)
+#   3.23 收尾时只在尚未终结时才落为 cancelled,已终结状态不被覆盖
+#        **此前无任何行为测试**(`_finalize_cancelled` 全项目零直接覆盖,只有
+#        test_terminal_checks_use_single_source 从来源侧静态锁过它)→ 本节新增
+#        test_finalize_cancelled_preserves_other_terminal_states(不覆盖面)
+#        与 test_cancel_preserves_active_states(该覆盖面)
+#   3.24 前端状态列表与后端活跃态集合一致
+#        test_task_state_sets_single_source(已绿)。本次 B5 只改 downloader.py 的
+#        两处终态判断,不碰前端、不改 taskstore.ACTIVE / TERMINAL 的取值,
+#        故该用例不受影响,无需新增。
+#
+# 3.23 的两面必须分清(design.md「B5 → 需求 3.23 一致性确认」):
+#   - 对 `done` / `failed` / `cancelled` 不覆盖 = **Preservation**,未修复代码上就绿
+#     → 本节锁住。
+#   - 对 `interrupted` 不覆盖 = **Fix Checking**,未修复代码上是红的:旧三元组
+#     `("done","failed","cancelled")` 不含 interrupted,会把一个已终结的
+#     `interrupted` 覆盖成 `cancelled` —— 旧写法反而违反 3.23。
+#     这一面**不在本节**:design.md 已论证该分支运行时不可达(`interrupted` 只由
+#     `_load_persisted()` 在启动时写入,此时无对应下载线程;修复后 cancel_download
+#     也不再给它置 cancel 标志),改动在行为上等价,价值是消灭第二份硬编码副本 ——
+#     属于来源侧的事,已由任务 13 的 test_terminal_checks_use_single_source 锁住
+#     (它断言 downloader.py 无 legacy 三元组、且 _finalize_cancelled 源码出现
+#     TERMINAL),15.1 之后自然转绿。
+
+
+def test_active_statuses_cover_requirement_3_21():
+    """守卫:参数化用的活跃态集合非空,且 3.21 点名的四个状态确实都在里面。
+
+    parametrize 的参数列表若意外算成空,pytest 不报错、只收集 0 个用例 —— 3.21 的
+    覆盖就静悄悄消失了。这条把那种失效变成显式失败(与本文件既有的两条守卫
+    test_non_done_statuses_derived_from_state_machine /
+    test_all_statuses_derived_from_state_machine 同一模式)。
+
+    下面的用例直接遍历 `taskstore.ACTIVE`(5 个)而不是抄 3.21 字面列举的 4 个:
+    单一来源纪律 —— B5 的根因正是「状态集合有手写副本」,测试自己再抄一份就是同一个
+    坑。多出来的那个是 `cancelling`(对已在取消中的任务重复点取消),它的语义与其余
+    活跃态一致(幂等:仍返回 True、仍是 cancelling、标志仍置位),纳入覆盖是加强。
+
+    Validates: Requirements 3.21
+    """
+    assert taskstore.ACTIVE, "活跃态集合为空:遍历会收集 0 个用例,覆盖形同虚设"
+    for s in ("queued", "downloading", "merging", "retrying"):
+        assert s in taskstore.ACTIVE, f"3.21 点名的状态 {s} 不在 taskstore.ACTIVE 里"
+    assert "cancelling" in taskstore.ACTIVE, \
+        "cancelling 应是活跃态(它是取消流程的中间态,由下载线程收尾)"
+
+
+@pytest.mark.parametrize("status", tuple(taskstore.ACTIVE))
+def test_cancel_preserves_active_states(status):
+    """活跃态任务的取消语义:置 `cancelling` + 标志,再由收尾落为 `cancelled`。
+
+    Property 11: Preservation —— 活跃态与其余终态的取消语义。
+
+    这条走的是 3.21 的**完整两句**,而不是只看 `cancel_download` 的返回值:
+
+        cancel_download  → 返回 True、status = cancelling、cancel = True
+        _finalize_cancelled → status = cancelled
+
+    第二句(「并由下载线程收尾为 `cancelled`」)此前无任何覆盖:
+    `test_cancel_result_matches_terminal_membership` 停在 `cancelling`,
+    `test_run_download_cancel_mid_attempt` 走的是进度 hook 抛
+    `DownloadCancelled` 那条路径,而 `_finalize_cancelled`(取消发生在下载回调
+    **之外**时的兜底,`_run_download` 里有三处调用)整个项目零直接测试。B5 要改的
+    正是它的终态判断,改之前必须先把它现在的正确行为钉下来。
+
+    为什么这条在未修复代码上就绿:活跃态五个状态都不在旧硬编码三元组
+    `("done","failed","cancelled")` 里,也都不在 `TERMINAL` 里 —— 两套判断对它们
+    给出完全相同的答案。修复后必须逐条仍绿;万一把条件写反(比如
+    `not in ACTIVE`),这五轮会集体报警。
+
+    `cancel` 标志单独断言:光看 status 不够 —— 标志不置位的话,正在跑的 yt-dlp
+    线程不会在下个分片边界停下,任务会一路下载完成,「取消」变成了空操作。
+
+    Validates: Requirements 3.21, 3.23
+    """
+    t = _mk_task("pa1", status=status)
+    try:
+        assert downloader.cancel_download("pa1") is True, \
+            f"{status} 是活跃态,取消必须被接受(3.21)"
+        assert t["status"] == "cancelling", \
+            f"{status} 取消后应置 cancelling,实际 {t['status']!r}"
+        assert t["cancel"] is True, \
+            f"{status} 取消后必须置 cancel 标志,否则 yt-dlp 线程不会停(3.21)"
+
+        # 3.21 后半句 / 3.23 的该覆盖面:尚未终结 → 收尾落为 cancelled
+        downloader._finalize_cancelled("pa1")
+        assert t["status"] == "cancelled", \
+            (f"{status} 经取消 → 收尾后应为 cancelled,实际 {t['status']!r};"
+             "这一步不落地,任务会永久停在 cancelling(活跃态)成僵尸")
+        assert "finished_at" not in t, "取消的任务不应像完成一样记录 finished_at"
+    finally:
+        downloader._tasks.pop("pa1", None)
+
+
+@pytest.mark.parametrize("status", _LEGACY_TERMINAL)
+def test_finalize_cancelled_preserves_other_terminal_states(status):
+    """收尾不得覆盖已终结的任务状态 —— `done` / `failed` / `cancelled` 一字不变。
+
+    Property 11: Preservation —— 活跃态与其余终态的取消语义。
+
+    3.23 的**不覆盖面**。真实场景:下载已经成功落为 `done`(或已 `failed`)之后,
+    `_run_download` 的收尾路径或迟到的取消请求又调了一次 `_finalize_cancelled` ——
+    它必须认出这条任务已经结束,不能把一个成功的下载改写成「已取消」。用户看到的
+    差别是:记录页上一条明明下载好了的视频显示成已取消,而文件其实在磁盘上。
+
+    参数化只遍历 `_LEGACY_TERMINAL`(旧硬编码副本的历史原文,= TERMINAL 减去
+    `interrupted`),**这是刻意的**,不是漏了一个:
+      - 这三个状态在旧三元组与 `TERMINAL` 里都在 → 新旧行为逐位相同 → Preservation,
+        未修复代码上就该绿(本用例);
+      - `interrupted` 只在 `TERMINAL` 里 → 未修复代码会把它覆盖成 `cancelled`
+        (违反 3.23)→ 那是 **Fix Checking**,未修复代码上必红,归属见本节顶部注释。
+    把两面混进同一个用例会让它整体变红,基线就没了 —— 这正是
+    `test_cancel_rejects_terminal_states` 现在的处境。
+
+    末尾的翻转是防「假绿」的锚点:只断言「状态没变」的话,任务没进表、task_id 拼错、
+    `_finalize_cancelled` 整个是空实现,都会让它照样通过。把同一条任务改成活跃态后
+    再调一次,必须变成 `cancelled` —— 证明这个函数真的会写状态,前面那条「没变」
+    才有意义。
+
+    Validates: Requirements 3.22, 3.23
+    """
+    assert status in taskstore.TERMINAL, f"{status} 应是终态之一,否则本用例没在测 3.23"
+    t = _mk_task("fz1", status=status)
+    try:
+        downloader._finalize_cancelled("fz1")
+        assert t["status"] == status, \
+            (f"{status} 已终结,收尾不得把它改写成 {t['status']!r} —— "
+             "已终结的任务状态不被覆盖(3.23)")
+
+        # 翻转锚点:同一条任务改成活跃态后,收尾必须真的写状态
+        t["status"] = "cancelling"
+        downloader._finalize_cancelled("fz1")
+        assert t["status"] == "cancelled", \
+            "改成活跃态后收尾仍未落为 cancelled —— 上一条「状态没变」是假绿"
+    finally:
+        downloader._tasks.pop("fz1", None)
+
+
+def test_finalize_cancelled_tolerates_missing_task():
+    """收尾一条已被删除的任务:静默返回,不抛异常。
+
+    Property 11: Preservation —— 活跃态与其余终态的取消语义。
+
+    `_run_download` 里有三处调用 `_finalize_cancelled`,都在锁外;这期间用户完全
+    可能点了「删除任务」把记录从 `_tasks` 里摘掉(`_progress_hook` 正是靠「任务
+    记录不存在」来中止孤儿下载的,见 test_progress_hook_raises_when_task_deleted)。
+    此时收尾拿到的是 `None`,必须走 `if t and ...` 的短路而不是 KeyError ——
+    一旦抛异常,下载线程会带着未清理的状态退出。
+
+    这条与 B5 的判断条件无关(`t` 为 None 时压根不比状态),因此修复前后都绿;
+    锁下来是因为 `if t and t["status"] not in (...)` 这个 `t and` 短路很容易在
+    改写终态判断时被顺手弄掉。
+
+    Validates: Requirements 3.23
+    """
+    assert "ghost_fz" not in downloader._tasks
+    downloader._finalize_cancelled("ghost_fz")  # 不抛异常即通过
+    assert "ghost_fz" not in downloader._tasks, "收尾不得为不存在的任务凭空建记录"
 
 
 def _reset_dl_config(monkeypatch):

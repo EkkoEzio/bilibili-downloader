@@ -344,7 +344,24 @@ def up_list_reset_seen():
 @app.route("/api/up-list/check", methods=["POST"])
 def up_list_check():
     """手动触发一轮检查(与后台自动下载同一逻辑):清单 UP 的新投稿直接入队下载。
-    串行 + UP 间隔,耗时数十秒,放后台线程跑,前端靠队列轮询看结果。"""
+    串行 + UP 间隔,耗时数十秒,放后台线程跑,前端靠队列轮询看结果。
+
+    已有一轮在跑时如实回报 started=False(需求 2.10):不排队、不发 B 站请求、
+    连线程都不起,前端据此提示,不再用固定 30 秒的假禁用窗口装样子。
+    `ok` 仍为 True —— 「已有检查在进行中」不是错误,是如实告知。
+
+    接受的乐观回报竞态:`is_running()` 与 `Thread.start()` 之间有一个极窄窗口,
+    两个并发请求可能都读到 False 并各起一个线程,于是响应乐观地报 started=True
+    而实际那一轮被跳过。这个代价是有意接受的 —— `refresh_once` 的非阻塞获取
+    保证后到的线程立即返回 0,**绝不并发、绝不排队**,风控真正需要的不变量在
+    任何情况下都成立;窗口内失准的只是一句响应文案。要让响应严格一致,得改成
+    「请求线程 try-acquire、worker 在 finally 释放」的跨线程持锁方案,锁的所有权
+    跨线程会让生命周期难以推理,不值得为一句文案付这个代价。
+    """
+    if auto_refresh.is_running():
+        return jsonify({"ok": True, "started": False,
+                        "message": "已有检查在进行中,本次未启动新一轮"})
+
     def _run():
         try:
             n = auto_refresh.refresh_once()
@@ -352,7 +369,7 @@ def up_list_check():
         except Exception:
             log.exception("手动检查异常")
     threading.Thread(target=_run, daemon=True, name="bd-manual-check").start()
-    return jsonify({"ok": True})
+    return jsonify({"ok": True, "started": True, "message": "已在后台开始检查"})
 
 
 # ---------- A4: 收藏夹浏览 ----------

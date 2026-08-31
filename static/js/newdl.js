@@ -1,6 +1,6 @@
 /* 新建下载抽屉:单视频/批量自动判断、多 P 选择清晰度、批量勾选下载。 */
 import { postJSON } from './net.js';
-import { escapeHtml, formatDuration } from './util.js';
+import { escapeHtml, formatDuration, pageFromUrl } from './util.js';
 import { goPage, isUrlDownloaded } from './lib.js';
 import { closeDrawer } from './drawer.js';
 import { subscribeProgress } from './pages/downloads.js';
@@ -213,7 +213,17 @@ export async function batchDownload() {
   let items = checked.map(cb => {
     const idx = parseInt(cb.dataset.bidx);
     const it = _batchItems[idx];
-    return { url: it.url, title: it.title, page: it.url.includes('?p=') ? parseInt(it.url.split('?p=')[1]) : 1,
+    /* 分 P 走 util.pageFromUrl(键规则的唯一来源),不在这里手写第二种解析:
+       /api/batch/parse 的条目只有 URL(没有 page 字段),查询侧只能从 URL 解析。
+       曾经的手写版把分 P 当「问号紧跟 p=」的子串来匹配,与唯一来源的
+       [?&]p= 正则结论不同,且两种都不报错:
+         - p 不在首位时(如 ...?spm_id_from=333.999&p=2)子串匹配判假 → 算成 P1,
+           下错集数。resolve_playlist 的单视频分支把用户粘贴的原始链接原样透传,
+           而 B 站地址栏/分享链接普遍带 spm_id_from、vd_source,所以这是现实形态;
+         - 分 P 值非法时 parseInt 得 NaN → 提交的 page 序列化成 null。
+       注:守卫测试 test_frontend_page_parsing_only_in_util 按整行扫字面量,
+       连注释也不放过,所以这里只描述、不复刻旧写法。 */
+    return { url: it.url, title: it.title, page: pageFromUrl(it.url),
              thumbnail: it.thumbnail || '', uploader: it.uploader || '',
              uploader_mid: it.uploader_mid || 0, duration: it.duration || 0 };
   });

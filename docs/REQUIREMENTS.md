@@ -1,8 +1,10 @@
 # bilibili download — 完整需求文档
 
-> 本文档描述项目当前**已实现的全部功能**,基于代码实际状态整理(v2.1.0, 2026-08-24)。
-> 14 个 Python 模块(3027 行)+ 前端三分离(模板 388 行 / CSS 533 行 /
-> 17 个 ES modules 共 2050 行),37 个 API 路径。单元测试 183 个全过。
+> 本文档描述项目当前**已实现的全部功能**,基于代码实际状态整理
+> (v2.1.1 + 未发布修复, 2026-08-28)。
+> 14 个 Python 模块(3199 行)+ 前端三分离(模板 388 行 / CSS 533 行 /
+> 17 个 ES modules 共 2167 行),38 个 `@app.route` 路径(37 个 API + `/` 单页骨架)。
+> 单元测试 304 个全过。
 >
 > 改这份文档时请顺手核对数字:`wc -l *.py`、`pytest -q`、
 > `grep -o '@app.route("[^"]*"' app.py | sort -u | wc -l`。
@@ -184,6 +186,8 @@
   爆发更新翻页兜底(上限 3 页)
 - 限流时不推进「已见」标记,下一轮重试,不漏视频
 - 也可手动触发 `/api/up-list/check`(后台线程运行,前端不阻塞)
+- 同一时刻只跑一轮:进行中再次触发(手动连点 / 后台轮询到点)**直接跳过**,
+  不排队、不发 B 站请求;接口用 `started` 字段如实回报是否启动了新一轮
 
 ### R22 数据持久化
 - `data/up_list.json`:`ups`(清单)+ `last_seen`(各 UP 已见标记)+ `fetched_at`(上次拉取)
@@ -311,7 +315,7 @@
 | POST | `/api/up-list/remove` | 移除 UP |
 | POST | `/api/up-list/set-quality` | 设置某 UP 自动下载的清晰度 |
 | POST | `/api/up-list/reset-seen` | 重置某 UP 的已见标记(下次检查视其全部投稿为新增) |
-| POST | `/api/up-list/check` | 手动触发一轮检查(后台线程) |
+| POST | `/api/up-list/check` | 手动触发一轮检查(后台线程)。响应 `started`:`true` = 本次启动了新一轮;`false` = 已有一轮在进行中,本次直接跳过(不排队、不发 B 站请求),`message` 给出对应文案。两种情况 `ok` 均为 `true`——「进行中」不是错误,是如实告知 |
 
 ### 配置(2)
 | 方法 | 路径 | 功能 |
@@ -325,37 +329,37 @@
 
 ```
 bilibili-downloader/
-├── app.py              (501 行) Flask 路由层(@api_errors 统一异常出口)
+├── app.py              (518 行) Flask 路由层(@api_errors 统一异常出口)
 ├── bilibili_auth.py    (206 行) 登录与会话(扫码/Edge/cookies.txt + cookiejar 缓存)
 ├── bilibili_api.py     (394 行) B 站读接口客户端(历史/收藏/合集/关注/UP 投稿)
-├── downloader.py       (384 行) 下载执行引擎(线程/重试/进度/取消/通知)
-├── taskstore.py        (264 行) 任务表 + tasks.json 原子持久化 + 文件定位 + 统计
+├── downloader.py       (397 行) 下载执行引擎(线程/重试/进度/取消/通知)
+├── taskstore.py        (295 行) 任务表 + tasks.json 原子持久化 + 文件定位 + 统计
 ├── parsing.py          (160 行) yt-dlp 解析(单视频/多P/播放列表)
-├── files.py            (232 行) 落盘名对齐/冲突处理/跨平台文件管理器唤起
+├── files.py            (273 行) 落盘名对齐/冲突处理/跨平台文件管理器唤起
 ├── quality.py          (126 行) 清晰度标注与 format 归一化(纯函数)
 ├── config.py           (182 行) 运行时配置(_FIELDS 字段表驱动)
 ├── up_list.py          (139 行) UP 清单数据层(per-UP quality)
-├── auto_refresh.py     (130 行) 自动下载轮询(串行,新投稿直入队)
+├── auto_refresh.py     (156 行) 自动下载轮询(串行,新投稿直入队)
 ├── pagecache.py        (58 行)  页面数据缓存(打开秒显)
 ├── storage.py          (48 行)  统一 JSON 持久化(原子写 + 损坏备份)
-├── extras.py           (203 行) 文件名清洗/组装 + bvid 提取 + 弹幕(protobuf)
+├── extras.py           (247 行) 文件名清洗/组装 + bvid 提取 + 弹幕(protobuf)
 ├── templates/index.html(388 行) 单页骨架(纯结构)
 ├── static/
 │   ├── css/main.css    (533 行) 全部样式(含主题变量)
-│   └── js/             17 个 ES modules,共 2050 行
+│   └── js/             17 个 ES modules,共 2167 行
 │       ├── app.js      入口 + window 桥(内联 onclick 兼容层)
 │       ├── lib.js      页控制器框架(共享状态/无限滚/操作条/缓存优先)
 │       ├── pages/*.js  六页各一控制器
 │       └── *.js        util/icons/net/theme/quality/login/settings/drawer/newdl
-├── tests/              183 个单元测试(conftest.py 把运行时数据隔离到临时目录)
-│   ├── test_app.py                 (46) 路由 / 缓存层 / 前端结构 / window 桥
+├── tests/              304 个单元测试(conftest.py 把运行时数据隔离到临时目录)
+│   ├── test_app.py                 (67) 路由 / 缓存层 / 前端结构 / window 桥
 │   ├── test_auth.py                (22) 登录、B 站接口、风控参数
-│   ├── test_auto_refresh.py        (15) 自动下载轮询 / 合规限频与文档一致
+│   ├── test_auto_refresh.py        (29) 自动下载轮询 / 合规限频与文档一致
 │   ├── test_config.py              (5)  字段表驱动配置
 │   ├── test_docs.py                (4)  CHANGELOG 结构 / README 版本横幅一致
-│   ├── test_downloader.py          (23) 重试/取消/状态集合/统计
-│   ├── test_extras.py              (8)  弹幕解析 / 文件名清洗
-│   ├── test_filename_alignment.py  (30) 落盘名对齐 / 冲突 / 文件定位
+│   ├── test_downloader.py          (82) 重试/取消/状态集合/统计
+│   ├── test_extras.py              (10) 弹幕解析 / 文件名清洗
+│   ├── test_filename_alignment.py  (55) 落盘名对齐 / 冲突 / 文件定位
 │   ├── test_quality.py             (12) 清晰度归一化与降档
 │   ├── test_storage.py             (10) 原子写 / 损坏备份 / 运行时数据隔离自检
 │   └── test_up_list.py             (8)  清单数据层 / 清晰度单一来源
@@ -435,3 +439,12 @@ app                                 路由层
 | v2.1 | 非 macOS 上「定位文件」接口 500 | 硬编码 `open -R`;`check=False` 挡不住命令不存在 | `files.reveal_path/open_dir` 按平台分发并吞 OSError |
 | v2.1 | 取消/中断的任务 SSE 不收流 | 服务端只判 `done/failed`,靠前端主动 close 才停 | 收流条件改用 `taskstore.TERMINAL` |
 | v2.1 | 开了「按 UP 建子目录」后磁盘用量显示 0 | `disk_bytes` 只 `iterdir()` 扫顶层 | 改 `rglob("*")` 递归统计 |
+| 未发布 | 搜索过滤后勾选,删除 / 下载打到另一条记录(含 `unlink` 磁盘文件,不可恢复) | `renderDefaultList` 对过滤后的数组 `forEach`,发出的是「第几个命中」而非 `state.items` 的原始下标 | 下标唯一来源收口为 `visiblePairs(q)`,遍历 `state.items` 本身 |
+| 未发布 | 下载后改名可能把另一个视频的文件(连带其副文件)改成本任务的期望名 | `_find_actual_file` 兜底用 `expected_stem[:10]` 前缀匹配,短名时退化为无边界整名前缀 | 兜底分支改引用 `taskstore.stem_belongs`(精确 / 分隔符后缀),不留第三份匹配规则 |
+| 未发布 | 合集下完一个分 P 后,其余分 P 全被当已下载而跳过 | 「已下载」判定只看 BV 号,前后端两份实现都丢了分 P 维度 | 粒度改为 (BV 号, 分 P);键规则收口为 `extras.dl_key` / `page_from_url` + 前端 `util.js` 同名对应物,分隔符常量测试绑定 |
+| 未发布 | 连点「立即检查新视频」会连续串行打 B 站接口(触碰账号级风控) | `refresh_once` 用阻塞 `with _lock:`,后来者排队补跑而非跳过;路由无条件回 `ok` | 改非阻塞 `_lock.acquire(blocking=False)` + `try/finally`;新增 `is_running()`,路由如实回报 `started`,删掉前端 30 秒假禁用窗口 |
+| 未发布 | 取消 `interrupted` 任务 → 永久僵尸态,卡住重复下载拦截与「清除全部记录」 | `downloader` 两处硬编码终态元组 `("done","failed","cancelled")` 漏了 `interrupted` | 两处改引用 `taskstore.TERMINAL` |
+| 未发布 | 统计「今日」按滚动 24 小时,昨晚完成的任务今早仍计入 | `compute_stats` 的 `day_start = now - 86400`,与同函数 `month_start`(自然月)口径不一 | `day_start` 改 `int(time.mktime(today.timetuple()))`,与 `month_start` 同一套写法 |
+| 未发布 | 双语言字幕改名后丢掉语言标签,第二种语言变永久孤儿文件(「删除记录 + 文件」清不掉、体积统计少算) | `_rename_with_sidecars` 用 `side.suffix` 算副文件新名,而 `.suffix` 只取**最后一段**扩展名,`<stem>.zh-Hans.srt` 的 `.zh-Hans` 被算进 stem;两种语言于是撞成同一个目标名,后到的那个被 `exists()` 静默跳过、留在旧 stem 下,而 `_file_family` 按**新** stem 找族 | 副文件改取 `source.stem` 之后的整条扩展名链 `side.name[len(source.stem):]`;主文件仍用 `.suffix`(要把 `视频.f137.mp4` 改出干净的 `新名.mp4`)是刻意的不对称,依赖 glob 模式保证切片成立 |
+| 未发布 | 在下载记录页重新下载一条分 P 记录,下回来的是 P1(全程不报错) | 六页共用的提交口 `libDownload()` 写死 `page: 1`;且 `loadDownloads()` 的字段白名单漏了 `page`,`it.page` 恒 `undefined`——两处缺失互相掩盖 | 白名单补 `page: t.page \|\| 1`,提交体改 `page: it.page \|\| pageFromUrl(it.url)`;沿用「任务侧读存储字段 / 查询侧解析 URL」的不对称原则 |
+| 未发布 | 多链接粘贴下载时,带 `&p=` 的分享链接下成 P1;`?p=abc` 提交出 `null` | `newdl.batchDownload` 里第三份手写解析(`includes('?p=')` + `parseInt`)与唯一来源 `util.pageFromUrl`(正则 `[?&]p=(\d+)`)结论不同,而 B 站地址栏 / 分享链接普遍把 `p` 排在 `spm_id_from` / `vd_source` 之后 | 改调 `pageFromUrl`;加守卫测试:除 `util.js` 外整个 `static/js/` 禁止出现 `'?p='` 字面量(按整行扫、不排除注释) |

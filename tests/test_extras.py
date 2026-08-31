@@ -45,6 +45,70 @@ def test_bvid_from_url():
     assert extras.bvid_from_url("https://example.com/nothing") is None
 
 
+# ---------- 已下载判定的键规则(缺陷 B3:判定粒度必须是 (bvid, page)) ----------
+
+def test_page_from_url():
+    """从视频 URL 取分 P 序号;无 `?p=` / 非法值一律视为 1。
+
+    Property 3: Bug Condition —— 已下载判定的粒度是 (bvid, page)。
+
+    查询侧的 page 只能从 URL 解析(is_downloaded / isDownloaded 的入参只有 URL),
+    这个函数就是那一侧的唯一来源。归一到 1 很关键:单 P 视频 URL 不带 `?p=`,
+    而它对应的任务 page 是 1 —— 两边都落到 1,3.12「不带 ?p= 的单 P URL 仍判
+    已下载」才成立。
+
+    本函数由任务 9.1 引入,在它落地前本用例的守卫断言先挂(守卫在测试体内,
+    不会污染其它用例的收集)。
+
+    Validates: Requirements 2.6, 2.7, 3.12
+    """
+    assert hasattr(extras, "page_from_url"), (
+        "extras.page_from_url 尚未引入(任务 9.1):查询侧分 P 解析的唯一来源缺失")
+
+    base = "https://www.bilibili.com/video/BV1xx411c7mD"
+    assert extras.page_from_url(f"{base}?p=3") == 3
+    assert extras.page_from_url(base) == 1, "无 ?p= 的单 P URL 视为 P1"
+    assert extras.page_from_url(f"{base}/") == 1
+    assert extras.page_from_url(f"{base}?spm_id_from=333.999&p=2") == 2, "`&p=` 形态也要认"
+    assert extras.page_from_url(f"{base}?p=abc") == 1, "非法值兜底 1,不得抛异常"
+    assert extras.page_from_url(f"{base}?p=") == 1
+    assert extras.page_from_url("") == 1
+    assert extras.page_from_url(None) == 1, "None 兜底 1(调用方可能传 t.get('url'))"
+    assert extras.page_from_url(f"{base}?p=12") == 12, "多位数分 P 不能被截成 1"
+
+
+def test_dl_key_format():
+    """「已下载」判定的唯一键:(bvid, 分P) → `BVxxxxxxxxxx#p{N}`。
+
+    Property 3: Bug Condition —— 已下载判定的粒度是 (bvid, page)。
+
+    键必须把 page 编进去(只按 bvid 建键就是缺陷 B3),且分隔符走常量
+    `DL_KEY_SEP` —— 前端 static/js/util.js 有同名常量,两侧靠
+    tests/test_app.py::test_frontend_download_key_shared_rule 绑定比较。
+    键规则漂移(例如后端 `f"{bv}:{page}"`、前端 `bv + '#p' + page`)会让角标与
+    批量跳过各说各话,且不会报任何错。
+
+    page 缺失 / 0 / None 一律归一为 1:任务表里的 page 字段可能缺失,查询侧
+    page_from_url 对无 `?p=` 也返回 1,两侧必须落到同一个键。
+
+    Validates: Requirements 2.6, 2.7, 3.12
+    """
+    for name in ("DL_KEY_SEP", "dl_key"):
+        assert hasattr(extras, name), (
+            f"extras.{name} 尚未引入(任务 9.1):已下载判定的键规则唯一来源缺失")
+
+    assert extras.DL_KEY_SEP == "#p", "分隔符是前后端绑定断言的锚点,取值固定为 '#p'"
+    assert extras.dl_key("BV1xx411c7mD", 3) == "BV1xx411c7mD#p3"
+    assert extras.dl_key("BV1xx411c7mD", 1) == "BV1xx411c7mD#p1"
+    assert extras.dl_key("BV1xx411c7mD", 12) == "BV1xx411c7mD#p12"
+    assert extras.dl_key("BV1xx411c7mD", 0) == "BV1xx411c7mD#p1", "0 归一为 P1"
+    assert extras.dl_key("BV1xx411c7mD", None) == "BV1xx411c7mD#p1", "None 归一为 P1"
+    # 键必须由 DL_KEY_SEP 拼出:改常量键跟着改,前后端绑定断言才有意义
+    assert extras.dl_key("BV1xx411c7mD", 2) == "BV1xx411c7mD" + extras.DL_KEY_SEP + "2"
+    # 不同分 P 必须是不同的键(B3 的核心:同 BV 不同 P 不得互相顶替)
+    assert extras.dl_key("BV1xx411c7mD", 1) != extras.dl_key("BV1xx411c7mD", 2)
+
+
 # ---------- protobuf 解析 ----------
 
 def test_parse_proto_extracts_fields():

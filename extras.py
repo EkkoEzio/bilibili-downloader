@@ -58,6 +58,50 @@ def bvid_from_url(url: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+# ---------- 已下载判定的键规则((bvid, 分P) 粒度) ----------
+#
+# 放在这里(而不是 taskstore.py)与 bvid_from_url / build_filename 同层:
+# taskstore 已经 import extras,auto_refresh 经 downloader 间接复用同一份,
+# 前端语义也以此为基准。纯字符串逻辑必须待在依赖链底部。
+#
+# 两侧取 page 的方式是刻意不对称的,改动前务必读懂:
+#   - 查询侧(is_downloaded / 前端 isDownloaded)入参只有 URL,page 只能从
+#     ?p= 解析 → 用 page_from_url;
+#   - 任务侧读 t["page"],不能解析 t["url"] —— start_download(url, label, page=3)
+#     存进任务表的 url 是用户粘贴的原始链接(通常不带 ?p=),page 才是权威值。
+# 写反任一侧都会让判定悄悄退回「只看 BV」的缺陷形态。
+
+# 已下载判定的键分隔符。前端 static/js/util.js 的 DL_KEY_SEP 必须与此一致,
+# tests 有绑定断言 —— 两侧键规则漂移会让角标与批量跳过各说各话,且不会报错。
+DL_KEY_SEP = "#p"
+
+_PAGE_RE = re.compile(r"[?&]p=(\d+)")
+
+
+def page_from_url(url: str) -> int:
+    """从视频 URL 取分 P 序号;无 ?p= / 非法值视为 1。
+
+    URL 形态:https://www.bilibili.com/video/{BV}?p={N};带其它查询参数时
+    分 P 以 `&p=` 出现(如 ?spm_id_from=333.999&p=2),所以 `[?&]` 两种都认。
+    归一到 1 是 3.12 的前提:单 P 视频 URL 不带 ?p=,其任务 page 是 1,
+    两边都落到 1,「不带 ?p= 的单 P URL 仍判已下载」才成立。
+    """
+    m = _PAGE_RE.search(url or "")
+    return int(m.group(1)) if m else 1
+
+
+def dl_key(bvid: str, page: int) -> str:
+    """「已下载」判定的唯一键:(bvid, 分P) → "BVxxxxxxxxxx#p1"。
+
+    判定粒度必须是 (bvid, page):只看 bvid 会让合集下完 P1 后其余分 P
+    全被当已下载而跳过,自动下载也漏下新分 P。
+
+    page 缺失 / 0 / None 一律归一为 1,写法必须是 `int(page or 1)`:
+    `int(page) or 1` 会先对 None 调 int() 直接抛 TypeError,or 来不及兜底。
+    """
+    return f"{bvid}{DL_KEY_SEP}{int(page or 1)}"
+
+
 # ---------- 最小 protobuf wire-format 解析 ----------
 
 def _read_varint(buf: bytes, i: int):

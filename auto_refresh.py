@@ -32,7 +32,12 @@ RECENT_PS = 5
 RECENT_WINDOW = 24 * 3600
 MAX_PAGES = 3
 
-_lock = threading.Lock()  # 防止上一轮没跑完又叠一轮
+# 保证「同一时刻只有一轮检查」。非阻塞获取:拿不到就跳过,不排队。
+# 阻塞获取(`with _lock:`)只保证互斥,不保证去重 —— 后来者会卡在锁上,等前一轮
+# 释放后完整补跑一轮(每个 UP 一次 arc/search、UP 之间 sleep 5 秒)。连点 N 次
+# 「立即检查新视频」就是串行跑 N 轮完整检查,正是 docs/COMPLIANCE.md 承诺要
+# 避免的账号级风控场景。需求 2.9 要的是「跳过」,不是「排队后补跑」。
+_lock = threading.Lock()
 
 
 def estimate_ps(fetched_at, now=None) -> int:
@@ -70,12 +75,29 @@ def fetch_new(mid: int, last: Optional[dict] = None):
     return new, newest
 
 
+def is_running() -> bool:
+    """是否已有一轮检查在跑。路由据此如实回报「本次未启动新一轮」(需求 2.10)。"""
+    return _lock.locked()
+
+
 def refresh_once() -> int:
     """跑一轮检查:清单里每个 UP 的新投稿(未下载过的)直接入队下载。
 
-    返回本轮入队任务数。串行 + 间隔,防账号级风控。
+    返回本轮入队任务数(未启动新一轮时为 0)。串行 + 间隔,防账号级风控。
+
+    锁是非阻塞获取:已有一轮在跑时**直接丢弃本次触发**,而不是排队等锁 ——
+    阻塞获取只做到「不并发」,做不到「不重复」,后来者会在前一轮结束后完整补跑
+    一轮真实请求;非阻塞获取才是需求 2.9 要的「跳过」。
+
+    `finally: _lock.release()` 不可省:手写 acquire 没有 `with` 自带的异常安全,
+    漏掉会让锁永远握在一个已返回的调用手里 —— is_running() 恒 True,之后每次
+    检查(手动点击 + 后台轮询)都被误判成「已有一轮在跑」而跳过,自动下载彻底
+    停摆且不报任何错。
     """
-    with _lock:
+    if not _lock.acquire(blocking=False):
+        log.info("自动下载:已有一轮检查在运行,本次跳过(不排队、不发请求)")
+        return 0
+    try:
         ups = up_list.list_ups()
         if not ups:
             return 0
@@ -111,6 +133,10 @@ def refresh_once() -> int:
             if i < len(ups) - 1:
                 time.sleep(UP_INTERVAL)
         return enqueued
+    finally:
+        # 任何出口都要放锁:正常 return、`ups` 为空的提前 return、以及
+        # list_ups() 之类锁内异常向上传播的路径。
+        _lock.release()
 
 
 def start_loop() -> threading.Thread:
