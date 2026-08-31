@@ -5,6 +5,7 @@
 名字——测试在 downloader 命名空间对 _ydl_opts/_persist 等打补丁,依赖这里的
 模块级绑定。"""
 import logging
+import queue
 import subprocess
 import sys
 import threading
@@ -17,12 +18,13 @@ import yt_dlp
 import extras
 import config
 from quality import best_video_audio_choice
+from request_governor import UpstreamRateLimitError, governor
 
 from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
                        _load_persisted, _task_files, TERMINAL,
                        get_task, list_tasks, find_active_by_url, is_downloaded,
                        find_task_files, delete_tasks, clear_tasks,
-                       clean_invalid_records)
+                       clean_invalid_records, create_tasks_if_absent)
 from parsing import parse_video, parse_part, resolve_playlist, _ydl_opts
 from files import (build_filename, tmpl_literal, _MEDIA_EXTS,
                    align_task_file as _align_task_file,
@@ -32,6 +34,96 @@ log = logging.getLogger("bd.downloader")
 
 # 已下载判定复用的 bvid 提取(extras 也用它定位弹幕)
 bvid_from_url = extras.bvid_from_url
+
+
+class DuplicateActiveTask(RuntimeError):
+    """原子创建阶段发现同 URL/清晰度/分 P 的活跃任务。"""
+
+    def __init__(self, task_id: str) -> None:
+        super().__init__("该视频相同清晰度正在下载中")
+        self.task_id = task_id
+
+
+# 单一全局队列 + 固定 worker 数。运行时并发值由 config.MAX_CONCURRENT 控制，
+# 因此单下载、任意批次和自动追更共享同一个上限，不再创建等待线程。
+_download_jobs: queue.Queue[tuple] = queue.Queue()
+_scheduler_condition = threading.Condition()
+_scheduler_active = 0
+_workers_lock = threading.Lock()
+_workers: list[threading.Thread] = []
+
+
+def _acquire_download_slot() -> None:
+    global _scheduler_active
+    with _scheduler_condition:
+        while True:
+            limit = max(1, min(config.MAX_CONCURRENT_LIMIT,
+                               int(config.MAX_CONCURRENT)))
+            if _scheduler_active < limit:
+                _scheduler_active += 1
+                return
+            # 定时重读运行时配置；调高并发无需重启应用。
+            _scheduler_condition.wait(timeout=0.5)
+
+
+def _release_download_slot() -> None:
+    global _scheduler_active
+    with _scheduler_condition:
+        _scheduler_active = max(0, _scheduler_active - 1)
+        _scheduler_condition.notify_all()
+
+
+def _mark_tasks_failed(task_ids, error: str) -> None:
+    """把调度器边界上的异常可靠落为 failed，避免 queued 僵尸挡住重试。"""
+    changed = False
+    with _tasks_lock:
+        for task_id in task_ids:
+            task = _tasks.get(task_id)
+            if not task or task.get("status") in TERMINAL:
+                continue
+            task["status"] = "failed"
+            task["error"] = error
+            task["finished_at"] = int(time.time())
+            changed = True
+    if changed and not _persist():
+        log.error("调度异常状态未能持久化 task_ids=%s", list(task_ids))
+
+
+def _download_worker() -> None:
+    while True:
+        job = _download_jobs.get()
+        acquired = False
+        try:
+            _acquire_download_slot()
+            acquired = True
+            # 运行时解析模块绑定，保留测试/调用方 monkeypatch _run_download 的能力。
+            _run_download(*job)
+        except Exception as e:
+            log.exception("下载 worker 未捕获异常 task_id=%s", job[0] if job else "")
+            if job:
+                _mark_tasks_failed([job[0]], f"下载执行异常: {e}")
+        finally:
+            if acquired:
+                _release_download_slot()
+            _download_jobs.task_done()
+
+
+def _ensure_workers() -> None:
+    with _workers_lock:
+        while len(_workers) < config.MAX_CONCURRENT_LIMIT:
+            index = len(_workers) + 1
+            th = threading.Thread(target=_download_worker, daemon=True,
+                                  name=f"bd-download-{index}")
+            th.start()
+            _workers.append(th)
+
+
+def _enqueue_downloads(jobs: list[tuple]) -> None:
+    if not jobs:
+        return
+    _ensure_workers()
+    for job in jobs:
+        _download_jobs.put(job)
 
 
 def _to_mid(v) -> int:
@@ -150,6 +242,7 @@ def _progress_hook(task_id: str):
             elif d["status"] == "error":
                 t["status"] = "failed"
                 t["error"] = "下载出错"
+                t["finished_at"] = int(time.time())
                 persist = True
         if persist:
             _persist()
@@ -171,6 +264,17 @@ def _finalize_cancelled(task_id: str) -> None:
 
 
 def _run_download(task_id: str, url: str, label: str, formats: list[dict], page: int) -> None:
+    # 队列中等待时任务可能已被取消或删除；先检查，避免仍发解析请求。
+    with _tasks_lock:
+        initial = _tasks.get(task_id)
+        cancelled = bool(initial and initial.get("cancel"))
+        already_terminal = bool(initial and initial.get("status") in TERMINAL)
+    if not initial or already_terminal:
+        return
+    if cancelled:
+        _finalize_cancelled(task_id)
+        return
+
     # formats 为空时(批量任务未预解析),自己解析补上
     if not formats:
         try:
@@ -200,6 +304,7 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                 if t:
                     t["status"] = "failed"
                     t["error"] = str(e)
+                    t["finished_at"] = int(time.time())
             _persist()
             return
 
@@ -239,10 +344,11 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                 _finalize_cancelled(task_id)
                 return
 
-        # 每次重试都重建 YoutubeDL 实例(避免内部状态污染)
+        # 每次重试都重建 YoutubeDL 实例(避免内部状态污染)，并统一经过媒体启动闸门。
         _final_paths.pop(task_id, None)  # 上一次尝试捕获的路径作废
         opts = _ydl_opts(base_opts)
         try:
+            governor.wait("media", endpoint=url)
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
             # 成功:先把落盘文件名对齐任务 title(A.3),
@@ -276,6 +382,10 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                         _notify_done(t["title"])
                     log.info("任务完成 %s 《%s》", task_id, t.get("title", ""))
             return
+        except UpstreamRateLimitError as e:
+            # 账号冷却期间快速失败，不能用重试循环继续制造请求。
+            last_err = e
+            break
         except Exception as e:
             last_err = e
             # 取消标志置位 → 不再重试(锁内只读标志,收尾放锁外,避免重入死锁)
@@ -292,15 +402,47 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
         if t and not t.get("cancel"):
             t["status"] = "failed"
             t["error"] = str(last_err)
+            t["finished_at"] = int(time.time())
     _persist()
 
 
-def start_download(url: str, label: str, page: int = 1, uploader_mid: int = 0) -> str:
-    """启动异步下载。先解析拿到 formats,再后台下载。返回 task_id。
+def _new_task(url: str, label: str, page: int, *, title: str,
+              thumbnail: str = "", uploader: str = "", uploader_mid=0,
+              duration=0, bvid: str = "", source: str = "",
+              auto_attempt=0) -> dict:
+    """构造尚未可见的 queued 任务；可见性由 create_tasks_if_absent 提交。"""
+    task = {
+        "task_id": uuid.uuid4().hex[:12],
+        "status": "queued",
+        "progress": 0, "speed": 0, "eta": 0,
+        "title": title, "url": url, "label": label,
+        "thumbnail": thumbnail,
+        "uploader": uploader,
+        "uploader_mid": _to_mid(uploader_mid),
+        "duration": duration or 0,
+        "created_at": int(time.time()),
+        "page": page, "error": "", "cancel": False,
+    }
+    if bvid:
+        task["bvid"] = str(bvid)
+    if source:
+        task["source"] = str(source)
+        if source == "auto_refresh":
+            task["auto_attempt"] = max(0, _to_mid(auto_attempt))
+    return task
 
-    page>1 表示多 P 视频的指定分集。uploader_mid 是调用方已知的 UP mid
-    (没传时用解析结果里的 yt-dlp uploader_id)。
+
+def start_download(url: str, label: str, page: int = 1, uploader_mid: int = 0) -> str:
+    """解析并可靠入队单个下载，返回 task_id。
+
+    快速预查避免已知重复任务仍发解析请求；最终正确性由
+    create_tasks_if_absent 的持久化锁内原子去重保证。任务只有在完整候选快照
+    成功写盘后才进入内存和全局下载队列，因此磁盘写失败不会产生幽灵下载。
     """
+    existing = find_active_by_url(url, label, page)
+    if existing:
+        raise DuplicateActiveTask(existing)
+
     if page > 1:
         summary = parse_part(url, page)
     else:
@@ -308,72 +450,68 @@ def start_download(url: str, label: str, page: int = 1, uploader_mid: int = 0) -
         # parse_video 对多 P 不返回 formats,这里兜底拉第一 P
         if not summary.get("formats"):
             summary = parse_part(url, 1)
-    if not uploader_mid:
-        uploader_mid = _to_mid(summary.get("uploader_mid"))
-    task_id = uuid.uuid4().hex[:12]
-    with _tasks_lock:
-        _tasks[task_id] = {
-            "task_id": task_id,
-            "status": "queued",
-            "progress": 0, "speed": 0, "eta": 0,
-            "title": summary["title"], "url": url, "label": label,
-            "thumbnail": summary.get("thumbnail", ""),
-            "uploader": summary.get("uploader", ""),
-            "uploader_mid": uploader_mid or _to_mid(summary.get("uploader_mid")),
-            "duration": summary.get("duration") or 0,
-            "created_at": int(time.time()),
-            "page": page, "error": "", "cancel": False,
-        }
-    th = threading.Thread(target=_run_download,
-                          args=(task_id, url, label, summary["formats"], page),
-                          daemon=True)
-    th.start()
-    _persist()
+
+    task = _new_task(
+        url, label, page,
+        title=summary["title"],
+        thumbnail=summary.get("thumbnail", ""),
+        uploader=summary.get("uploader", ""),
+        uploader_mid=uploader_mid or summary.get("uploader_mid"),
+        duration=summary.get("duration"),
+    )
+    created, duplicates = create_tasks_if_absent([task])
+    if not created:
+        raise DuplicateActiveTask(duplicates[task["task_id"]])
+
+    task_id = created[0]["task_id"]
+    try:
+        _enqueue_downloads([
+            (task_id, url, label, summary.get("formats") or [], page),
+        ])
+    except Exception as e:
+        _mark_tasks_failed([task_id], f"下载入队失败: {e}")
+        raise
     return task_id
 
 
 def start_batch(items: list[dict], label: str, max_concurrent: int = None) -> list[str]:
-    """批量启动下载。items: [{url, title?, page?}]。返回 task_id 列表。
+    """原子创建并入队批量下载，返回本次真正创建的 task_id 列表。
 
-    max_concurrent 不传则用 config.MAX_CONCURRENT(默认 2)。
+    ``max_concurrent`` 为兼容自动追更和旧调用保留；实际并发统一由运行时
+    ``config.MAX_CONCURRENT`` 的全局 gate 控制，避免不同批次各自放大并发。
     """
-    mc = max_concurrent if max_concurrent is not None else config.MAX_CONCURRENT
-    sem = threading.Semaphore(max(1, int(mc)))
-    task_ids = []
-
-    def _batch_run(task_id, url, label, page, title):
-        sem.acquire()
-        try:
-            _run_download(task_id, url, label, [], page)
-        finally:
-            sem.release()
-
+    candidates: list[dict] = []
     for item in items:
-        url = item.get("url", "")
-        page = int(item.get("page", 1))
-        title = item.get("title", "") or "(解析中)"
-        # 跳过重复(同 url+page 在跑)
-        if find_active_by_url(url, label) and page == 1:
+        url = str(item.get("url") or "")
+        if not url:
             continue
-        task_id = uuid.uuid4().hex[:12]
-        with _tasks_lock:
-            _tasks[task_id] = {
-                "task_id": task_id,
-                "status": "queued",
-                "progress": 0, "speed": 0, "eta": 0,
-                "title": title, "url": url, "label": label,
-                "thumbnail": item.get("thumbnail", ""),
-                "uploader": item.get("uploader", ""),
-                "uploader_mid": _to_mid(item.get("uploader_mid")),
-                "duration": item.get("duration") or 0,
-                "created_at": int(time.time()),
-                "page": page, "error": "", "cancel": False,
-            }
-        th = threading.Thread(target=_batch_run,
-                              args=(task_id, url, label, page, title), daemon=True)
-        th.start()
-        task_ids.append(task_id)
-    _persist()
+        try:
+            page = int(item.get("page") or 1)
+        except (TypeError, ValueError):
+            page = 1
+        candidates.append(_new_task(
+            url, label, page,
+            title=item.get("title", "") or "(解析中)",
+            thumbnail=item.get("thumbnail", ""),
+            uploader=item.get("uploader", ""),
+            uploader_mid=item.get("uploader_mid"),
+            duration=item.get("duration"),
+            bvid=item.get("bvid", ""),
+            source=item.get("source", ""),
+            auto_attempt=item.get("auto_attempt", 0),
+        ))
+
+    created, _duplicates = create_tasks_if_absent(candidates)
+    jobs = [
+        (task["task_id"], task["url"], task["label"], [], task["page"])
+        for task in created
+    ]
+    task_ids = [task["task_id"] for task in created]
+    try:
+        _enqueue_downloads(jobs)
+    except Exception as e:
+        _mark_tasks_failed(task_ids, f"下载入队失败: {e}")
+        raise
     return task_ids
 
 

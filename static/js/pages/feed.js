@@ -7,7 +7,7 @@ import { registerPage, state, libDom, renderDefaultList, renderPage, cachedLoad,
          maybeFillScreen } from '../lib.js';
 import { getJSON, postJSON, postEmpty } from '../net.js';
 import { icon } from '../icons.js';
-import { escapeHtml } from '../util.js';
+import { escapeHtml, escapeAttr, safeDecimalId, safeHttpUrl } from '../util.js';
 import { qualityOptionsHtml } from '../quality.js';
 
 let _feedSource = (() => {
@@ -54,7 +54,7 @@ async function loadFollowBili() {
       d.list.innerHTML = '<div class="empty">正在后台拉取关注 UP 的近期投稿(串行防限流,约需数十秒),完成后自动展示。</div>';
     },
     showError: (msg) => {
-      libDom().list.innerHTML = `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadFollowBili()">${icon('refresh')} 重试</button></div>`;
+      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadFollowBili()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       state.items = b.items || [];
@@ -79,12 +79,12 @@ async function loadFollowAll() {
     },
     showError: (msg) => {
       const d = libDom();
-      d.list.innerHTML = `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadFollowAll()">${icon('refresh')} 重试</button></div>`;
+      d.list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadFollowAll()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       _followAll = b.items || [];
       _followAllTotal = b.total || _followAll.length;
-      _localMids = new Set(b.local_mids || []);
+      _localMids = new Set((b.local_mids || []).map(safeDecimalId).filter(Boolean));
       _followAllShown = 0;
       renderPage();
     },
@@ -103,14 +103,22 @@ function renderFollowAll() {
   } else {
     d.list.className = 'lib-list';
     d.list.innerHTML = `<div class="${state.view === 'grid' ? 'up-grid' : 'up-list'}">` + shownItems.map(u => {
-      const inLocal = _localMids.has(u.mid);
-      const btn = inLocal
-        ? '<span class="dl-badge">' + icon('check') + '已加清单</span>'
-        : `<button class="ghost sm" onclick="upAddLocal(this.dataset.mid, this)" data-mid="${escapeHtml(String(u.mid))}">加入清单</button>`;
+      const mid = safeDecimalId(u.mid);
+      const inLocal = !!mid && _localMids.has(mid);
+      const btn = !mid
+        ? '<span class="dl-badge">ID 无效</span>'
+        : (inLocal
+          ? '<span class="dl-badge">' + icon('check') + '已加清单</span>'
+          : `<button class="ghost sm" onclick="upAddLocal(this.dataset.mid, this)" data-mid="${escapeAttr(mid)}">加入清单</button>`);
+      const face = safeHttpUrl(u.face, { httpsOnly: true });
+      const name = escapeHtml(u.uname || (mid ? ('UP ' + mid) : '未知 UP'));
+      const nameHtml = mid
+        ? `<a href="https://space.bilibili.com/${mid}" target="_blank" rel="noopener">${name}</a>`
+        : name;
       return `
       <div class="up-card">
-        <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'">
-        <div class="uc-name" title="${escapeHtml(u.uname)}"><a href="https://space.bilibili.com/${u.mid}" target="_blank" rel="noopener">${escapeHtml(u.uname || ('UP ' + u.mid))}</a></div>
+        <img src="${escapeAttr(face)}" onerror="this.style.visibility='hidden'">
+        <div class="uc-name" title="${escapeAttr(u.uname || '')}">${nameHtml}</div>
         ${btn}
       </div>`;
     }).join('') + '</div>';
@@ -132,9 +140,11 @@ function advanceFollowAll() {
 
 export async function upAddLocal(mid, btnEl) {
   try {
-    const r = await postJSON('/api/up-list/add', { input: String(mid) });
+    const normalizedMid = safeDecimalId(mid);
+    if (!normalizedMid) throw new Error('UP ID 无效');
+    const r = await postJSON('/api/up-list/add', { input: normalizedMid });
     if (!r.ok) throw new Error(r.error || '添加失败');
-    _localMids.add(mid);
+    _localMids.add(normalizedMid);
     if (btnEl) btnEl.outerHTML = '<span class="dl-badge">' + icon('check') + '已加清单</span>';
   } catch (e) { alert(e.message); }
 }
@@ -149,7 +159,7 @@ export async function loadMyUps() {
     _myUps = r.ups || [];
     renderMyUps();
   } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadMyUps()">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="loadMyUps()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
@@ -164,16 +174,25 @@ function renderMyUps() {
     d.list.innerHTML = `<div class="empty">${q ? '没有匹配结果(试试其他关键词)'
       : '清单为空。在上方粘贴 UP 主页链接添加,或到「关注列表」一键加入。<br>加入清单的 UP,新投稿会自动进入下载队列。'}</div>`;
   } else {
-    d.list.innerHTML = `<div class="${state.view === 'grid' ? 'up-grid' : 'up-list'}">` + ups.map(u => `
+    d.list.innerHTML = `<div class="${state.view === 'grid' ? 'up-grid' : 'up-list'}">` + ups.map(u => {
+      const mid = safeDecimalId(u.mid);
+      const face = safeHttpUrl(u.face, { httpsOnly: true });
+      const name = escapeHtml(u.uname || (mid ? ('UP ' + mid) : '未知 UP'));
+      const nameHtml = mid
+        ? `<a href="https://space.bilibili.com/${mid}" target="_blank" rel="noopener">${name}</a>`
+        : name;
+      const controls = mid ? `
+          <select onchange="upSetQuality(this.dataset.mid, this.value)" data-mid="${escapeAttr(mid)}" title="该 UP 新视频自动下载的默认清晰度">${qualityOptionsHtml(u.quality || '')}</select>
+          <button class="danger sm" onclick="upRemove(this.dataset.mid)" data-mid="${escapeAttr(mid)}">移除</button>`
+        : '<span class="dl-badge">ID 无效</span>';
+      return `
       <div class="up-card mgr">
-        <img src="${escapeHtml(u.face)}" onerror="this.style.visibility='hidden'">
-        <div class="uc-name" title="${escapeHtml(u.uname)}"><a href="https://space.bilibili.com/${u.mid}" target="_blank" rel="noopener">${escapeHtml(u.uname || ('UP ' + u.mid))}</a></div>
+        <img src="${escapeAttr(face)}" onerror="this.style.visibility='hidden'">
+        <div class="uc-name" title="${escapeAttr(u.uname || '')}">${nameHtml}</div>
         <span class="dl-badge">${icon('check')}自动下载</span>
-        <div class="uc-ctl">
-          <select onchange="upSetQuality(this.dataset.mid, this.value)" data-mid="${escapeHtml(String(u.mid))}" title="该 UP 新视频自动下载的默认清晰度">${qualityOptionsHtml(u.quality || '')}</select>
-          <button class="danger sm" onclick="upRemove(this.dataset.mid)" data-mid="${escapeHtml(String(u.mid))}">移除</button>
-        </div>
-      </div>`).join('') + '</div>';
+        <div class="uc-ctl">${controls}</div>
+      </div>`;
+    }).join('') + '</div>';
   }
   if (d.meta) {
     d.meta.textContent = q

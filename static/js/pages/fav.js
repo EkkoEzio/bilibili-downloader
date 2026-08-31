@@ -2,7 +2,7 @@
 import { registerPage, state, libDom, renderDefaultList, cachedLoad, getLibSearchQuery } from '../lib.js';
 import { getJSON } from '../net.js';
 import { icon } from '../icons.js';
-import { escapeHtml } from '../util.js';
+import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
 let _favFolders = [];
 let _favCurrent = null;  // 已进入的收藏夹 id
@@ -33,7 +33,7 @@ export async function favLoadFolders() {
     },
     showError: (msg) => {
       document.getElementById('fav-folder-list').innerHTML =
-        `<div class="empty">${msg}<br><button class="ghost sm" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
+        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       _favFolders = b.folders || [];
@@ -65,27 +65,32 @@ function renderFolders() {
     : `<div class="panel"><div class="panel-body tight">${list.map(folderRow).join('')}</div></div>`;
 }
 
-const _card = (cover, count, title, subHtml, id) => `
-  <div class="fav-card" onclick="favEnter(this.dataset.id)" data-id="${escapeHtml(String(id))}">
+const _card = (cover, count, title, subHtml, id) => {
+  const coverUrl = safeHttpUrl(cover, { httpsOnly: true });
+  const itemCount = nonNegativeInt(count);
+  return `
+  <div class="fav-card" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(id ?? ''))}">
     <div class="fc-cover">
-      <img src="${escapeHtml(cover)}" onerror="this.style.visibility='hidden'" loading="lazy">
-      <span class="fc-count">${count} 个视频</span>
+      <img src="${escapeAttr(coverUrl)}" onerror="this.style.visibility='hidden'" loading="lazy">
+      <span class="fc-count">${itemCount} 个视频</span>
     </div>
     <div class="fc-title">${escapeHtml(title)}</div>
     <div class="fc-sub">${subHtml}</div>
   </div>`;
+};
 
 const folderCard = (f) =>
-  _card(f.cover || '', f.media_count || 0, f.title || '(未命名)',
+  _card(f.cover || '', f.media_count, f.title || '(未命名)',
         icon('folder') + '收藏夹', f.id);
 
 function folderRow(f) {
+  const itemCount = nonNegativeInt(f.media_count);
   return `
-    <div class="fav-folder" onclick="favEnter(this.dataset.id)" data-id="${escapeHtml(String(f.id))}">
+    <div class="fav-folder" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(f.id ?? ''))}">
       <div class="fav-icon">${escapeHtml((f.title || '?').slice(0, 1))}</div>
       <div>
         <div class="fav-name">${escapeHtml(f.title)}</div>
-        <div class="fav-count">${f.media_count || 0} 个视频</div>
+        <div class="fav-count">${itemCount} 个视频</div>
       </div>
       <span class="fav-arrow">${icon('chevron')}</span>
     </div>`;
@@ -109,7 +114,7 @@ export async function favEnter(fid) {
   d.meta.textContent = '';
   d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
   try {
-    const r = await getJSON(`/api/fav-content?media_id=${fid}`);
+    const r = await getJSON(`/api/fav-content?media_id=${encodeURIComponent(String(fid))}`);
     if (!r.ok) throw new Error(r.error || '加载失败');
     state.items = r.items || [];
     state.checked.clear();
@@ -117,7 +122,7 @@ export async function favEnter(fid) {
     renderDefaultList(d);
     d.meta.textContent = `共 ${state.items.length} 条`;
   } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="favEnter(this.dataset.id)" data-id="${escapeHtml(String(fid))}">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="favEnter(this.dataset.id)" data-id="${escapeHtml(String(fid))}">${icon('refresh')} 重试</button></div>`;
   }
 }
 

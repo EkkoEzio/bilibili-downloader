@@ -27,9 +27,39 @@ export function formatBytes(n) {
 }
 
 export function escapeHtml(s) {
-  return String(s || '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 export function escapeAttr(s) { return escapeHtml(s); }
+
+/* 只允许可点击/可加载资源使用 HTTP(S)，避免 javascript:/data: 进入 href/src。
+   协议相对的 B 站图片统一提升到 HTTPS；凭据型 URL 不进入页面。 */
+export function safeHttpUrl(value, { httpsOnly = false } = {}) {
+  let raw = String(value ?? '').trim();
+  if (!raw) return '';
+  if (raw.startsWith('//')) raw = 'https:' + raw;
+  try {
+    const parsed = new URL(raw);
+    if (parsed.username || parsed.password) return '';
+    if (httpsOnly && parsed.protocol === 'http:') parsed.protocol = 'https:';
+    const allowed = parsed.protocol === 'https:' || (!httpsOnly && parsed.protocol === 'http:');
+    if (!allowed) return '';
+    return parsed.href;
+  } catch (e) {
+    return '';
+  }
+}
+
+/* 远端 ID 只保留正十进制，供 URL path / data-* 使用。 */
+export function safeDecimalId(value) {
+  const text = String(value ?? '').trim();
+  return /^[1-9]\d*$/.test(text) ? text : '';
+}
+
+/* 远端计数先数值化再进入 HTML，非有限数/负数归零。 */
+export function nonNegativeInt(value) {
+  const number = Number(value);
+  return Number.isFinite(number) && number >= 0 ? Math.trunc(number) : 0;
+}
 
 export function bvFromUrl(url) {
   const m = /BV[0-9A-Za-z]{10}/.exec(url || '');

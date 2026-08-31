@@ -7,6 +7,7 @@ import yt_dlp
 
 from bilibili_auth import get_ytdlp_cookie_arg
 from quality import classify_formats
+from request_governor import governor
 
 import config
 
@@ -58,6 +59,16 @@ def _summarize(info: dict) -> dict:
     }
 
 
+def _extract_info(url: str, opts: dict, error_prefix: str) -> dict:
+    """所有 yt-dlp 解析共用媒体启动闸门，限制解析/下载的突发启动。"""
+    governor.wait("media", endpoint=url)
+    try:
+        with yt_dlp.YoutubeDL(opts) as ydl:
+            return ydl.extract_info(url, download=False)
+    except yt_dlp.utils.DownloadError as e:
+        raise RuntimeError(f"{error_prefix}:{e}") from e
+
+
 def parse_video(url: str) -> dict:
     """解析视频。
 
@@ -65,11 +76,7 @@ def parse_video(url: str) -> dict:
     并默认用第一 P 的清晰度信息。单 P 则 parts 为空。
     """
     opts = _ydl_opts({"skip_download": True})
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as e:
-        raise RuntimeError(f"解析失败:{e}")
+    info = _extract_info(url, opts, "解析失败")
 
     # 多 P:yt-dlp 返回 _type=playlist,entries 为各分 P
     if info.get("_type") == "playlist" and info.get("entries"):
@@ -103,11 +110,7 @@ def parse_part(url: str, page: int) -> dict:
     """多 P 视频:解析指定分 P 的清晰度。"""
     part_url = url.split("?")[0] + f"?p={page}"
     opts = _ydl_opts({"skip_download": True})
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(part_url, download=False)
-    except yt_dlp.utils.DownloadError as e:
-        raise RuntimeError(f"解析分 P 失败:{e}")
+    info = _extract_info(part_url, opts, "解析分 P 失败")
     summary = _summarize(info)
     summary["title"] = info.get("title", "")
     return summary
@@ -121,11 +124,7 @@ def resolve_playlist(url: str) -> dict:
     单视频 URL 也能进,返回单项列表。
     """
     opts = _ydl_opts({"skip_download": True, "extract_flat": True})
-    try:
-        with yt_dlp.YoutubeDL(opts) as ydl:
-            info = ydl.extract_info(url, download=False)
-    except yt_dlp.utils.DownloadError as e:
-        raise RuntimeError(f"解析失败:{e}")
+    info = _extract_info(url, opts, "解析失败")
 
     items = []
     title = info.get("title", "")

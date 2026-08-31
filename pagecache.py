@@ -41,13 +41,13 @@ def purge_stale() -> int:
     return removed
 
 
-def save(key: str, payload: dict) -> None:
-    """把某端点的完整响应体写入缓存(带保存时间)。"""
+def save(key: str, payload: dict) -> bool:
+    """尽力写入端点缓存；返回是否落盘，失败不阻断真实接口响应。"""
     if key not in KEYS:
-        return
+        return False
     entry = {"saved_at": int(time.time()), "data": payload}
     with _lock:
-        storage.write_json(CACHE_DIR / f"{key}.json", entry)
+        return storage.write_json(CACHE_DIR / f"{key}.json", entry)
 
 
 def load(key: str):

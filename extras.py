@@ -13,10 +13,14 @@ import requests
 
 import bilibili_auth
 from bilibili_auth import BROWSER_HEADERS
+from request_governor import governed_get, governor
 
 log = logging.getLogger("bd.extras")
 
 _BV_RE = re.compile(r"(BV[0-9A-Za-z]{10})")
+# pagelist 同一响应已携带分 P 时长；按 6 分钟/段精确控制弹幕请求数量，
+# 避免把“本段无普通弹幕”误判为视频结束，也避免固定扫满 36 段。
+_CID_SEGMENT_COUNTS: dict[int, int] = {}
 
 # Windows 保留设备名(不带扩展名时整名命中,带扩展名时首个点前段命中)
 _WIN_RESERVED = {"CON", "PRN", "AUX", "NUL",
@@ -192,40 +196,57 @@ def to_xml(elems: list[dict]) -> str:
 # ---------- 网络层 ----------
 
 def _cid_for(bvid: str, page: int) -> Optional[int]:
-    """取视频(指定分P)的 cid。公开接口,无需登录。"""
-    r = requests.get("https://api.bilibili.com/x/player/pagelist",
-                     params={"bvid": bvid}, headers=BROWSER_HEADERS,
-                     cookies=bilibili_auth.get_cookiejar(), timeout=10)
+    """取视频(指定分P)的 cid，并缓存同响应中的弹幕分段数量。"""
+    endpoint = "https://api.bilibili.com/x/player/pagelist"
+    r = governed_get(
+        requests.get, endpoint, kind="default", params={"bvid": bvid},
+        headers=BROWSER_HEADERS, cookies=bilibili_auth.get_cookiejar(), timeout=10)
     data = r.json()
+    governor.note_api_code(data.get("code"), endpoint=endpoint)
     if data.get("code") != 0:
         return None
     pages = data.get("data") or []
     if not pages:
         return None
     idx = min(max(page - 1, 0), len(pages) - 1)
-    return pages[idx].get("cid")
+    selected = pages[idx]
+    cid = selected.get("cid")
+    duration = int(selected.get("duration") or 0)
+    if cid and duration > 0:
+        # 每段覆盖 360 秒；36 段是项目原有的 3.6 小时保护上限。
+        _CID_SEGMENT_COUNTS[int(cid)] = min(36, max(1, (duration + 359) // 360))
+        if len(_CID_SEGMENT_COUNTS) > 256:
+            _CID_SEGMENT_COUNTS.pop(next(iter(_CID_SEGMENT_COUNTS)))
+    return cid
 
 
 def _fetch_segment(cid: int, segment_index: int, bvid: str) -> bytes:
-    r = requests.get("https://api.bilibili.com/x/v2/dm/web/seg.so",
-                     params={"type": 1, "oid": cid, "segment_index": segment_index},
-                     headers={**BROWSER_HEADERS,
-                              "Referer": f"https://www.bilibili.com/video/{bvid}"},
-                     cookies=bilibili_auth.get_cookiejar(), timeout=10)
+    endpoint = "https://api.bilibili.com/x/v2/dm/web/seg.so"
+    r = governed_get(
+        requests.get, endpoint, kind="bulk",
+        params={"type": 1, "oid": cid, "segment_index": segment_index},
+        headers={**BROWSER_HEADERS,
+                 "Referer": f"https://www.bilibili.com/video/{bvid}"},
+        cookies=bilibili_auth.get_cookiejar(), timeout=10)
     return r.content if r.status_code == 200 else b""
 
 
 def fetch_danmaku(bvid: str, page: int = 1) -> list[dict]:
-    """抓取全部弹幕(每段 6 分钟,逐段拉到空为止,36 段封顶)。"""
+    """按视频时长抓取弹幕分片；未知时长才用首个空响应作为保守终点。"""
     cid = _cid_for(bvid, page)
     if not cid:
         return []
+    segment_count = _CID_SEGMENT_COUNTS.get(int(cid))
     out = []
-    for seg in range(1, 37):
-        elems = parse_danmaku_proto(_fetch_segment(cid, seg, bvid))
-        if not elems:
+    for seg in range(1, (segment_count or 36) + 1):
+        payload = _fetch_segment(cid, seg, bvid)
+        elems = parse_danmaku_proto(payload)
+        if elems:
+            out.extend(elems)
+        # 正常路径已从 pagelist 得到时长：即使中间分片无弹幕也继续，防止漏掉
+        # 后续时间段；测试桩/旧响应无时长时保留空响应终止，避免扫满 36 次。
+        elif segment_count is None and not payload:
             break
-        out.extend(elems)
     return out
 
 

@@ -316,6 +316,15 @@
 
 ## 发布记录
 
+- **[v2.2.0](https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.2.0)** —
+  2026-08-31：统一 B 站请求治理与账号级冷却、全局下载调度、durable-first 持久化、
+  追更复合游标/分页续扫/失败退避、localhost 同源防护和前端注入收口；同时发布
+  全栈走查发现的九项数据安全与分 P 缺陷修复。
+- **[v2.1.1](https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.1.1)** —
+  2026-08-24：修复批量下载断链、任务状态集合漂移、文件定位/删除误伤和测试污染
+  用户任务记录，并同步项目文档。
+- **[v2.1.0](https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.1.0)** —
+  2026-08-24：下载文件名对齐官方标题、可靠性修复，以及前后端模块化重构。
 - **[v2.0.0](https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.0.0)** —
   2026-08-18:本地网页应用整体重构(加入即自动下载 / 缓存优先 / 下载队列合并 /
   设置即存 / 追更合集 / 网格视图 / 启动器自愈)。完整变更见 [CHANGELOG.md](../CHANGELOG.md),

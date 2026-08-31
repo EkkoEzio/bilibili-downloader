@@ -115,8 +115,8 @@ def _read() -> dict:
     return storage.read_json(CONFIG_FILE, default={})
 
 
-def _write(d: dict) -> None:
-    storage.write_json(CONFIG_FILE, d, indent=1)
+def _write(d: dict) -> bool:
+    return storage.write_json(CONFIG_FILE, d, indent=1)
 
 
 def _serialize(key: str, v):
@@ -157,13 +157,13 @@ def set_config(patch: dict) -> dict:
                     return {"ok": False, "error": err}
                 return {"ok": False, "error": f"{err}:{e}"}
             new_vals[key] = v
+        cur.update({k: _serialize(k, v) for k, v in new_vals.items()})
+        # 先提交完整候选配置；写盘失败时运行时全局值保持原状。
+        if not _write(cur):
+            return {"ok": False, "error": "保存失败:配置未写入磁盘",
+                    "persist_error": True}
         for key, v in new_vals.items():
             globals()[key.upper()] = v
-        cur.update({k: _serialize(k, v) for k, v in new_vals.items()})
-        try:
-            _write(cur)
-        except Exception as e:
-            return {"ok": False, "error": f"保存失败:{e}"}
     return {"ok": True, **get_config()}
 
 

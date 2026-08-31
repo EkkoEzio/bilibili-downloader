@@ -2,7 +2,7 @@
 import { registerPage, state, libDom, renderDefaultList, cachedLoad, getLibSearchQuery } from '../lib.js';
 import { getJSON } from '../net.js';
 import { icon } from '../icons.js';
-import { escapeHtml } from '../util.js';
+import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
 let _seasons = [];
 let _seasonsCurrent = null;  // 已进入的合集 season_id
@@ -32,7 +32,7 @@ export async function loadSeasons() {
     },
     showError: (msg) => {
       document.getElementById('season-overview').innerHTML =
-        `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadSeasons()">${icon('refresh')} 重试</button></div>`;
+        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadSeasons()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       _seasons = b.seasons || [];
@@ -64,23 +64,28 @@ function renderOverview() {
     : `<div class="panel"><div class="panel-body tight">${list.map(seasonRow).join('')}</div></div>`;
 }
 
-const seasonCard = (s) => `
-  <div class="fav-card" onclick="seasonEnter(this.dataset.id)" data-id="${escapeHtml(String(s.id))}">
+const seasonCard = (s) => {
+  const cover = safeHttpUrl(s.cover, { httpsOnly: true });
+  const itemCount = nonNegativeInt(s.media_count);
+  return `
+  <div class="fav-card" onclick="seasonEnter(this.dataset.id)" data-id="${escapeAttr(String(s.id ?? ''))}">
     <div class="fc-cover">
-      <img src="${escapeHtml(s.cover || '')}" onerror="this.style.visibility='hidden'" loading="lazy">
-      <span class="fc-count">${s.media_count || 0} 个视频</span>
+      <img src="${escapeAttr(cover)}" onerror="this.style.visibility='hidden'" loading="lazy">
+      <span class="fc-count">${itemCount} 个视频</span>
     </div>
     <div class="fc-title">${escapeHtml(s.title || '(未命名)')}</div>
     <div class="fc-sub">${icon('layers')}追更中</div>
   </div>`;
+};
 
 function seasonRow(s) {
+  const itemCount = nonNegativeInt(s.media_count);
   return `
-    <div class="fav-folder" onclick="seasonEnter(this.dataset.id)" data-id="${escapeHtml(String(s.id))}">
+    <div class="fav-folder" onclick="seasonEnter(this.dataset.id)" data-id="${escapeAttr(String(s.id ?? ''))}">
       <div class="fav-icon">${icon('layers')}</div>
       <div>
         <div class="fav-name">${escapeHtml(s.title)}<span class="fav-tag">追更中</span></div>
-        <div class="fav-count">${s.media_count || 0} 个视频</div>
+        <div class="fav-count">${itemCount} 个视频</div>
       </div>
       <span class="fav-arrow">${icon('chevron')}</span>
     </div>`;
@@ -98,7 +103,7 @@ export async function seasonEnter(sid) {
   d.meta.textContent = '';
   d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载合集内容...</div>';
   try {
-    const r = await getJSON(`/api/season-content?season_id=${sid}`);
+    const r = await getJSON(`/api/season-content?season_id=${encodeURIComponent(String(sid))}`);
     if (!r.ok) throw new Error(r.error || '加载失败');
     state.items = r.items || [];
     state.checked.clear();
@@ -106,7 +111,7 @@ export async function seasonEnter(sid) {
     renderDefaultList(d);
     d.meta.textContent = `共 ${state.items.length} 条`;
   } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="seasonEnter(this.dataset.id)" data-id="${escapeHtml(String(sid))}">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="seasonEnter(this.dataset.id)" data-id="${escapeHtml(String(sid))}">${icon('refresh')} 重试</button></div>`;
   }
 }
 

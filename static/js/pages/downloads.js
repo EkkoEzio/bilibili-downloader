@@ -3,7 +3,8 @@
 import { registerPage, state, libDom, renderPage, setItemExtras, LIB_PAGES, goPage } from '../lib.js';
 import { getJSON, postJSON, postEmpty } from '../net.js';
 import { icon } from '../icons.js';
-import { escapeHtml, escapeAttr, formatBytes, bvFromUrl, dlKey, pageFromUrl } from '../util.js';
+import { escapeHtml, escapeAttr, formatBytes, bvFromUrl, dlKey, pageFromUrl,
+         safeHttpUrl, safeDecimalId } from '../util.js';
 
 const TASK_ACTIVE = ['queued', 'downloading', 'merging', 'cancelling', 'retrying'];
 const TASK_STATUS_CN = {
@@ -11,12 +12,24 @@ const TASK_STATUS_CN = {
   cancelling: '取消中', retrying: '重试中', failed: '失败',
   cancelled: '已取消', interrupted: '已中断',
 };
+const TASK_TERMINAL = ['done', 'failed', 'cancelled', 'interrupted'];
+const TASK_KNOWN = new Set([...TASK_ACTIVE, ...TASK_TERMINAL]);
+
+function normalizedStatus(value) {
+  const status = String(value ?? '');
+  return TASK_KNOWN.has(status) ? status : 'unknown';
+}
+
+function inlineStringArg(value) {
+  return escapeAttr(JSON.stringify(String(value ?? '')));
+}
 
 /* 已下载判定(列表角标 + 批量跳过):done 任务的 (BV, 分P) 键集合。
    只按 BV 建集合会让合集下完 P1 后其余分 P 全被当已下载 —— 角标全挂上、
    批量提交时被整批过滤掉并提示「所选项均已下载过」,多 P / 合集主场景直接不可用。
    键规则(dlKey / pageFromUrl)的唯一来源在 ../util.js,这里只 import 不复制。 */
 let _doneKeys = new Set();
+let _loadSeq = 0;
 
 /* 集合构建的唯一来源(loadDownloads 与 pollTasks 共用,不许各写一份)。
    任务侧的 page 读 t.page —— /api/tasks 的任务对象已含该字段(start_download /
@@ -29,6 +42,10 @@ function doneKeySet(tasks) {
     .filter(Boolean));
 }
 
+function sameSet(a, b) {
+  return a.size === b.size && [...a].every(value => b.has(value));
+}
+
 /* 查询侧的 page 只能从 URL 的 ?p= 解析(入参只有 URL,拿不到任务对象)。
    与任务侧取法不对称是刻意的,写反任一侧都会悄悄退回「只看 BV」的缺陷形态。 */
 function isDownloaded(url) {
@@ -36,18 +53,45 @@ function isDownloaded(url) {
   return !!bv && _doneKeys.has(dlKey(bv, pageFromUrl(url)));
 }
 
-export async function loadDownloads() {
-  const d = libDom();
-  d.meta.textContent = '';
+function applyTaskSnapshot(tasks) {
+  const nextDone = doneKeySet(tasks);
+  const changed = !sameSet(_doneKeys, nextDone);
+  _doneKeys = nextDone;
+  updateBadge(tasks);
+  tasks.filter(t => TASK_ACTIVE.includes(t.status))
+    .forEach(t => subscribeProgress(String(t.task_id ?? '')));
+  return changed;
+}
+
+export async function loadDownloads(prefetchedTasks) {
+  const seq = ++_loadSeq;
+  if (state.mode === 'downloads') {
+    const d = libDom();
+    d.meta.textContent = '';
+  }
   try {
-    const r = await getJSON('/api/tasks');
-    const tasks = r.tasks || [];
-    _doneKeys = doneKeySet(tasks);
-    updateBadge(tasks);
+    let tasks = prefetchedTasks;
+    if (!Array.isArray(tasks)) {
+      const r = await getJSON('/api/tasks');
+      tasks = Array.isArray(r.tasks) ? r.tasks : [];
+    }
+    // 请求代次同时解决 downloads → 其它页 → downloads 的 ABA 旧响应覆盖。
+    if (seq !== _loadSeq) return;
+    const badgesChanged = applyTaskSnapshot(tasks);
+    if (state.mode !== 'downloads') {
+      // 只重绘当前内容页的已下载角标，绝不把下载任务写进共享 state.items。
+      if (badgesChanged && LIB_PAGES.includes(state.mode)
+          && !document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
+        renderPage();
+      }
+      return;
+    }
+
     // 进行中在最前(时间倒序),其余(完成/失败/取消)按完成时间倒序
     state.items = tasks.map(t => {
+      const status = normalizedStatus(t.status);
       const it = {
-        task_id: t.task_id, status: t.status,
+        task_id: String(t.task_id ?? ''), status,
         url: t.url, title: t.title || '(解析中)', label: t.label || '',
         /* page 必须进白名单:它是任务的权威分 P 值(/api/tasks 已返回),
            libDownload 重下这条记录时靠它提交正确的分 P。漏掉这一行 it.page 就是
@@ -55,7 +99,7 @@ export async function loadDownloads() {
            读 t.page 而不是解析 t.url —— 任务表里的 url 是用户粘贴的原始链接,
            常不带 ?p=,解析它会把所有任务都算成 P1,与漏掉字段等价。 */
         page: t.page || 1,
-        uploader: t.uploader || '', uploader_mid: t.uploader_mid || 0,
+        uploader: t.uploader || '', uploader_mid: safeDecimalId(t.uploader_mid) || 0,
         thumbnail: t.thumbnail || '', duration: t.duration || 0,
         view_at: t.finished_at || t.created_at || 0,
         progress: t.progress || 0, speed: t.speed || 0, eta: t.eta || 0,
@@ -63,18 +107,21 @@ export async function loadDownloads() {
         rename_conflict: t.rename_conflict || null,
         rename_error: t.rename_error || '',
         rename_skipped: t.rename_skipped || '',
-        _sort: (TASK_ACTIVE.includes(t.status) ? 0 : 1) * 1e10 - (t.finished_at || t.created_at || 0),
+        _sort: (TASK_ACTIVE.includes(status) ? 0 : 1) * 1e10 - (t.finished_at || t.created_at || 0),
       };
       return it;
     }).sort((a, b) => a._sort - b._sort);
+    if (!document.querySelectorAll('.page.active input[data-libidx]:checked').length) _dirty = false;
     renderPage();
     const doneN = state.items.filter(x => x.status === 'done').length;
     const activeN = state.items.filter(x => TASK_ACTIVE.includes(x.status)).length;
+    const d = libDom();
     d.meta.textContent = `已下载 ${doneN} 条` + (activeN ? ` · 进行中 ${activeN}` : '');
     loadStats();
-    tasks.filter(t => TASK_ACTIVE.includes(t.status)).forEach(t => subscribeProgress(t.task_id));
   } catch (e) {
-    d.list.innerHTML = `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadDownloads()">${icon('refresh')} 重试</button></div>`;
+    if (seq !== _loadSeq || state.mode !== 'downloads') return;
+    const d = libDom();
+    d.list.innerHTML = `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="loadDownloads()">${icon('refresh')} 重试</button></div>`;
   }
 }
 
@@ -90,41 +137,60 @@ function updateBadge(tasks) {
 
 /* SSE 进度 → 就地更新任务卡,不打断浏览 */
 function updateTaskCard(t) {
-  const card = document.getElementById('vt-' + t.task_id);
+  const terminal = TASK_TERMINAL.includes(t.status);
+  // 切到其它页后忽略进行中 tick；仅终态刷新任务快照和当前页角标。
+  if (state.mode !== 'downloads') {
+    if (terminal) maybeReload();
+    return;
+  }
+  const taskId = String(t.task_id ?? '');
+  const card = document.getElementById('vt-' + taskId);
   if (!card) { maybeReload(); return; }
-  const pct = Math.min(100, Math.max(0, t.progress || 0));
+  const rawProgress = Number(t.progress);
+  const pct = Math.min(100, Math.max(0, Number.isFinite(rawProgress) ? rawProgress : 0));
   const bar = card.querySelector('.dp-bar i');
   if (bar) bar.style.width = pct + '%';
   const set = (sel, val) => { const el = card.querySelector(sel); if (el && val != null) el.textContent = val; };
   set('.dp-pct', pct + '%');
-  if (t.speed) set('.dp-spd', t.speed > 1024 ? (t.speed / 1024).toFixed(1) + ' MB/s' : t.speed.toFixed(0) + ' KB/s');
-  if (t.eta) set('.dp-eta', '剩余 ' + t.eta + 's');
+  const speed = Number(t.speed);
+  if (Number.isFinite(speed) && speed > 0) {
+    set('.dp-spd', speed > 1024 ? (speed / 1024).toFixed(1) + ' MB/s' : speed.toFixed(0) + ' KB/s');
+  }
+  const eta = Number(t.eta);
+  if (Number.isFinite(eta) && eta > 0) set('.dp-eta', '剩余 ' + Math.ceil(eta) + 's');
+  const status = normalizedStatus(t.status);
   const tag = card.querySelector('.status-tag');
-  if (tag) { tag.className = 'status-tag ' + t.status; tag.textContent = TASK_STATUS_CN[t.status] || t.status; }
-  if (['done', 'failed', 'cancelled', 'interrupted'].includes(t.status)) maybeReload();
+  if (tag) { tag.className = 'status-tag ' + status; tag.textContent = TASK_STATUS_CN[status] || status; }
+  if (terminal) maybeReload();
 }
 
 /* 勾选期间不整体重拉(列表会重排、勾选索引移位),清空勾选后再拉 */
 let _dirty = false;
 function maybeReload() {
-  if (document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
+  if (state.mode === 'downloads'
+      && document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
     _dirty = true;
     return;
   }
-  loadDownloads().then(() => {
-    if (state.mode !== 'downloads' && LIB_PAGES.includes(state.mode)) renderPage();  // 刷其它页的「已下载」角标
-  });
+  loadDownloads();
 }
 
 /* 30 秒兜底轮询(与 SSE 互为保险):角标 + 下载记录页静默刷新 */
 export async function pollTasks() {
   try {
-    const tasks = await getJSON('/api/tasks').then(r => r.tasks || []);
-    _doneKeys = doneKeySet(tasks);
+    const tasks = await getJSON('/api/tasks')
+      .then(r => Array.isArray(r.tasks) ? r.tasks : []);
+    const nextDone = doneKeySet(tasks);
+    const badgesChanged = !sameSet(_doneKeys, nextDone);
+    _doneKeys = nextDone;
     updateBadge(tasks);
+    tasks.filter(t => TASK_ACTIVE.includes(t.status))
+      .forEach(t => subscribeProgress(String(t.task_id ?? '')));
     if (state.mode === 'downloads'
         && !document.querySelectorAll('.page.active input[data-libidx]:checked').length) {
-      loadDownloads();
+      loadDownloads(tasks);  // 复用本次快照，不再发第二次 /api/tasks
+    } else if (state.mode !== 'downloads' && badgesChanged && LIB_PAGES.includes(state.mode)) {
+      renderPage();
     }
   } catch (e) { /* ignore */ }
 }
@@ -133,13 +199,15 @@ export async function pollTasks() {
 const _activeSSE = {};
 
 export function subscribeProgress(taskId, retries) {
-  if (_activeSSE[taskId]) return;
+  taskId = String(taskId ?? '');
+  if (!taskId || _activeSSE[taskId]) return;
   retries = retries || 0;
-  const es = new EventSource('/api/progress/' + taskId);
+  const es = new EventSource('/api/progress/' + encodeURIComponent(taskId));
   _activeSSE[taskId] = es;
   es.onmessage = (ev) => {
     retries = 0;
-    const t = JSON.parse(ev.data);
+    let t;
+    try { t = JSON.parse(ev.data); } catch (e) { return; }
     updateTaskCard(t);
     if (['done', 'failed', 'cancelled', 'interrupted'].includes(t.status)) {
       es.close(); delete _activeSSE[taskId];
@@ -155,18 +223,19 @@ export function subscribeProgress(taskId, retries) {
 
 export async function cancelTask(taskId) {
   try {
-    await postEmpty('/api/cancel/' + taskId);
+    await postEmpty('/api/cancel/' + encodeURIComponent(String(taskId ?? '')));
   } catch (e) { /* SSE 会更新状态 */ }
 }
 
 /* ---------- 任务卡渲染(注入 lib 的列表框架) ---------- */
 /* 文件名对齐提示(名称冲突 / 自动改名失败 / 同名同大小跳过) */
 function taskWarnHtml(it) {
+  const taskArg = inlineStringArg(it.task_id);
   if (it.rename_conflict) {
     return `<div class="dp-err">名称冲突:已有同名文件
-      <button class="ghost sm" onclick="resolveTaskConflict('${it.task_id}','rename_with_index')">加 (1) 改名</button>
-      <button class="ghost sm" onclick="resolveTaskConflict('${it.task_id}','open_existing')">打开现有文件</button>
-      <button class="ghost sm" onclick="resolveTaskConflict('${it.task_id}','cancel')">忽略</button></div>`;
+      <button class="ghost sm" onclick="resolveTaskConflict(${taskArg},'rename_with_index')">加 (1) 改名</button>
+      <button class="ghost sm" onclick="resolveTaskConflict(${taskArg},'open_existing')">打开现有文件</button>
+      <button class="ghost sm" onclick="resolveTaskConflict(${taskArg},'cancel')">忽略</button></div>`;
   }
   if (it.rename_error) {
     return `<div class="dp-err" title="${escapeAttr(it.rename_error)}">自动改名失败:${escapeHtml(String(it.rename_error).slice(0, 60))}</div>`;
@@ -179,29 +248,39 @@ function taskWarnHtml(it) {
 
 /* 任务卡:进行中带进度条(供 SSE 就地更新),失败显示原因 */
 function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
-  const active = TASK_ACTIVE.includes(it.status);
-  const pct = Math.min(100, Math.max(0, it.progress || 0));
-  const spd = it.speed > 1024 ? (it.speed / 1024).toFixed(1) + ' MB/s' : (it.speed || 0).toFixed(0) + ' KB/s';
+  const status = normalizedStatus(it.status);
+  const active = TASK_ACTIVE.includes(status);
+  const rawProgress = Number(it.progress);
+  const pct = Math.min(100, Math.max(0, Number.isFinite(rawProgress) ? rawProgress : 0));
+  const rawSpeed = Number(it.speed);
+  const speed = Number.isFinite(rawSpeed) && rawSpeed > 0 ? rawSpeed : 0;
+  const rawEta = Number(it.eta);
+  const eta = Number.isFinite(rawEta) && rawEta > 0 ? Math.ceil(rawEta) : 0;
+  const spd = speed > 1024 ? (speed / 1024).toFixed(1) + ' MB/s' : speed.toFixed(0) + ' KB/s';
   const bar = active
     ? `<div class="dp-bar"><i style="width:${pct}%"></i></div>` : '';
-  const err = ['failed', 'interrupted'].includes(it.status) && it.error
+  const err = ['failed', 'interrupted'].includes(status) && it.error
     ? `<div class="dp-err" title="${escapeAttr(it.error)}">${escapeHtml(String(it.error).slice(0, 80))}</div>` : '';
-  const live = it.status === 'downloading'
+  const live = status === 'downloading'
     ? `<span class="dp-pct">${pct}%</span><span class="dp-spd">${spd}</span>` +
-      (it.eta ? `<span class="dp-eta">剩余 ${it.eta}s</span>` : '')
-    : (it.status === 'merging' ? '<span class="dp-eta">正在合并音视频...</span>' : '');
-  const metaInner = `<span class="status-tag ${it.status}">${TASK_STATUS_CN[it.status] || it.status}</span>${live}` +
+      (eta ? `<span class="dp-eta">剩余 ${eta}s</span>` : '')
+    : (status === 'merging' ? '<span class="dp-eta">正在合并音视频...</span>' : '');
+  const metaInner = `<span class="status-tag ${status}">${TASK_STATUS_CN[status] || status}</span>${live}` +
     (it.label ? `<span class="q-label">[${escapeHtml(it.label)}]</span>` : '');
+  const taskArg = inlineStringArg(it.task_id);
   const cancelBtn = active
-    ? `<button class="danger sm" onclick="cancelTask('${it.task_id}')">取消</button>` : '';
-  const titleHtml = it.url
-    ? `<a href="${escapeAttr(it.url)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
+    ? `<button class="danger sm" onclick="cancelTask(${taskArg})">取消</button>` : '';
+  const targetUrl = safeHttpUrl(it.url);
+  const titleHtml = targetUrl
+    ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
     : escapeHtml(it.title);
-  const thumb = `<div class="thumb-wrap"><img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy"></div>`;
+  const thumbnail = safeHttpUrl(it.thumbnail, { httpsOnly: true });
+  const thumb = `<div class="thumb-wrap"><img src="${escapeAttr(thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy"></div>`;
   const warn = taskWarnHtml(it);
+  const domId = escapeAttr(String(it.task_id ?? ''));
   if (!isGrid) {
     return `
-    <div class="video-item lv${checkedCls}" id="vt-${it.task_id}">
+    <div class="video-item lv${checkedCls}" id="vt-${domId}">
       ${checkHtml}
       ${thumb}
       <div class="lv-body">
@@ -214,7 +293,7 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
     </div>`;
   }
   return `
-  <div class="video-item${checkedCls}" id="vt-${it.task_id}">
+  <div class="video-item${checkedCls}" id="vt-${domId}">
     ${checkHtml}
     ${thumb}
     <div class="vi-title">${titleHtml}</div>
@@ -265,6 +344,7 @@ export async function clearInvalidRecords() {
 export async function revealTask(taskId) {
   if (!taskId) return;
   try {
+    taskId = encodeURIComponent(String(taskId));
     const r = await postEmpty('/api/task/' + taskId + '/reveal');
     if (!r.ok) alert('打开失败: ' + (r.error || ''));
     else if (!r.found) alert('没找到该视频的文件(可能已被删除或移动),已打开下载目录。');
@@ -274,7 +354,10 @@ export async function revealTask(taskId) {
 /* 处理名称冲突(加后缀改名 / 打开现有文件 / 忽略) */
 export async function resolveTaskConflict(taskId, action) {
   try {
-    const r = await postJSON('/api/task/' + taskId + '/resolve-conflict', { action });
+    const encodedTaskId = encodeURIComponent(String(taskId ?? ''));
+    const allowedActions = ['rename_with_index', 'cancel', 'open_existing'];
+    if (!allowedActions.includes(action)) throw new Error('非法处理动作');
+    const r = await postJSON('/api/task/' + encodedTaskId + '/resolve-conflict', { action });
     if (!r.ok) throw new Error(r.error || '处理失败');
     loadDownloads();
   } catch (e) { alert(e.message); }

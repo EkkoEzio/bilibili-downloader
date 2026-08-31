@@ -24,8 +24,14 @@ bvid_from_url = extras.bvid_from_url
 # 任务状态表:task_id -> {status, progress, speed, eta, title, filepath, error, cancel}
 _tasks: dict[str, dict] = {}
 _tasks_lock = threading.Lock()
-# 写盘锁独立于任务锁:快照在任务锁内取,写盘(含 IO)不阻塞任务状态更新
+# 所有 tasks.json 提交先抢持久化锁，再在任务锁内取快照；这样快照顺序与
+# 落盘顺序一致，同时慢 IO 仍不占用任务锁。
 _persist_lock = threading.Lock()
+
+
+class TaskStoreWriteError(RuntimeError):
+    """任务事实未能可靠写入 tasks.json。"""
+
 
 # postprocessor 钩子捕获的最终落盘路径(设计 A.3):task_id -> str
 # MoveFiles 是最后一个后处理器,其 finished 载荷里的 filepath 即合并/搬运完成的最终文件
@@ -40,14 +46,66 @@ TERMINAL = ("done", "failed", "cancelled", "interrupted")
 _ACTIVE = ACTIVE  # 旧名保留,避免下游 import 断裂
 
 
-def _persist() -> None:
-    """把当前所有任务快照写盘。去掉 cancel 标志,保留其余展示字段。
-    storage.write_json 原子替换;独立写锁防多线程并发写盘
-    (进度钩子/批量线程/取消删除路由都会调这里)。"""
-    with _tasks_lock:
-        snapshot = [{k: v for k, v in t.items() if k != "cancel"} for t in _tasks.values()]
+def _snapshot(tasks) -> list[dict]:
+    """生成可持久化拷贝；运行时 cancel 标志不写入历史。"""
+    return [{k: v for k, v in t.items() if k != "cancel"} for t in tasks]
+
+
+def _active_key(t: dict) -> tuple[str, str, int]:
+    try:
+        page = int(t.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    return str(t.get("url") or ""), str(t.get("label") or ""), page
+
+
+def _persist() -> bool:
+    """按快照产生顺序串行写盘，避免旧快照在新快照之后覆盖。"""
     with _persist_lock:
-        storage.write_json(TASKS_FILE, snapshot)
+        with _tasks_lock:
+            snapshot = _snapshot(_tasks.values())
+        return storage.write_json(TASKS_FILE, snapshot)
+
+
+def create_tasks_if_absent(candidates: list[dict]) -> tuple[list[dict], dict[str, str]]:
+    """原子过滤活跃重复并持久化创建；成功后任务才对内存和调度器可见。
+
+    重复键沿用既有语义：精确 ``(url, label, page)`` 且状态属于 ACTIVE。
+    返回 ``(已创建任务, {候选 task_id: 已存在 task_id})``。
+    """
+    if not candidates:
+        return [], {}
+    with _persist_lock:
+        with _tasks_lock:
+            active = {_active_key(t): tid for tid, t in _tasks.items()
+                      if t.get("status") in ACTIVE}
+            occupied_ids = set(_tasks)
+            accepted: list[dict] = []
+            duplicates: dict[str, str] = {}
+            for raw in candidates:
+                task = dict(raw)
+                tid = str(task.get("task_id") or "")
+                if not tid:
+                    raise ValueError("任务缺少 task_id")
+                if tid in occupied_ids:
+                    raise ValueError(f"任务 ID 冲突:{tid}")
+                key = _active_key(task)
+                existing = active.get(key)
+                if existing:
+                    duplicates[tid] = existing
+                    continue
+                task.setdefault("cancel", False)
+                accepted.append(task)
+                occupied_ids.add(tid)
+                active[key] = tid
+            if not accepted:
+                return [], duplicates
+            snapshot = _snapshot([*_tasks.values(), *accepted])
+        if not storage.write_json(TASKS_FILE, snapshot):
+            raise TaskStoreWriteError("任务记录写入失败，下载未入队")
+        with _tasks_lock:
+            _tasks.update({t["task_id"]: t for t in accepted})
+        return [dict(t) for t in accepted], duplicates
 
 
 def _load_persisted() -> None:
@@ -206,18 +264,30 @@ def find_task_files(task_id: str) -> list:
 
 
 def delete_tasks(task_ids: list, delete_file: bool) -> int:
-    """删除任务记录。delete_file=True 时连已下载文件一起删。进行中任务先取消。"""
-    removed = []
-    with _tasks_lock:
-        for tid in task_ids:
-            t = _tasks.get(tid)
-            if not t:
-                continue
-            if t["status"] in _ACTIVE:
-                t["cancel"] = True  # 进行中的先标记取消
-            removed.append(t)
-            del _tasks[tid]
-            _final_paths.pop(tid, None)
+    """先持久化删除记录，再提交内存并删除文件；写盘失败不做不可逆删除。"""
+    wanted = set(task_ids)
+    removed: list[dict] = []
+    with _persist_lock:
+        with _tasks_lock:
+            for tid in wanted:
+                t = _tasks.get(tid)
+                if not t:
+                    continue
+                if t.get("status") in ACTIVE:
+                    # 先止损：即使后续磁盘写失败，也不应继续用户要求删除的下载。
+                    t["cancel"] = True
+                removed.append(dict(t))
+            if not removed:
+                return 0
+            removed_ids = {t["task_id"] for t in removed}
+            snapshot = _snapshot(t for tid, t in _tasks.items()
+                                 if tid not in removed_ids)
+        if not storage.write_json(TASKS_FILE, snapshot):
+            raise TaskStoreWriteError("任务记录删除未能写入，文件未删除")
+        with _tasks_lock:
+            for tid in removed_ids:
+                _tasks.pop(tid, None)
+                _final_paths.pop(tid, None)
     if delete_file:
         for t in removed:
             for f in _task_files(t):
@@ -225,7 +295,6 @@ def delete_tasks(task_ids: list, delete_file: bool) -> int:
                     f.unlink(missing_ok=True)
                 except Exception:
                     pass
-    _persist()
     return len(removed)
 
 

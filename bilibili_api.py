@@ -4,6 +4,7 @@
 数据域缓存(_followings_cache/_follow_cache)归本模块,登出时由
 bilibili_auth.clear_session 经 reset_data_caches 清空。
 """
+import logging
 import threading
 import time
 from typing import Optional
@@ -13,21 +14,37 @@ import requests
 import up_list
 from bilibili_auth import (BROWSER_HEADERS, get_cookiejar,
                            get_ytdlp_cookie_arg, _session_lock)
+from request_governor import (UpstreamRateLimitError, governed_get, governor)
 
 NAV_API = "https://api.bilibili.com/x/web-interface/nav"
+log = logging.getLogger("bd.bilibili_api")
+
+
+def _get(url: str, *, kind: str = "default", **kwargs):
+    """通过统一请求治理器调用当前 requests.get（保留测试替换能力）。"""
+    return governed_get(requests.get, url, kind=kind, **kwargs)
 
 
 def _safe_json(resp):
     try:
-        return resp.json()
+        data = resp.json()
+        if isinstance(data, dict):
+            governor.note_api_code(data.get("code"),
+                                   endpoint=getattr(resp, "url", ""))
+        return data
+    except UpstreamRateLimitError:
+        raise
     except Exception:
         return None
 
 
 def _my_mid(cj) -> Optional[int]:
     try:
-        resp = requests.get(NAV_API, cookies=cj, headers=BROWSER_HEADERS, timeout=10)
-        return resp.json().get("data", {}).get("mid")
+        resp = _get(NAV_API, cookies=cj, headers=BROWSER_HEADERS, timeout=10)
+        data = _safe_json(resp)
+        return (data or {}).get("data", {}).get("mid")
+    except UpstreamRateLimitError:
+        raise
     except Exception:
         return None
 
@@ -78,7 +95,7 @@ def _paged_get(url: str, base_params: dict, *, what: str, max_pages: int, ps: in
         base_params = {**base_params, mid_param: mid}
     out = []
     for pn in range(1, max_pages + 1):
-        resp = requests.get(url, cookies=cj, headers=BROWSER_HEADERS,
+        resp = _get(url, cookies=cj, headers=BROWSER_HEADERS,
                             params={**base_params, "pn": pn, "ps": ps}, timeout=12)
         data = _safe_json(resp)
         if not data or data.get("code") != 0:
@@ -105,10 +122,12 @@ def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
     last = None
     for attempt in range(3):
         try:
-            resp = requests.get("https://api.bilibili.com/x/v2/history",
+            resp = _get("https://api.bilibili.com/x/v2/history",
                                 cookies=cj, headers=BROWSER_HEADERS,
                                 params={"pn": page, "ps": min(size, 100)}, timeout=12)
             data = resp.json()
+            governor.note_api_code(data.get("code"),
+                                   endpoint="https://api.bilibili.com/x/v2/history")
             break
         except requests.RequestException as e:
             last = e
@@ -134,7 +153,7 @@ def fetch_watchlater() -> list[dict]:
     cj = get_cookiejar()
     if cj is None:
         raise RuntimeError("未登录,无法获取稍后再看")
-    resp = requests.get("https://api.bilibili.com/x/v2/history/toview",
+    resp = _get("https://api.bilibili.com/x/v2/history/toview",
                         cookies=cj, headers=BROWSER_HEADERS, timeout=12)
     data = _safe_json(resp)
     if not data or data.get("code") != 0:
@@ -153,7 +172,7 @@ def fetch_fav_folders() -> list[dict]:
     mid = _my_mid(cj)
     if not mid:
         raise RuntimeError("无法获取用户 ID")
-    resp = requests.get("https://api.bilibili.com/x/v3/fav/folder/created/list-all",
+    resp = _get("https://api.bilibili.com/x/v3/fav/folder/created/list-all",
                         cookies=cj, headers=BROWSER_HEADERS,
                         params={"up_mid": mid}, timeout=12)
     data = _safe_json(resp)
@@ -238,33 +257,48 @@ _followings_cache = {"items": [], "total": 0, "ts": 0}
 # 数据域锁:罩 _followings_cache/_follow_cache。check/act 各自短锁,
 # 翻页等慢网络请求一律锁外,不给 B 站请求排队。
 _fetch_lock = threading.Lock()
+# 冷缓存/强制刷新 single-flight：同一数据源同一时刻只允许一个真实上游抓取。
+_followings_refresh_lock = threading.Lock()
+_follow_refresh_lock = threading.Lock()
 
 
 def fetch_followings_all(force: bool = False, max_pages: int = 10) -> dict:
     """拉取我关注的全部 UP(上限 max_pages*50)。10 分钟缓存。
 
     relation 接口轻量,翻页间隔 0.2s 即可;与 arc/search 的账号级风控不是一类。
+    并发冷启动/强制刷新通过 single-flight 合并，等待者复用先完成的结果。
     """
+    started_at = time.time()
     with _fetch_lock:
-        if not force and _followings_cache["items"] and time.time() - _followings_cache["ts"] < 600:
+        if (not force and _followings_cache["items"]
+                and started_at - _followings_cache["ts"] < 600):
             return {"items": _followings_cache["items"], "total": _followings_cache["total"]}
-    box = {"total": 0}
 
-    def parse(d, fetched):
-        box["total"] = d.get("total", 0)
-        items = [{"mid": f.get("mid"), "uname": f.get("uname", ""),
-                  "face": (f.get("face") or "").replace("http:", "https:")}
-                 for f in d.get("list") or []]
-        has_more = not (fetched + len(items) >= box["total"] or not items)
-        return items, has_more
+    with _followings_refresh_lock:
+        # 等锁期间若已有请求刷新成功，即使本次原本 force 也复用该新结果。
+        with _fetch_lock:
+            if (_followings_cache["items"]
+                    and (_followings_cache["ts"] >= started_at
+                         or (not force and time.time() - _followings_cache["ts"] < 600))):
+                return {"items": _followings_cache["items"],
+                        "total": _followings_cache["total"]}
+        box = {"total": 0}
 
-    all_items = _paged_get("https://api.bilibili.com/x/relation/followings",
-                           {"order": "desc"}, what="关注列表",
-                           max_pages=max_pages, ps=50, gap=0.2,
-                           mid_param="vmid", parse=parse)
-    with _fetch_lock:
-        _followings_cache.update(items=all_items, total=box["total"], ts=time.time())
-    return {"items": all_items, "total": box["total"]}
+        def parse(d, fetched):
+            box["total"] = d.get("total", 0)
+            items = [{"mid": f.get("mid"), "uname": f.get("uname", ""),
+                      "face": (f.get("face") or "").replace("http:", "https:")}
+                     for f in d.get("list") or []]
+            has_more = not (fetched + len(items) >= box["total"] or not items)
+            return items, has_more
+
+        all_items = _paged_get("https://api.bilibili.com/x/relation/followings",
+                               {"order": "desc"}, what="关注列表",
+                               max_pages=max_pages, ps=50, gap=0.2,
+                               mid_param="vmid", parse=parse)
+        with _fetch_lock:
+            _followings_cache.update(items=all_items, total=box["total"], ts=time.time())
+        return {"items": all_items, "total": box["total"]}
 
 
 _wbi_ie = None
@@ -286,42 +320,50 @@ def _get_wbi_ie():
 
 
 def fetch_up_card(mid: int) -> Optional[dict]:
-    """公开的用户卡片接口:mid → {"uname", "face"}。失败返回 None。
+    """公开的用户卡片接口:mid → {"uname", "face"}。普通失败返回 None。
 
-    添加 UP 时用它拿名称/头像(arc/search 的视频列表里没有 UP 头像)。
+    明确限流异常必须向上传播，避免添加 UP 时把“被风控”误判成“没有数据”。
     """
     try:
-        r = requests.get("https://api.bilibili.com/x/web-interface/card",
-                         params={"mid": mid}, headers=BROWSER_HEADERS, timeout=10)
-        data = r.json()
-        if data.get("code") != 0:
+        r = _get("https://api.bilibili.com/x/web-interface/card",
+                 params={"mid": mid}, headers=BROWSER_HEADERS, timeout=10)
+        data = _safe_json(r)
+        if not data or data.get("code") != 0:
             return None
         card = (data.get("data") or {}).get("card") or {}
         return {"uname": card.get("name", ""), "face": card.get("face", "")}
+    except UpstreamRateLimitError:
+        raise
     except Exception:
         return None
 
 
 def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
-    """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。单个失败不影响整体。
+    """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。
 
-    ps=页大小,pn=页码(1 起)。遇到 412/风控返回 [],不抛异常。
+    arc/search 走敏感接口队列。限流、非 JSON 和业务错误不再伪装成空列表，
+    让上层保留 last-good cache 和 last_seen；调用方可按单 UP 隔离普通失败。
     """
     try:
         ie = _get_wbi_ie()
-        signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": str(pn), "order": "pubdate"}, str(mid))
-        resp = requests.get("https://api.bilibili.com/x/space/wbi/arc/search",
-                            params=signed, cookies=get_cookiejar(),
-                            headers={**BROWSER_HEADERS, "Referer": f"https://space.bilibili.com/{mid}"},
-                            timeout=12)
-        # 412/风控时返回 HTML 不是 JSON,_safe_json 返回 None
-        if resp.status_code == 412:
-            return []
+        signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": str(pn),
+                               "order": "pubdate"}, str(mid))
+        endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
+        resp = _get(endpoint, kind="sensitive", params=signed,
+                    cookies=get_cookiejar(),
+                    headers={**BROWSER_HEADERS,
+                             "Referer": f"https://space.bilibili.com/{mid}"},
+                    timeout=12)
         data = _safe_json(resp)
-        if not data or data.get("code") != 0:
-            return []
-    except Exception:
-        return []
+        if not data:
+            raise RuntimeError("UP 投稿接口返回非 JSON 数据")
+        if data.get("code") != 0:
+            raise RuntimeError(data.get("message") or "获取 UP 投稿失败")
+    except UpstreamRateLimitError:
+        raise
+    except Exception as e:
+        raise RuntimeError(f"获取 UP {mid} 投稿失败: {e}") from e
+
     items = []
     for v in (data.get("data", {}) or {}).get("list", {}).get("vlist", []) or []:
         items.append(_video_item(v, owner_key=None, name_key="author",
@@ -335,60 +377,84 @@ _follow_cache = {"items": None, "ts": 0.0}
 def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -> list[dict]:
     """拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 5 分钟缓存。
 
-    重要: B 站 arc/search 接口对**账号级别**限流敏感,6 并发 + 错峰 0-0.5s
-    仍会触发 412 限流(实测 30/30 全失败,账号风控持续 5+ 分钟)。
-    改为**串行 + 1.5 秒间隔**,牺牲速度换稳定性。30 UP = 45 秒。
+    arc/search 串行且由统一治理器做最小间隔/账号冷却。并发刷新通过
+    single-flight 合并；明确限流时整轮失败并保留 last-good cache，普通单 UP
+    错误只隔离该 UP，避免一人异常拖垮整页。
     """
+    started_at = time.time()
     with _fetch_lock:
         if (not force and _follow_cache["items"] is not None
-                and time.time() - _follow_cache["ts"] < 300):  # 5 分钟
+                and started_at - _follow_cache["ts"] < 300):
             return _follow_cache["items"]
-    follows = fetch_followings(1, max_ups)
-    results = []
-    # 串行拉取,每个 UP 间间隔 1.5 秒
-    for up in follows:
-        items = fetch_up_videos(up["mid"], ps)
-        results.extend(items)
-        time.sleep(1.5)
-    results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
-    with _fetch_lock:
-        _follow_cache.update(items=results, ts=time.time())
-    return results
+
+    with _follow_refresh_lock:
+        with _fetch_lock:
+            if (_follow_cache["items"] is not None
+                    and (_follow_cache["ts"] >= started_at
+                         or (not force and time.time() - _follow_cache["ts"] < 300))):
+                return _follow_cache["items"]
+
+        follows = fetch_followings(1, max_ups)
+        results = []
+        succeeded = 0
+        for i, up in enumerate(follows):
+            try:
+                results.extend(fetch_up_videos(up["mid"], ps))
+                succeeded += 1
+            except UpstreamRateLimitError:
+                raise
+            except Exception as e:
+                log.warning("关注动态:UP %s 拉取失败:%s", up.get("mid"), e)
+            if i < len(follows) - 1:
+                time.sleep(1.5)
+
+        if follows and succeeded == 0:
+            raise RuntimeError("关注动态全部拉取失败，已保留上次缓存")
+        results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
+        with _fetch_lock:
+            _follow_cache.update(items=results, ts=time.time())
+        return results
 
 
 def reset_data_caches() -> None:
-    """登出/切登录态时清数据域缓存(由 bilibili_auth.clear_session 调用)。
+    """登录世代变化时清身份相关数据、WBI 签名器与接口间隔。
 
-    与旧 clear_session 内联逻辑同锁纪律:持 _fetch_lock、不嵌套会话域锁。
+    会话锁和数据锁分开获取、不嵌套，避免与 get_cookiejar/_get_wbi_ie 形成
+    锁顺序反转。账号级 412/429 冷却刻意保留，切换登录态不能绕过熔断。
     """
+    global _wbi_ie
     with _fetch_lock:
         _followings_cache.update(items=[], total=0, ts=0.0)
         _follow_cache.update(items=None, ts=0.0)
+    with _session_lock:
+        _wbi_ie = None
+    governor.reset_spacing()
 
 
 def register_up(mid: int) -> dict:
-    """把 UP 加入自动下载清单:取名称/头像(用户卡片接口,投稿作者名兜底),
-    并以该 UP 当前最新投稿打「已见」基线——加入之后只有新投稿才自动下载。
-    拿不到最新投稿时用当前时刻兜底(时间上早于现在的都不会算新增)。
-    返回 up_list.add_up 的清单条目。"""
+    """取 UP 身份与最新投稿，并把清单项、初始游标一次性持久化。"""
     uname, face = "", ""
     card = fetch_up_card(mid)
     if card:
         uname, face = card.get("uname", ""), card.get("face", "")
-    if not uname:
-        items = fetch_up_videos(mid, ps=1)
-        if items:
-            uname = items[0].get("uploader", "")
-    u = up_list.add_up(mid, uname, face)
+
     now = int(time.time())
-    try:
-        page = fetch_up_videos(mid, ps=1)
-        newest = page[0] if page else None
-    except Exception:
-        newest = None
+    # 普通接口错误和明确限流都必须向上返回；只有真实空列表才使用“当前时刻”
+    # 基线。否则一次网络故障会伪装成无投稿，并永久掩盖故障前的存量视频。
+    page = fetch_up_videos(mid, ps=1)
+    newest = page[0] if page else None
+    if not uname and newest:
+        uname = newest.get("uploader", "")
     if newest:
-        up_list.mark_seen(mid, newest.get("bvid", ""), newest.get("view_at", 0),
-                          newest.get("title", ""), fetched_at=now)
+        bvid = newest.get("bvid", "")
+        initial_seen = {
+            "bvid": bvid,
+            "ts": newest.get("view_at", 0),
+            "title": newest.get("title", ""),
+            "fetched_at": now,
+            "same_ts_bvids": [bvid] if bvid else [],
+        }
     else:
-        up_list.mark_seen(mid, "", now, "", fetched_at=now)
-    return u
+        initial_seen = {"bvid": "", "ts": now, "title": "", "fetched_at": now,
+                        "same_ts_bvids": []}
+    return up_list.add_up(mid, uname, face, initial_seen=initial_seen)

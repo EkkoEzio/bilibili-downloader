@@ -14,6 +14,7 @@ import yt_dlp
 
 import storage
 from config import SESSION_COOKIE_FILE, COOKIE_FILE, BROWSER_COOKIE_SOURCE
+from request_governor import (UpstreamRateLimitError, governed_get, governor)
 
 QR_GENERATE = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate"
 QR_POLL = "https://passport.bilibili.com/x/passport-login/web/qrcode/poll"
@@ -36,8 +37,10 @@ _http_get = requests.get
 
 def qrcode_generate() -> dict:
     """生成二维码。返回 {'url','qrcode_key'}。"""
-    resp = _http_get(QR_GENERATE, headers=BROWSER_HEADERS, timeout=10)
+    resp = governed_get(_http_get, QR_GENERATE, kind="auth",
+                        headers=BROWSER_HEADERS, timeout=10)
     data = resp.json()
+    governor.note_api_code(data.get("code"), endpoint=QR_GENERATE)
     if data.get("code") != 0:
         raise RuntimeError(f"生成二维码失败: {data.get('message')}")
     d = data["data"]
@@ -46,10 +49,13 @@ def qrcode_generate() -> dict:
 
 def qrcode_poll(qrcode_key: str) -> dict:
     """轮询扫码状态。返回 parse_poll_response 结果。"""
-    resp = _http_get(QR_POLL, params={"qrcode_key": qrcode_key},
-                     headers=BROWSER_HEADERS, timeout=10)
+    resp = governed_get(_http_get, QR_POLL, kind="auth",
+                        params={"qrcode_key": qrcode_key},
+                        headers=BROWSER_HEADERS, timeout=10)
+    data = resp.json()
+    governor.note_api_code(data.get("code"), endpoint=QR_POLL)
     set_cookie = resp.headers.get("Set-Cookie", "")
-    return parse_poll_response(resp.json(), set_cookie)
+    return parse_poll_response(data, set_cookie)
 
 
 def parse_poll_response(data: dict, set_cookie_header: str) -> dict:
@@ -83,10 +89,15 @@ def parse_poll_response(data: dict, set_cookie_header: str) -> dict:
             "bili_jct": bili_jct, "message": POLL_MESSAGES.get(code, "未知状态")}
 
 
-def save_session(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> None:
-    storage.write_json(SESSION_COOKIE_FILE, {
+def save_session(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> bool:
+    ok = storage.write_json(SESSION_COOKIE_FILE, {
         "SESSDATA": sessdata, "DedeUserID": dede_userid, "bili_jct": bili_jct
     })
+    if not ok:
+        return False
+    # 登录世代变化后立即丢弃旧 cookiejar / WBI 签名器与身份相关数据缓存。
+    _reset_runtime_caches()
+    return True
 
 
 def load_session() -> Optional[dict]:
@@ -94,17 +105,13 @@ def load_session() -> Optional[dict]:
 
 
 def clear_session() -> None:
-    """退出扫码登录:删 sess.json + 清会话缓存。不动 cookies.txt(那是
-    用户手工导入的登录态,归 import_cookies_txt/logout 管)。"""
+    """退出扫码登录并清理当前登录世代的所有运行时缓存。"""
     if SESSION_COOKIE_FILE.exists():
         SESSION_COOKIE_FILE.unlink()
-    # 同时清掉 cookiejar 缓存,避免退出后还能访问接口(5 分钟缓存)。
-    # 会话域锁在本模块;数据域缓存(关注列表/关注动态)归 bilibili_api,
-    # 函数内晚导入避免循环依赖(bilibili_api 顶层 import 本模块)。
-    # 各拿各的锁、不嵌套:清会话域期间不阻塞数据域(反之亦然)。
     global _cj_cache
     with _session_lock:
         _cj_cache = {"cj": None, "ts": 0.0}
+    # 保持清理路径在函数内可审计：API 模块统一清数据域与 WBI 缓存。
     import bilibili_api
     bilibili_api.reset_data_caches()
 
@@ -159,6 +166,20 @@ _cj_cache = {"cj": None, "ts": 0.0}
 _session_lock = threading.Lock()
 
 
+def _reset_identity_data_caches() -> None:
+    """清身份相关 API/WBI 缓存；晚导入避免 bilibili_api 循环依赖。"""
+    import bilibili_api
+    bilibili_api.reset_data_caches()
+
+
+def _reset_runtime_caches() -> None:
+    """切换登录世代时清 cookiejar，并让 API 层清 WBI 与数据缓存。"""
+    global _cj_cache
+    with _session_lock:
+        _cj_cache = {"cj": None, "ts": 0.0}
+    _reset_identity_data_caches()
+
+
 def get_cookiejar():
     """返回当前生效的 cookiejar(扫码 > cookies.txt > Edge)。失败返回 None。
 
@@ -193,14 +214,19 @@ def get_login_status() -> dict:
     if cookies is None:
         return {"logged_in": False}
     try:
-        resp = requests.get(NAV_API, cookies=cookies,
-                            headers={"User-Agent": BROWSER_HEADERS["User-Agent"]}, timeout=10)
-        d = resp.json().get("data", {})
+        resp = governed_get(
+            requests.get, NAV_API, kind="auth", cookies=cookies,
+            headers={"User-Agent": BROWSER_HEADERS["User-Agent"]}, timeout=10)
+        payload = resp.json()
+        governor.note_api_code(payload.get("code"), endpoint=NAV_API)
+        d = payload.get("data", {})
         return {
             "logged_in": d.get("isLogin", False),
             "uname": d.get("uname", ""),
             "vip": d.get("vipStatus", 0) == 1,
             "vip_type": d.get("vipType", 0),
         }
+    except UpstreamRateLimitError:
+        raise
     except Exception as e:
         return {"logged_in": False, "error": str(e)}

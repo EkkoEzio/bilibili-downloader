@@ -1,11 +1,15 @@
 """Flask 路由层。薄,业务委托给 bilibili_auth / downloader。"""
+import functools
 import io
+import ipaddress
+import json
 import logging
+import math
 import re
 import threading
 import time
-import json
 from typing import Optional
+from urllib.parse import urlsplit
 
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
 
@@ -19,6 +23,7 @@ import downloader
 import taskstore
 from config import PORT, BROWSER_COOKIE_SOURCE
 import config  # DOWNLOAD_DIR 运行时可变,用 config.DOWNLOAD_DIR 实时读
+from request_governor import UpstreamRateLimitError, governor
 
 # 日志:控制台 + data/app.log(排 B 站 412/风控/下载失败要看这里)
 logging.basicConfig(
@@ -33,20 +38,145 @@ log = logging.getLogger("bd.app")
 
 app = Flask(__name__)
 
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
+def _loopback_authority(authority: str):
+    """严格解析 Host/URL authority，只接受本机三个显式名称。
+
+    不用 ``startswith('localhost')``，避免 localhost.evil、userinfo、路径和
+    非法端口绕过；IPv6 必须使用方括号形式。返回规范化 host 与可选端口。
+    """
+    raw = str(authority or "")
+    if not raw or raw != raw.strip():
+        return None
+    if any(ch.isspace() for ch in raw) or any(ch in raw for ch in "/\\?#"):
+        return None
+    try:
+        parsed = urlsplit("//" + raw, allow_fragments=False)
+        if (not parsed.netloc or parsed.path or parsed.query or parsed.fragment
+                or parsed.username is not None or parsed.password is not None):
+            return None
+        host = parsed.hostname
+        port = parsed.port
+    except (TypeError, ValueError):
+        return None
+    if not host:
+        return None
+
+    # urlsplit 会把少数不完整的 ``host:`` 当作“没有端口”，这里补上语法约束。
+    if raw.startswith("["):
+        close = raw.find("]")
+        if close < 0:
+            return None
+        tail = raw[close + 1:]
+        if tail and (not tail.startswith(":") or not tail[1:].isdigit()):
+            return None
+    else:
+        if raw.count(":") > 1:  # 未加 [] 的 IPv6
+            return None
+        if ":" in raw and not raw.rsplit(":", 1)[1].isdigit():
+            return None
+    if port is not None and not 1 <= port <= 65535:
+        return None
+
+    host_lower = host.lower()
+    if host_lower == "localhost":
+        normalized = "localhost"
+    else:
+        try:
+            address = ipaddress.ip_address(host_lower)
+        except ValueError:
+            return None
+        if address not in (ipaddress.ip_address("127.0.0.1"),
+                           ipaddress.ip_address("::1")):
+            return None
+        normalized = address.compressed
+    return normalized, port
+
+
+def _origin_key(value: str, *, allow_path: bool = False):
+    """把 Origin/Referer 归一为 (scheme, host, effective_port)。"""
+    original = str(value or "")
+    raw = original.strip()
+    if not raw or raw != original:
+        return None
+    try:
+        parsed = urlsplit(raw)
+        scheme = parsed.scheme.lower()
+        if scheme not in _DEFAULT_PORTS or not parsed.netloc:
+            return None
+        if parsed.username is not None or parsed.password is not None:
+            return None
+        if not allow_path and (parsed.path not in ("", "/")
+                               or parsed.query or parsed.fragment):
+            return None
+        authority = _loopback_authority(parsed.netloc)
+    except (TypeError, ValueError):
+        return None
+    if authority is None:
+        return None
+    host, port = authority
+    return scheme, host, port or _DEFAULT_PORTS[scheme]
+
+
+def _request_origin_key():
+    scheme = str(request.scheme or "").lower()
+    if scheme not in _DEFAULT_PORTS:
+        return None
+    authority = _loopback_authority(request.headers.get("Host", ""))
+    if authority is None:
+        return None
+    host, port = authority
+    return scheme, host, port or _DEFAULT_PORTS[scheme]
+
+
+@app.before_request
+def local_request_guard():
+    """阻断 DNS rebinding 与跨站页面调用本机有副作用的 API。
+
+    Host 对所有请求都强制为 loopback；浏览器来源头存在时必须严格同源。
+    三类来源头都缺失仍允许，以兼容 Flask test_client、curl 和本机脚本。
+    """
+    expected = _request_origin_key()
+    fetch_site = request.headers.get("Sec-Fetch-Site")
+    if expected is None:
+        return jsonify({"ok": False, "error": "仅允许本机访问"}), 403
+    if fetch_site is not None and fetch_site.strip().lower() not in ("same-origin", "none"):
+        return jsonify({"ok": False, "error": "拒绝跨站请求"}), 403
+
+    origin = request.headers.get("Origin")
+    if origin is not None and _origin_key(origin) != expected:
+        return jsonify({"ok": False, "error": "请求来源与本机服务不同源"}), 403
+    referer = request.headers.get("Referer")
+    if referer is not None and _origin_key(referer, allow_path=True) != expected:
+        return jsonify({"ok": False, "error": "请求来源与本机服务不同源"}), 403
+    return None
+
 
 def api_errors(f):
-    """统一异常出口:意外异常 → 500 JSON。路由体只写正常路径。
-    400 类参数错误仍由路由自行返回(它们是预期分支,不是异常)。"""
-    import functools
+    """统一异常出口：上游风控 → 429，其余意外异常 → 500 JSON。"""
     @functools.wraps(f)
     def wrapper(*a, **kw):
         try:
             return f(*a, **kw)
-        except Exception as e:
+        except UpstreamRateLimitError as exc:
+            seconds = float(exc.retry_after or 0.0)
+            if not math.isfinite(seconds) or seconds <= 0:
+                seconds = 1.0
+            retry_after = max(1, math.ceil(seconds))
+            log.warning("路由 %s 遇到 B 站风控 status=%s retry_after=%ss",
+                        f.__name__, exc.status_code, retry_after)
+            response = jsonify({"ok": False, "error": str(exc),
+                                "retry_after": retry_after})
+            response.status_code = 429
+            response.headers["Retry-After"] = str(retry_after)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        except Exception as exc:
             log.exception("路由 %s 异常", f.__name__)
-            return jsonify({"ok": False, "error": str(e)}), 500
+            return jsonify({"ok": False, "error": str(exc)}), 500
     return wrapper
-
 
 
 @app.route("/")
@@ -56,16 +186,32 @@ def index():
 
 # ---------- 登录 ----------
 @app.route("/api/login/status")
+@api_errors
 def login_status():
     return jsonify(auth.get_login_status())
 
 
 @app.route("/api/login/qrcode")
+@api_errors
 def login_qrcode():
-    try:
-        return jsonify({"ok": True, **auth.qrcode_generate()})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    return jsonify({"ok": True, **auth.qrcode_generate()})
+
+
+@app.route("/api/governor/status")
+def governor_status():
+    """只暴露请求治理器的非敏感运行指标，便于判断是否仍在冷却。"""
+    snapshot = governor.snapshot()
+    response = jsonify({
+        "ok": True,
+        "cooldown_until": snapshot.cooldown_until,
+        "cooldown_seconds": snapshot.cooldown_seconds,
+        "in_flight": snapshot.in_flight,
+        "total_requests": snapshot.total_requests,
+        "rate_limit_events": snapshot.rate_limit_events,
+        "last_status": snapshot.last_status,
+    })
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 @app.route("/api/login/qrcode-image")
@@ -85,11 +231,18 @@ def login_qrcode_image():
 
 
 @app.route("/api/login/qrcode/poll")
+@api_errors
 def login_qrcode_poll():
     key = request.args.get("key", "")
     r = auth.qrcode_poll(key)
     if r["status"] == "success" and r["sessdata"]:
-        auth.save_session(r["sessdata"], r.get("dede_userid", ""), r.get("bili_jct", ""))
+        saved = auth.save_session(
+            r["sessdata"], r.get("dede_userid", ""), r.get("bili_jct", ""))
+        if not saved:
+            # B 站侧虽已确认扫码，本地凭据没有落盘就不能宣称登录完成。
+            return jsonify({**r, "status": "error",
+                            "message": "登录凭据保存失败，请检查磁盘后重试",
+                            "error": "登录凭据未写入磁盘"}), 500
     return jsonify(r)
 
 
@@ -149,11 +302,15 @@ def download():
     uploader_mid = int(body.get("uploader_mid") or 0)  # 前端解析时拿到就带上
     if not url:
         return jsonify({"ok": False, "error": "请输入 URL"}), 400
-    # 重复下载拦截:同 URL+清晰度+分P 且仍在跑
+    # 快速预查减少已知重复任务的无效解析；start_download 内仍会原子复查，
+    # 关闭两个并发请求同时越过这里的竞态窗口。
     existing = downloader.find_active_by_url(url, label, page)
     if existing:
         return jsonify({"ok": False, "error": "该视频相同清晰度正在下载中", "task_id": existing}), 409
-    tid = downloader.start_download(url, label, page, uploader_mid=uploader_mid)
+    try:
+        tid = downloader.start_download(url, label, page, uploader_mid=uploader_mid)
+    except downloader.DuplicateActiveTask as e:
+        return jsonify({"ok": False, "error": str(e), "task_id": e.task_id}), 409
     return jsonify({"ok": True, "task_id": tid})
 
 
@@ -164,6 +321,7 @@ def cancel(task_id):
 
 
 @app.route("/api/task/delete", methods=["POST"])
+@api_errors
 def task_delete():
     """删除任务。{ids:[...], delete_file:bool}"""
     body = request.get_json(silent=True) or {}
@@ -176,6 +334,7 @@ def task_delete():
 
 
 @app.route("/api/tasks/clear", methods=["POST"])
+@api_errors
 def tasks_clear():
     """清除所有已完成/失败记录。{delete_file:bool}"""
     body = request.get_json(silent=True) or {}
@@ -215,6 +374,8 @@ def batch_parse():
             try:
                 r = downloader.resolve_playlist(u)
                 items.extend(r["items"])
+            except UpstreamRateLimitError:
+                raise
             except Exception as e:
                 items.append({"title": f"(解析失败: {str(e)[:40]})",
                               "url": u, "duration": 0, "error": str(e)[:80]})
@@ -311,6 +472,7 @@ def up_list_add():
 
 
 @app.route("/api/up-list/remove", methods=["POST"])
+@api_errors
 def up_list_remove():
     body = request.get_json(silent=True) or {}
     mid = body.get("mid")
@@ -321,6 +483,7 @@ def up_list_remove():
 
 
 @app.route("/api/up-list/set-quality", methods=["POST"])
+@api_errors
 def up_list_set_quality():
     """设置某 UP 新视频自动下载的默认清晰度。{mid, quality};空串=最高画质自动。"""
     body = request.get_json(silent=True) or {}
@@ -332,12 +495,14 @@ def up_list_set_quality():
 
 
 @app.route("/api/up-list/reset-seen", methods=["POST"])
+@api_errors
 def up_list_reset_seen():
     body = request.get_json(silent=True) or {}
     mid = body.get("mid")
     if mid is None:
         return jsonify({"ok": False, "error": "缺少 mid"}), 400
     up_list.reset_seen(int(mid))
+    # reset_seen 只有在候选 JSON 成功提交后才返回；写盘异常由 api_errors 转成 JSON 500。
     return jsonify({"ok": True})
 
 
@@ -471,6 +636,7 @@ def get_config():
 
 
 @app.route("/api/config", methods=["POST"])
+@api_errors
 def set_config():
     """部分更新配置。body 可含 download_dir / max_concurrent / ratelimit_mbps 任意字段。"""
     body = request.get_json(silent=True) or {}
@@ -478,7 +644,9 @@ def set_config():
         return jsonify({"ok": False, "error": "无更新字段"}), 400
     r = config.set_config(body)
     if not r.get("ok"):
-        return jsonify(r), 400
+        # 参数无效是客户端错误；候选配置无法落盘是服务端持久化故障。
+        status = 500 if r.get("persist_error") else 400
+        return jsonify(r), status
     return jsonify(r)
 
 

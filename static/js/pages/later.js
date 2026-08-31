@@ -1,6 +1,7 @@
 /* 稍后再看:快数据源,缓存优先 + 后台无感替换。 */
 import { registerPage, state, libDom, renderPage, cachedLoad } from '../lib.js';
 import { icon } from '../icons.js';
+import { escapeHtml } from '../util.js';
 
 export async function loadWatchlater() {
   await cachedLoad({
@@ -17,7 +18,7 @@ export async function loadWatchlater() {
     },
     showError: (msg) => {
       const d = libDom();
-      d.list.innerHTML = `<div class="empty">${msg}<br><button class="ghost sm" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
+      d.list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       state.items = b.items || [];

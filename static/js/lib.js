@@ -17,7 +17,8 @@
    - showCount          非搜索时 meta 是否显示「共 N 条」(观看历史为 false)
    - onViewToggle()     列表/网格切换时的额外复位(页内自管的显示条数) */
 import { icon } from './icons.js';
-import { escapeHtml, escapeAttr, sig, formatDuration, formatTime } from './util.js';
+import { escapeHtml, escapeAttr, sig, formatDuration, formatTime,
+         safeHttpUrl, safeDecimalId } from './util.js';
 import { getJSON } from './net.js';
 
 /* ---------- 共享状态(所有标准列表页共用) ---------- */
@@ -344,17 +345,21 @@ export function renderLibList(pairs, container) {
       ? `<div class="vi-watchbar"><i style="width:${Math.min(pct, 100)}%"></i></div>`
       : '';
     const upName = escapeHtml(it.uploader || '-');
-    const metaParts = [it.uploader_mid
-      ? `<a href="https://space.bilibili.com/${it.uploader_mid}" target="_blank" rel="noopener">${upName}</a>`
+    const uploaderMid = safeDecimalId(it.uploader_mid);
+    const metaParts = [uploaderMid
+      ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
       : upName];
     if (it.view_at) metaParts.push(escapeHtml(formatTime(it.view_at)));
-    const titleHtml = it.url
-      ? `<a href="${escapeAttr(it.url)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
+    const targetUrl = safeHttpUrl(it.url);
+    const titleHtml = targetUrl
+      ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
       : escapeHtml(it.title);
     const durHtml = it.duration ? `<span class="thumb-dur">${escapeHtml(formatDuration(it.duration))}</span>` : '';
+    const thumbnail = safeHttpUrl(it.thumbnail, { httpsOnly: true });
     // 下载记录:封面右下角播放按钮 → 在 Finder 中定位该视频下载到的文件
+    const taskArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
     const playHtml = (state.mode === 'downloads' && it.task_id)
-      ? `<button class="vi-play" title="在 Finder 中显示该视频" onclick="event.stopPropagation();revealTask('${it.task_id}')">${icon('play')}</button>` : '';
+      ? `<button class="vi-play" title="在 Finder 中显示该视频" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('play')}</button>` : '';
     const thumbCls = playHtml ? 'thumb-wrap has-play' : 'thumb-wrap';
     const warnHtml = _itemExtras.warnHtml(it);
     if (!isGrid) {
@@ -362,7 +367,7 @@ export function renderLibList(pairs, container) {
       <div class="video-item lv${checkedCls}">
         ${checkHtml}
         <div class="${thumbCls}">
-          <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy">
+          <img src="${escapeAttr(thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy">
           ${durHtml}${playHtml}
         </div>
         <div class="lv-body">
@@ -377,7 +382,7 @@ export function renderLibList(pairs, container) {
     <div class="video-item${checkedCls}">
       ${checkHtml}
       <div class="${thumbCls}">
-        <img src="${escapeHtml(it.thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy">
+        <img src="${escapeAttr(thumbnail)}" onerror="this.style.visibility='hidden'" loading="lazy">
         ${durHtml}${playHtml}
       </div>
       <div class="vi-title">${titleHtml} ${badgeHtml}</div>

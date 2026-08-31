@@ -2,6 +2,7 @@
 import { registerPage, state, libDom, renderPage, getLibSearchQuery, curChunk } from '../lib.js';
 import { getJSON } from '../net.js';
 import { icon } from '../icons.js';
+import { escapeHtml } from '../util.js';
 
 let _histServerPage = 0;
 let _histHasMore = false;
@@ -33,7 +34,7 @@ async function fetchHistoryPage() {
     renderPage();
   } catch (e) {
     libDom().list.innerHTML =
-      `<div class="empty">${e.message}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
+      `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
     _histHasMore = false;
   }
 }

@@ -1,6 +1,7 @@
 /* 新建下载抽屉:单视频/批量自动判断、多 P 选择清晰度、批量勾选下载。 */
 import { postJSON } from './net.js';
-import { escapeHtml, formatDuration, pageFromUrl } from './util.js';
+import { escapeHtml, escapeAttr, formatDuration, pageFromUrl,
+         safeHttpUrl, nonNegativeInt } from './util.js';
 import { goPage, isUrlDownloaded } from './lib.js';
 import { closeDrawer } from './drawer.js';
 import { subscribeProgress } from './pages/downloads.js';
@@ -31,7 +32,7 @@ async function parseVideo(url) {
     _singleInfo = r.info;
     renderParseResult(r.info, url, r.logged_in);
   } catch (e) {
-    box.innerHTML = '<div class="empty">' + e.message + '</div>';
+    box.innerHTML = '<div class="empty">' + escapeHtml(e.message || '请求失败') + '</div>';
   } finally {
     btn.disabled = false;
   }
@@ -46,9 +47,10 @@ function renderParseResult(info, url, loggedIn) {
   if (info.is_multi_part && info.parts && info.parts.length > 0) {
     // 分 P 下拉的 URL 通过 data-url 传递 + 事件监听取值,
     // 不把用户可控的 URL 拼进内联 JS(属性值经 HTML 解码后可逸出 JS 字符串)
-    const partOptions = info.parts.map(p =>
-      `<option value="${p.page}">P${p.page} · ${escapeHtml(p.title)} (${formatDuration(p.duration)})</option>`
-    ).join('');
+    const partOptions = info.parts.map(p => {
+      const page = nonNegativeInt(p.page) || 1;
+      return `<option value="${page}">P${page} · ${escapeHtml(p.title)} (${formatDuration(p.duration)})</option>`;
+    }).join('');
     box.innerHTML = `
       ${warnHtml}
       <div class="video-card">
@@ -68,10 +70,11 @@ function renderParseResult(info, url, loggedIn) {
     loadPartFormats();
     return;
   }
+  const thumbnail = safeHttpUrl(info.thumbnail, { httpsOnly: true });
   box.innerHTML = `
     ${warnHtml}
     <div class="video-card">
-      <img src="${info.thumbnail || ''}" onerror="this.style.visibility='hidden'">
+      <img src="${escapeAttr(thumbnail)}" onerror="this.style.visibility='hidden'">
       <div class="video-info">
         <div class="vt">${escapeHtml(info.title)}</div>
         <div class="vm">UP主:${escapeHtml(info.uploader || '-')} ${info.duration ? '· 时长:' + formatDuration(info.duration) : ''}</div>
@@ -98,20 +101,24 @@ async function loadPartFormats() {
       ${qualitySelectHtml(r.info.formats, r.info.best_label)}
       <div class="btn-row" style="margin-top:10px;"><button class="primary" onclick="startDownload()">开始下载</button></div>`;
   } catch (e) {
-    fbox.innerHTML = '<div class="hint">' + e.message + '</div>';
+    fbox.innerHTML = '<div class="hint">' + escapeHtml(e.message || '请求失败') + '</div>';
   }
 }
 
 function qualitySelectHtml(formats, bestLabel) {
-  const videoOnly = formats.filter(f => f.kind === 'video' || f.kind === 'av');
+  const list = Array.isArray(formats) ? formats : [];
+  const videoOnly = list.filter(f => f.kind === 'video' || f.kind === 'av');
   let options = videoOnly.map(f => {
+    const label = String(f.label ?? '');
     const sel = (f.label === bestLabel) ? 'selected' : '';
-    const sizeTxt = f.size_mb ? ` (${f.size_mb} MB)` : '';
-    return `<option value="${f.label}" ${sel}>${f.label}${sizeTxt}</option>`;
+    const size = Number(f.size_mb);
+    const sizeTxt = Number.isFinite(size) && size > 0 ? ` (${size} MB)` : '';
+    return `<option value="${escapeAttr(label)}" ${sel}>${escapeHtml(label)}${sizeTxt}</option>`;
   }).join('');
-  const audio = formats.find(f => f.kind === 'audio');
+  const audio = list.find(f => f.kind === 'audio');
   if (audio) {
-    const sizeTxt = audio.size_mb ? ` (${audio.size_mb} MB)` : '';
+    const size = Number(audio.size_mb);
+    const sizeTxt = Number.isFinite(size) && size > 0 ? ` (${size} MB)` : '';
     options += `<option value="音频">仅音频${sizeTxt}</option>`;
   }
   if (!options) return '<div class="hint">无可用清晰度</div>';
@@ -157,7 +164,7 @@ async function batchParse(lines) {
     _batchItems = r.items || [];
     renderBatchList(r.title || (isSingleList ? '收藏夹/合集' : '多链接'));
   } catch (e) {
-    box.innerHTML = '<div class="empty">' + e.message + '</div>';
+    box.innerHTML = '<div class="empty">' + escapeHtml(e.message || '请求失败') + '</div>';
   } finally {
     btn.disabled = false;
   }
