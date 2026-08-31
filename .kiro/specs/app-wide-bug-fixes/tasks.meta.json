@@ -1,0 +1,762 @@
+{
+  "pbtResults": {
+    "1. 写 B1 缺陷复现测试(搜索态发出的是命中序号而非原始下标)": {
+      "status": "passed",
+      "failingExample": "tests/test_app.py::test_frontend_default_list_uses_original_index FAILED（预期失败，缺陷已被锁住）\n\nAssertionError: 缺少 pairs 构造的唯一来源 visiblePairs();renderDefaultList 当前是:source.forEach((it, idx) => pairs.push({ it, idx })); —— 搜索态下发出的是命中序号,删除/下载会打到 state.items 里同下标的另一条\nassert 'visiblePairs' in '<!DOCTYPE html>...'\ntests/test_app.py:700: AssertionError\n\n反例（未修复现场，static/js/lib.js:129）：\n  const source = q ? filtered : state.items.slice(0, state.shown);\n  const pairs = [];\n  source.forEach((it, idx) => pairs.push({ it, idx }));\n\n四组断言在未修复代码上的活性（逐条实测）：\n  1) 'visiblePairs' in _tpl()                 -> False  → FAIL（首个触发）\n  2) visiblePairs 体内 state.items.forEach((it, idx)  -> 函数不存在 → FAIL\n  3a) 'source.forEach((it, idx)' not in _tpl() -> 该串存在 → FAIL\n  3b) 'filtered.forEach' not in _tpl()         -> 当前不存在（防错误修复的守卫）\n  4) renderDefaultList / advanceDefaultChunk 体内 'visiblePairs(' -> 均 False → FAIL\n     （advanceDefaultChunk 体内实测为第二份 pairs 规则：\n       renderLibList(state.items.slice(0, state.shown).map((it, idx) => ({ it, idx })), libDom().list);）\n\n静态推演的行为链条（state.items=[A,B,C,D]，搜索命中 [C,D]，勾选 C）：\n  renderDefaultList → filtered=[C,D] → pairs=[{C,0},{D,1}]\n  → renderLibList 给 C 渲染 data-libidx=\"0\" / toggleLibCheck(0, …)\n  → state.checked.add(0)\n  → delSelected(true) 取 state.items[parseInt(\"0\")] = A\n  → POST /api/task/delete {ids:[A.task_id], delete_file:true}\n  → taskstore.delete_tasks() 删 A 记录并对 _task_files(A) 整族 unlink（视频+封面+字幕+弹幕）\n  C 完好无损，A 的文件不可恢复。\n\n全量回归：1 failed, 183 passed（183 基线完整保留，无其它用例被破坏）",
+      "lastRunTimestamp": 1787816367349
+    },
+    "3.5 验证 B1 保持测试仍绿": {
+      "status": "passed",
+      "failingExample": "Property 7 (Preservation) 无回归。任务 2 的同一批 6 条保持测试逐条 PASSED，无 SKIPPED：\n\ntests/test_app.py::test_frontend_check_index_consumers_read_original_index PASSED\ntests/test_app.py::test_frontend_check_toggles_stay_dom_scoped            PASSED\ntests/test_app.py::test_frontend_fast_apply_guard_lives_in_cached_load     PASSED\ntests/test_app.py::test_frontend_downloads_defers_reload_while_checked     PASSED\ntests/test_app.py::test_frontend_default_list_inits_shown_before_window    PASSED\ntests/test_app.py::test_frontend_visible_pairs_equals_prefix_slice         PASSED   ← 已从 SKIPPED 转 PASSED\n=> 6 passed in 0.10s（-rs 无 skip 报告）\n\n第 6 条的 skip 守卫是 `if \"function visiblePairs(\" not in lib_js: pytest.skip(...)`。\nPASSED 说明守卫未触发 —— 任务 3.1 的 visiblePairs() 已落地，三点结构性断言\n（遍历 state.items 本身 / idx < state.shown 前缀谓词 / 原样带 forEach 的 idx）\n真实执行并全部成立，即非搜索态 pairs 与修复前 slice(0, shown) 建对逐位等价。\n\ntests/test_app.py 全文件：53 passed in 0.19s\n全量：190 passed in 0.48s（0 failed / 0 error），符合基线 183 + 任务 1/2 新增 7 条\n--collect-only 复核：190 tests collected\n\n本任务为纯验证，未新增测试、未改动任何代码（git 工作区仅有任务 1/2/3.1-3.3 遗留的\nstatic/js/lib.js 与 tests/test_app.py 两处改动）。",
+      "lastRunTimestamp": 1787821969233
+    },
+    "4. 写 B2 缺陷复现测试(邻居视频文件被误认并改名)": {
+      "status": "passed",
+      "failingExample": "Property 2 (Bug Condition) 缺陷复现成功：6 条新增用例在未修复代码上 FAIL（这是成功判据），13 条等价类保持用例 PASS。\n\n未修复现场（files.py:62）：\n  prefix = [f for f in media if f.stem.startswith(expected_stem[:10])]\n\n反例 1 — tests/test_filename_alignment.py::test_find_actual_file_rejects_prefix_neighbour FAILED\nAssertionError: 不属于本任务的邻居文件被认作落盘文件:.../第01期特别版.mp4\nassert PosixPath('.../第01期特别版.mp4') is None\n（期望名「第01期」，盘上只有邻居的「第01期特别版.mp4」→ 返回邻居文件的 Path 而非 None）\n\n反例 2 — ::test_find_actual_file_rejects_short_name_prefix FAILED\nAssertionError: 「测试2」不属于期望名「测试」,却被认作落盘文件:.../测试2.mp4\nassert PosixPath('.../测试2.mp4') is None\n（期望名不足 10 字 → expected_stem[:10] 等于整名 → 无边界前缀匹配）\n\n反例 3/4/5 — ::test_find_actual_file_matches_stem_belongs_rule 的三条 class ③（缺陷类）：\n  期望名 '第01期' 对磁盘 stem '第01期特别版'：兜底定位命中 .../第01期特别版.mp4，而归属规则 stem_belongs = False\n  期望名 '测试' 对磁盘 stem '测试2'：兜底定位命中 .../测试2.mp4，而归属规则 stem_belongs = False\n  期望名 '第01期开学第一课啦啦' 对磁盘 stem '第01期开学第一课啦下集特别版'：兜底定位命中 .../第01期开学第一课啦下集特别版.mp4，而归属规则 stem_belongs = False\n  （第三条是 [:10] 截断特有形态：期望名 11 字，磁盘 stem 只共享前 10 字、第 11 字起就是另一个视频的名字）\n\n反例 6 — ::test_align_records_rename_error_when_no_belonging_file FAILED\nAssertionError: 没有属于本任务的落盘文件时应写可见的 rename_error\nassert None = {'task_id': 'b2al', 'status': 'done', ...}.get('rename_error')\n\n数据损坏后果实测（tmpdir 里跑 align_task_file，期望名「第01期」）：\n  before : ['第01期特别版.jpg', '第01期特别版.mp4', '第01期特别版.srt', '第01期特别版.xml']\n  after  : ['第01期.jpg', '第01期.mp4', '第01期.srt', '第01期.xml']\n  rename_error   : None\n  actual_filename: .../第01期.mp4\n→ 邻居视频的整族文件（主文件 + 封面 + 字幕 + 弹幕）被改名成本任务的期望名，原文件名永久丢失（改名不是复制），两条记录指向同一个文件，且没有任何 rename_error 提示。\n\n等价类遍历（替代 PBT，16 个 case）在未修复代码上的活性：\n  ① 精确相等（2 个）      -> PASS（走 _find_actual_file 第一级精确匹配，本就正确）\n  ② 期望名 + 合法分隔符后缀（逐个遍历 taskstore._STEM_SUFFIX_STARTS 的 6 个 + ` - P3` / `.zh-Hans` / ` (1)` 共 9 个）-> PASS（3.9 保持基线）\n  ③ 共享前缀但不归属（3 个）-> FAIL（缺陷现场）\n  ④ 完全无关（2 个）      -> PASS（两侧都不命中）\n\n全量回归：6 failed, 203 passed（基线 190 passed 完整保留，新增 19 个用例，无既有用例被破坏）",
+      "lastRunTimestamp": 1787822865873
+    },
+    "7. 写 B3 缺陷复现测试(同 BV 不同分 P 被误判已下载)": {
+      "status": "passed",
+      "failingExample": "Property 3 (Bug Condition) 的探索性测试在未修复代码上如期 FAIL —— 16 failed / 211 passed(基线 212 passed,新增 15 个用例 + 反转 1 个既有用例)。\n\n反例 1(同 BV 不同分 P 被判已下载):\n  任务表:{status: \"done\", url: \".../BV1xx411c7mD\", page: 1}\n  is_downloaded(\".../BV1xx411c7mD?p=2\") → True,期望 False\n  E  AssertionError: P1 已下载不代表 P2 已下载\n  E  assert True is False\n\n反例 2(既有 test_is_downloaded 的反转):\n  is_downloaded(\".../BV1xx411c7mD?p=3\") → True,期望 False\n  E  assert True is False   # 旧断言 `is True` 把缺陷当成了规格\n\n反例 3(任务侧 page 维度整个丢失):\n  任务表:{status: \"done\", url: \".../BV1xx411c7mD\"(不带 ?p=), page: 3}\n  is_downloaded(\".../BV1xx411c7mD\") → True,期望 False(查询侧 P1 ≠ 任务 P3)\n  E  AssertionError: 查询侧无 ?p= 视为 P1,与任务的 P3 不同 → 未下载\n\n反例 4(键规则常量缺失,10 个等价类 + 3 条键规则用例):\n  E  AssertionError: extras.dl_key 尚未引入(任务 9.1)\n  E  AssertionError: extras.page_from_url 尚未引入(任务 9.1)\n  E  AssertionError: extras.DL_KEY_SEP 尚未引入(任务 9.1):键规则没有唯一来源可绑定\n  (前端 static/js/util.js 的 DL_KEY_SEP / dlKey / pageFromUrl 同样不存在,\n   static/js/pages/downloads.js 仍是只按 BV 建集合的 _doneBvids)\n\n敏感度验证(在 /tmp 内存打桩模拟修复,未改仓库实现):\n  - 按 design.md 9.1/9.2 的正确形态模拟 → test_downloader + test_extras 45 passed;\n    按 9.3/9.4 的前端形态模拟 → test_frontend_download_key_shared_rule 通过。\n  - 故意把任务侧写成解析 t[\"url\"](design.md 点名的易错点)→ 7 failed,\n    证明这批测试不是只认「有没有 page」,写反取法同样会被抓到。",
+      "lastRunTimestamp": 1787831956292
+    },
+    "8. 写 B3 保持测试(单 P 与同分 P 的判定不变)": {
+      "status": "passed",
+      "lastRunTimestamp": 1787833443989
+    },
+    "13. 写 B5 缺陷复现测试(interrupted 被拉回活跃态成僵尸)": {
+      "status": "passed",
+      "failingExample": "Property 5 (Bug Condition) 在未修复代码上如期复现,4 条 FAIL / 9 条基线 PASS。\n\n反例 1 — test_cancel_rejects_terminal_states (tests/test_downloader.py:640)\nE   AssertionError: interrupted 已是终态,取消必须返回 False(未修复时返回 True —— B5 的反例)\nE   assert True is False\nE    +  where True = downloader.cancel_download('ct_interrupted')\n\n反例 2 — test_cancel_result_matches_terminal_membership[interrupted] (:733)\nstatus = 'interrupted'\nE   AssertionError: interrupted:取消返回值应为 False(终态须拒绝)\nE   assert True is not True\nE    +  where True = downloader.cancel_download('sw1')\n(同一参数化的另外 8 个状态 queued/downloading/merging/cancelling/retrying/done/failed/cancelled 全 PASS —— Property 11 保持基线成立,差集恰为 interrupted)\n\n反例 3 — test_interrupted_task_not_blocking_and_clearable (:688)\nE   AssertionError: interrupted 已是终态,取消必须被拒(未修复时返回 True —— B5 的反例)\nE   assert True is False\n手工探针跑完整后果链(未修复代码,已删除探针脚本):\n  步骤 0  取消前 find_active_by_url = None\n  步骤 1  cancel_download('zb1')   = True\n  步骤 2  status = cancelling / cancel 标志 = True\n  步骤 3  find_active_by_url = zb1   <- 非 None 即 /api/download 同 URL 被 409 拦截\n  步骤 4  clear_tasks(False) = 0      <- 0 即「清除全部记录」清不掉\n  步骤 5  记录是否还在任务表 = True\n\n反例 4 — test_terminal_checks_use_single_source (:771)\nE   AssertionError: downloader.py 仍有硬编码终态副本(行 [163, 379]):('done', 'failed', 'cancelled') 漏了 ['interrupted'];应改用 taskstore.TERMINAL 唯一来源\nE   assert not [163, 379]\n(163 = _finalize_cancelled,379 = cancel_download,与 tasks.md 指出的未修复现场逐字一致)\n\n全量:4 failed, 276 passed(基线 267 passed + 新增 13 例,其中 9 例 PASS)。无既有用例转红。",
+      "lastRunTimestamp": 1787890102821
+    },
+    "16. 写 B6 缺陷复现测试(昨日任务被计入今日)": {
+      "status": "passed",
+      "failingExample": "Property 6 (Bug Condition) 在未修复代码上如期 FAIL —— 1 failed, 291 passed(基线 291 passed 完整保留,新增 1 例即唯一的 FAIL)。\n\n反例 — tests/test_app.py::test_stats_day_is_calendar_day FAILED (tests/test_app.py:583)\nE   AssertionError: 昨天 23:59 完成的任务不属于今日(自然日口径)\nE   assert 2 == 1\n    day_count 实际值 = 2(期望 1);同一响应里 total_count == 2 的断言先行通过,\n    证明两条 done 样本都被 compute_stats 看到了 —— FAIL 确实来自「今日」窗口口径,\n    不是样本丢失导致的空过。\n\n未修复现场(taskstore.py:258/261,行号较 tasks.md 所载 233 已因前序任务改动上移):\n  now = int(time.time())\n  day_start = now - 86400          # 滚动 24 小时\n  month_start = int(time.mktime(datetime.date(today.year, today.month, 1).timetuple()))  # 自然月\n\n样本(以自然日起点为基准构造,不用「当前时刻往前推」):\n  A = day_start + 60   今天 00:01\n  B = day_start - 60   昨天 23:59\n未修复时 B 距当前时刻不足 24h(运行时刻 2026-08-28 14:24 CST,s≈51865)→ B 落进\n滚动窗口 → 被算进「今日」→ day_count == 2。同一份数据的 month_count == 2,\n而「本月」是自然月口径 —— 两个周期口径在同一个面板里自相矛盾,正是 1.13 描述的现象。\n\n敏感度验证(未改一行实现,临时探针跑完即删):\n  未修复的 day_start = now - 86400,把 taskstore.time.time 冻结成 day_start + 86400\n  即等价于 day_start = 自然日 00:00,也就是任务 18.1 的修复语义。\n    [probe] 未修复  :day_count=2 month_count=2 total=2\n    [probe] 模拟修复:day_count=1 total=2   ← 断言 day_count == 1 通过\n  说明这条测试能被正确的修复转绿,不是因无关原因失败。\n\n凌晨边界实测(纯算术穷举,推翻 tasks.md 的括注):\n  未修复实现下 B 被计入「今日」的条件是 s <= 86340(s = 当日已过秒数),即\n  测试在 00:00:00 – 23:59:00 之间跑一律 FAIL(day_count == 2),包含 tasks.md\n  声称的例外区间 00:00–00:01 —— 该时段 A 虽是「未来 1 分钟」,但 compute_stats\n  只做 finished >= day_start、不设上界,A 仍计入,B 也仍在滚动窗口内。\n  真正会误判为 PASS 的窗口是当日最后 59 秒 23:59:01 – 23:59:59(此时 B 刚出\n  滚动 24h 窗口),占全天 0.068%。结论:CRITICAL「必须在未修复代码上 FAIL」\n  的成立范围比任务原文所述更宽,不影响本任务判据。\n  逐点实测:\n    00:00:00 今天=True 昨天=True  day_count=2 FAIL\n    00:00:30 今天=True 昨天=True  day_count=2 FAIL\n    00:01:00 今天=True 昨天=True  day_count=2 FAIL\n    14:10:00 今天=True 昨天=True  day_count=2 FAIL\n    23:59:00 今天=True 昨天=True  day_count=2 FAIL   ← 边界含等号\n    23:59:59 今天=True 昨天=False day_count=1 PASS\n\n按任务要求不断言 month_count(「昨天 23:59」样本在每月 1 日 00:00–00:59 运行时\n属于上月,期望值会随运行时刻变化);已知残余竞态(测试算 today 与 compute_stats\n算 today 之间跨零点 → day_count == 0)已写入 docstring,按 design.md 决定不为此\n给 compute_stats 开时钟接缝。\n\n只改测试、未动实现:git diff 确认 taskstore.py 的 day_start = now - 86400 原样保留,\n本次编辑是 tests/test_app.py 的纯新增(+35 行,0 删除,插在既有\ntest_stats_month_is_calendar_month 之后);data/tasks.json mtime 13:48 早于本次会话,\n未被写入。",
+      "lastRunTimestamp": 1787898481993
+    }
+  },
+  "executionHistory": {
+    "1. 写 B1 缺陷复现测试(搜索态发出的是命中序号而非原始下标)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427286
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815463923
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787816427428
+      }
+    ],
+    "2. 写 B1 保持测试(无搜索词路径与勾选守卫逐位不变)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427355
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787816451776
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787819535950
+      }
+    ],
+    "3.1 在 `static/js/lib.js` 新增 `matchesQuery()` 与导出 `visiblePairs()`": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427401
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787819570955
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787820034518
+      }
+    ],
+    "3.2 `renderDefaultList()` 改用 `visiblePairs()`,并前移 `state.shown` 初始化": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427430
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787820041876
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787820688437
+      }
+    ],
+    "3.3 `advanceDefaultChunk()` 复用 `visiblePairs()`,消灭第二份 pairs 构造": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427450
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787820701970
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787821132468
+      }
+    ],
+    "3.4 验证 B1 缺陷复现测试转绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427487
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787821189382
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787821567412
+      }
+    ],
+    "3.5 验证 B1 保持测试仍绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427508
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787821614639
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787822037010
+      }
+    ],
+    "4. 写 B2 缺陷复现测试(邻居视频文件被误认并改名)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427527
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787822253200
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787822912071
+      }
+    ],
+    "5. 写 B2 保持测试(权威路径优先与合法后缀命中)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427547
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787822922509
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787823755334
+      }
+    ],
+    "6.1 `taskstore.py`:`_stem_belongs` → `stem_belongs`,保留旧名别名并同步内部引用": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427566
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787823766109
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787824210552
+      }
+    ],
+    "6.2 `files.py`:import `stem_belongs` 并替换 `[:10]` 兜底谓词": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427586
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787824228630
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787824682903
+      }
+    ],
+    "6.3 验证 B2 缺陷复现测试转绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427605
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787824700881
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787827154861
+      }
+    ],
+    "6.4 验证 B2 保持测试仍绿,并对齐既有 docstring 措辞": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427628
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787827161338
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787830098796
+      }
+    ],
+    "7. 写 B3 缺陷复现测试(同 BV 不同分 P 被误判已下载)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427651
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787830134678
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787832059289
+      }
+    ],
+    "8. 写 B3 保持测试(单 P 与同分 P 的判定不变)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427670
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787832108092
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787833560218
+      }
+    ],
+    "9.1 `extras.py` 新增键规则(依赖链底部)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427689
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787833594104
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787833932496
+      }
+    ],
+    "9.2 `taskstore.is_downloaded()` 改用 `dl_key`": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427708
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787833959644
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787835313150
+      }
+    ],
+    "9.3 `static/js/util.js` 新增前端键规则(与 `bvFromUrl` 同层)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427729
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787835340144
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787837242456
+      }
+    ],
+    "9.4 `static/js/pages/downloads.js` 改用 (BV, 分 P) 键集合": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427748
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787837276168
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787837813814
+      }
+    ],
+    "9.5 验证 B3 缺陷复现测试转绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427769
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787837849744
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787840555879
+      }
+    ],
+    "9.6 验证 B3 保持测试仍绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427788
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787840573601
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787840848269
+      }
+    ],
+    "10. 写 B4 缺陷复现测试(后来者阻塞排队并真的发请求)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427809
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787840868979
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787850325400
+      }
+    ],
+    "11. 写 B4 保持测试(单轮检查的执行语义不变)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427839
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787850336904
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787851370261
+      }
+    ],
+    "12.1 `auto_refresh.py`:新增 `is_running()` + 锁改非阻塞获取": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427859
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787851380375
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787882324031
+      }
+    ],
+    "12.2 `app.py`:`/api/up-list/check` 如实回报 `started`": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427878
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787882331829
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787882582587
+      }
+    ],
+    "12.3 `static/js/pages/feed.js`:删除 30 秒假禁用窗口,按 `started` 给反馈": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427898
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787882591576
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787885628121
+      }
+    ],
+    "12.4 验证 B4 缺陷复现测试转绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427918
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787885633452
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787887183972
+      }
+    ],
+    "12.5 验证 B4 保持测试仍绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427937
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787887206852
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787887514572
+      }
+    ],
+    "13. 写 B5 缺陷复现测试(interrupted 被拉回活跃态成僵尸)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427959
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787887526713
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787890242269
+      }
+    ],
+    "14. 写 B5 保持测试(活跃态与其余终态语义不变)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815427978
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787890256729
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787896280946
+      }
+    ],
+    "15.1 `downloader.py`:import `TERMINAL` 并替换两处硬编码副本": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428000
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787896292913
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787896764756
+      }
+    ],
+    "15.2 验证 B5 缺陷复现测试转绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428019
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787896781614
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787897312286
+      }
+    ],
+    "15.3 验证 B5 保持测试仍绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428038
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787897332422
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787897870114
+      }
+    ],
+    "16. 写 B6 缺陷复现测试(昨日任务被计入今日)": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428058
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787897880166
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787898550112
+      }
+    ],
+    "17. 写 B6 保持测试(本月口径与总量统计不变),并加固既有 month 测试": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428077
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787898584944
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787899481900
+      }
+    ],
+    "18.1 `taskstore.compute_stats()`:`day_start` 改自然日,删除死变量 `now`": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428096
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787899649452
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787899930161
+      }
+    ],
+    "18.2 验证 B6 缺陷复现测试转绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428116
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787899937120
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787900303457
+      }
+    ],
+    "18.3 验证 B6 保持测试仍绿": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428135
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787900310054
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787900760733
+      }
+    ],
+    "19. 更新文档与变更记录": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428155
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787900768636
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787902132793
+      }
+    ],
+    "20. Checkpoint - 全量回归 + B1 人工验收": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787815428175
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787902143307
+      },
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787902827153
+      }
+    ],
+    "3. 修复 B1:`renderDefaultList()` 携带原始下标": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787822037030
+      }
+    ],
+    "6. 修复 B2:兜底分支复用 stem 归属规则": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787830098831
+      }
+    ],
+    "9. 修复 B3:已下载判定改为 (bvid, page) 粒度": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787840848297
+      }
+    ],
+    "12. 修复 B4:检查触发改为跳过而非排队": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787887514603
+      }
+    ],
+    "15. 修复 B5:终态判断复用 `taskstore.TERMINAL`": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787897870143
+      }
+    ],
+    "18. 修复 B6:「今日」改为本地自然日 00:00": [
+      {
+        "executionId": "1d22df8f-dd32-47fa-b67a-994fde175e0f",
+        "chatSessionId": "sess_6b54c1a5-48dd-4688-8af9-3050fc68419a",
+        "timestamp": 1787900760759
+      }
+    ]
+  }
+}
