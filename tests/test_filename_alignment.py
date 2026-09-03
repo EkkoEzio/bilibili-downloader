@@ -372,6 +372,7 @@ def test_resolve_conflict_cancel(client, monkeypatch, tmp_path):
 
 def test_resolve_conflict_open_existing(client, monkeypatch, tmp_path):
     """「打开现有文件」:返回路径并由路由层交给 reveal_path 定位。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     calls = []
     monkeypatch.setattr("app.downloader.reveal_path",
                         lambda p: calls.append(str(p)) or True)

@@ -79,9 +79,11 @@ def test_task_state_sets_single_source():
     assert front_active == set(taskstore.ACTIVE), (
         f"活跃状态集合不一致:后端 {sorted(taskstore.ACTIVE)} / 前端 {sorted(front_active)}")
 
-    # SSE 收流的终态集合(前端 subscribeProgress 里的那份)
-    front_terminal = set(re.findall(r"'(\w+)'", re.search(
-        r"if \(\[([^\]]*)\]\.includes\(t\.status\)\) \{\s*\n\s*es\.close", js).group(1)))
+    # 聚合 SSE 的终态集合是前端状态归类与重绘策略的唯一来源；
+    # 单个任务进入终态时不能关闭承载所有任务的共享 EventSource。
+    terminal_match = re.search(r"const TASK_TERMINAL = \[([^\]]*)\]", js)
+    assert terminal_match, "前端未找到 TASK_TERMINAL 定义"
+    front_terminal = set(re.findall(r"'(\w+)'", terminal_match.group(1)))
     assert front_terminal == set(taskstore.TERMINAL), (
         f"终态集合不一致:后端 {sorted(taskstore.TERMINAL)} / 前端 {sorted(front_terminal)}")
 
@@ -144,7 +146,7 @@ def test_run_download_cancel_mid_attempt(monkeypatch, tmp_path):
             return False
 
         def download(self, urls):
-            downloader._tasks["mid1"]["cancel"] = True  # 模拟用户此刻点取消
+            assert downloader.cancel_download("mid1") is True  # 走真实 durable-first 入口
             for h in self._hooks:
                 h({"status": "downloading", "downloaded_bytes": 5, "total_bytes": 10})
             return "ok"  # 若 hook 未中止,视为下载完整跑完
@@ -773,10 +775,15 @@ def test_terminal_checks_use_single_source():
         f"{_LEGACY_TERMINAL} 漏了 {sorted(set(taskstore.TERMINAL) - set(_LEGACY_TERMINAL))};"
         "应改用 taskstore.TERMINAL 唯一来源")
 
-    for fn in (downloader.cancel_download, downloader._finalize_cancelled):
-        src = inspect.getsource(fn)
-        assert "TERMINAL" in src, \
-            f"{fn.__name__} 的终态判断应复用 taskstore.TERMINAL,不要手写状态列表"
+    cancel_src = inspect.getsource(downloader.cancel_download)
+    store_src = inspect.getsource(taskstore.request_task_cancellation)
+    assert "request_task_cancellation" in cancel_src, \
+        "下载层取消必须委托给 durable-before-publish 的存储事务"
+    assert "TERMINAL" in store_src, \
+        "存储层取消事务的终态判断应复用 taskstore.TERMINAL 唯一来源"
+    src = inspect.getsource(downloader._finalize_cancelled)
+    assert "TERMINAL" in src, \
+        "_finalize_cancelled 的终态判断应复用 taskstore.TERMINAL,不要手写状态列表"
 
 
 # ---------- 取消语义的保持基线(缺陷 B5 · Property 11) ----------
@@ -998,8 +1005,13 @@ def test_run_download_success_notifies_and_saves_danmaku(monkeypatch, tmp_path):
     monkeypatch.setattr(downloader.config, "SAVE_DANMAKU", True)
     monkeypatch.setattr(downloader.config, "NOTIFY", True)
 
-    notified, saved = [], []
-    monkeypatch.setattr(downloader, "_notify_done", lambda title: notified.append(title))
+    notified, saved, downloads = [], [], []
+
+    def fail_after_capture(task_id, title, path):
+        notified.append((task_id, title, path))
+        raise RuntimeError("模拟通知失败")
+
+    monkeypatch.setattr(downloader, "_notify_done", fail_after_capture)
     monkeypatch.setattr(downloader.extras, "save_danmaku_for",
                         lambda url, p, page=1: saved.append((url, str(p))))
 
@@ -1016,6 +1028,7 @@ def test_run_download_success_notifies_and_saves_danmaku(monkeypatch, tmp_path):
             return False
 
         def download(self, urls):
+            downloads.append(tuple(urls))
             return "ok"
 
     monkeypatch.setattr(yt_dlp, "YoutubeDL", _OkYDL)
@@ -1026,7 +1039,10 @@ def test_run_download_success_notifies_and_saves_danmaku(monkeypatch, tmp_path):
             [{"format_id": "1", "label": "720P", "kind": "av", "tbr": 1, "height": 720}], 1)
         assert t["status"] == "done"
         assert "finished_at" in t
-        assert notified == ["测试视频"]
+        assert downloads == [(t["url"],)]
+        assert notified == [(
+            "ok1", "测试视频", str((tmp_path / "测试视频.mp4").resolve())
+        )]
         assert saved and saved[0][0] == t["url"] and saved[0][1].endswith("测试视频.mp4")
     finally:
         downloader._tasks.pop("ok1", None)
@@ -1040,7 +1056,10 @@ def test_run_download_success_notify_disabled(monkeypatch, tmp_path):
     monkeypatch.setattr(downloader.config, "NOTIFY", False)
 
     notified = []
-    monkeypatch.setattr(downloader, "_notify_done", lambda title: notified.append(title))
+    monkeypatch.setattr(
+        downloader, "_notify_done",
+        lambda task_id, title, path: notified.append((task_id, title, path)),
+    )
 
     class _OkYDL:
         def __init__(self, opts):
@@ -1127,12 +1146,101 @@ def test_persist_concurrent_writes_keep_valid_json(monkeypatch, tmp_path):
 
 
 def test_persist_write_is_atomic_via_tmp_rename(monkeypatch, tmp_path):
-    """写盘走 storage.write_json(原子替换,详见 test_storage)。"""
+    """取消使用统一原子写，并且只有 durable 成功后才向 worker 发布。"""
     import inspect
+    import threading as _th
+
     src = inspect.getsource(taskstore._persist)
-    assert "storage.write_json" in src, "必须走统一持久化层(原子写)"
+    cancel_src = inspect.getsource(taskstore.request_task_cancellation)
+    assert "storage.write_json" in src and "storage.write_json" in cancel_src, \
+        "普通提交与 durable-first 取消都必须走统一原子持久化层"
     assert taskstore._persist_lock is not taskstore._tasks_lock, \
-        "写盘锁应独立于任务锁(快照在任务锁内,写盘不阻塞任务更新)"
+        "写盘锁应独立于任务锁(慢 IO 不阻塞进度观察)"
+
+    task = _mk_task("cancel-durable", status="downloading")
+    identity = id(task)
+    entered, release = _th.Event(), _th.Event()
+    written = []
+    outcome = {}
+
+    def blocked_write(path, payload, *args, **kwargs):
+        written.append(payload)
+        entered.set()
+        assert release.wait(5), "测试写盘闸门未放行"
+        return True
+
+    def invoke_cancel():
+        try:
+            outcome["value"] = downloader.cancel_download("cancel-durable")
+        except BaseException as exc:  # 线程异常必须回传主线程断言
+            outcome["error"] = exc
+
+    monkeypatch.setattr(taskstore.storage, "write_json", blocked_write)
+    worker = _th.Thread(target=invoke_cancel, daemon=True)
+    try:
+        worker.start()
+        assert entered.wait(2), "取消应先进入 tasks.json 原子写"
+        assert id(downloader._tasks["cancel-durable"]) == identity
+        assert task["status"] == "downloading" and task["cancel"] is False, \
+            "写盘成功前 worker 不得观察到 cancelling/cancel"
+        assert written[0][0]["status"] == "cancelling", \
+            "候选快照必须先包含取消事实"
+    finally:
+        release.set()
+        worker.join(5)
+    assert not worker.is_alive()
+    assert outcome == {"value": True}
+    assert id(downloader._tasks["cancel-durable"]) == identity, \
+        "发布取消不得替换既有任务字典"
+    assert task["status"] == "cancelling" and task["cancel"] is True
+
+    # 若首个写盘期间 worker 已先终结，取消事务不得复活它；持久化锁释放前
+    # 必须再写一份当前全表，覆盖短暂出现的旧 cancelling 候选。
+    task["status"] = "downloading"
+    task["cancel"] = False
+    race_entered, race_release = _th.Event(), _th.Event()
+    race_writes = []
+    race_outcome = {}
+
+    def racing_write(path, payload, *args, **kwargs):
+        race_writes.append(payload)
+        if len(race_writes) == 1:
+            race_entered.set()
+            assert race_release.wait(5)
+        return True
+
+    def invoke_racing_cancel():
+        race_outcome["value"] = downloader.cancel_download("cancel-durable")
+
+    monkeypatch.setattr(taskstore.storage, "write_json", racing_write)
+    racing_worker = _th.Thread(target=invoke_racing_cancel, daemon=True)
+    try:
+        racing_worker.start()
+        assert race_entered.wait(2)
+        with taskstore._tasks_lock:
+            task["status"] = "done"
+            task["progress"] = 100
+    finally:
+        race_release.set()
+        racing_worker.join(5)
+    assert race_outcome == {"value": False}
+    assert task["status"] == "done" and task["cancel"] is False
+    assert len(race_writes) == 2
+    assert race_writes[0][0]["status"] == "cancelling"
+    assert race_writes[1][0]["status"] == "done", \
+        "IO 期间已终结时必须用当前终态校正磁盘，不能复活取消中任务"
+
+    # 写失败不能靠回滚补救：共享取消标志从未发布，只有持久化健康变差。
+    task["status"] = "downloading"
+    task["progress"] = 0
+    task["cancel"] = False
+    monkeypatch.setattr(taskstore.storage, "write_json", lambda *a, **k: False)
+    with pytest.raises(taskstore.TaskStoreWriteError):
+        downloader.cancel_download("cancel-durable")
+    assert id(downloader._tasks["cancel-durable"]) == identity
+    assert task["status"] == "downloading" and task["cancel"] is False
+    assert task["durable"] is False and task.get("persistence_error"), \
+        "失败只允许暴露持久化健康，不得发布不可逆取消副作用"
 
 
 def test_load_persisted_backs_up_corrupt_not_silent_wipe(monkeypatch, tmp_path):

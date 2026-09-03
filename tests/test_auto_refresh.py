@@ -191,7 +191,7 @@ def test_fetch_new_full_ps_when_stale_or_never(monkeypatch):
 
 
 def test_fetch_new_paginates_on_burst(monkeypatch):
-    """小页整页都是新视频(爆发更新)→ 翻下一页兜底,不漏中间的。"""
+    """爆发更新会翻页；跨轮 offset 漂移也必须先闭合低页接缝再提交。"""
     burst = [_vid(f"BVb{i}", 500 + i) for i in range(5)]          # 第1页:5条全新
     older = [_vid("BVold", 100), _vid("BVolder", 50)]             # 第2页:含已见
     calls = _patch_fetch_calls(monkeypatch, {(1, 1): burst, (1, 2): older})
@@ -200,6 +200,127 @@ def test_fetch_new_paginates_on_burst(monkeypatch):
     assert [(pn) for _, _, pn in calls] == [1, 2], "第1页整页新 → 应翻第2页"
     assert [v["bvid"] for v in new] == [f"BVb{i}" for i in range(5)], "已见的过滤掉"
     assert newest["bvid"] == "BVb0"
+
+    # 已有 deep=4 的 continuation 遇到三页新投稿：首页漂移当轮读取 1,2,4，
+    # 下一轮首页稳定也必须继续修复第 3 页，而不是直接跳到 1,5,6。
+    ps = auto_refresh.RECENT_PS
+
+    def full_page(prefix, start_ts):
+        return [_vid(f"{prefix}{i}", start_ts - i) for i in range(ps)]
+
+    moving_pages = {
+        (2, 1): full_page("BVnew-head-", 1000),
+        (2, 2): full_page("BVnew-page2-", 900),
+        (2, 3): full_page("BVlow-gap-", 800),
+        (2, 4): full_page("BVdeep-page4-", 700),
+        (2, 5): [_vid("BVold", 100)],
+    }
+    moving_calls = _patch_fetch_calls(monkeypatch, moving_pages)
+    continuation_last = {
+        "bvid": "BVold",
+        "ts": 100,
+        "fetched_at": time.time() - 600,
+        "scan": {
+            "base_bvid": "BVold",
+            "base_ts": 100,
+            "ps": ps,
+            "next_pn": 4,
+            "deep_next_pn": 4,
+            "head_next_pn": 4,
+            "head_repair_until_pn": 4,
+            "terminal_pn": None,
+            "head_bvid": "BVbefore-head",
+            "head_ts": 600,
+            "items": full_page("BVbefore-", 600),
+        },
+    }
+
+    first_new, first_newest = auto_refresh.fetch_new(2, continuation_last)
+    assert [pn for _, _, pn in moving_calls] == [1, 2, 4]
+    assert first_newest["_scan_complete"] is False, \
+        "低页接缝未闭合时不得把 deep 结果当成全局完成"
+    first_state = first_newest["_scan_state"]
+    assert first_state["head_next_pn"] == 3
+    assert first_state["head_repair_until_pn"] == 4
+    assert first_state["deep_next_pn"] == 5
+    assert first_state["terminal_pn"] is None
+    assert continuation_last["bvid"] == "BVold", "未完成轮不得推进已提交游标"
+    assert first_new
+
+    moving_calls.clear()
+    continuation_last["scan"] = first_state
+    second_new, second_newest = auto_refresh.fetch_new(2, continuation_last)
+    assert [pn for _, _, pn in moving_calls] == [1, 3, 5]
+    assert any(v["bvid"] == "BVlow-gap-0" for v in second_new), \
+        "跨轮修复前沿必须收集曾被 offset 漂移跳过的第 3 页"
+    assert second_newest["_scan_complete"] is True
+    assert "_scan_state" not in second_newest
+
+    # deep 已先找到终止页时，终止证据必须跨轮保留；后续预算只连续补 head，
+    # 直到冻结接缝闭合后才完成，且不得继续请求 terminal 之后的页。
+    terminal_pages = {
+        (3, 1): full_page("BVterminal-head-", 1200),
+        (3, 2): full_page("BVterminal-page2-", 1100),
+        (3, 3): full_page("BVterminal-page3-", 1000),
+        (3, 4): full_page("BVterminal-page4-", 900),
+        (3, 5): full_page("BVterminal-page5-", 800),
+        (3, 6): [_vid("BVold", 100)],
+    }
+    terminal_calls = _patch_fetch_calls(monkeypatch, terminal_pages)
+    terminal_last = {
+        "bvid": "BVold",
+        "ts": 100,
+        "fetched_at": time.time() - 600,
+        "scan": {
+            "base_bvid": "BVold",
+            "base_ts": 100,
+            "ps": ps,
+            "next_pn": 6,
+            "deep_next_pn": 6,
+            "head_next_pn": 6,
+            "head_repair_until_pn": 6,
+            "terminal_pn": None,
+            "head_bvid": "BVterminal-before-head",
+            "head_ts": 600,
+            "items": full_page("BVterminal-before-", 600),
+        },
+    }
+
+    terminal_first_new, terminal_first_newest = auto_refresh.fetch_new(3, terminal_last)
+    assert [pn for _, _, pn in terminal_calls] == [1, 2, 6]
+    assert terminal_first_new
+    assert terminal_first_newest["_scan_complete"] is False
+    terminal_first_state = terminal_first_newest["_scan_state"]
+    assert terminal_first_state["head_next_pn"] == 3
+    assert terminal_first_state["head_repair_until_pn"] == 6
+    assert terminal_first_state["deep_next_pn"] == 7
+    assert terminal_first_state["terminal_pn"] == 6, \
+        "deep 的终止证据必须先持久化，不能因低页接缝未闭合而丢失"
+    assert terminal_last["bvid"] == "BVold"
+
+    terminal_calls.clear()
+    terminal_last["scan"] = terminal_first_state
+    terminal_second_new, terminal_second_newest = auto_refresh.fetch_new(3, terminal_last)
+    assert [pn for _, _, pn in terminal_calls] == [1, 3, 4], \
+        "已有 terminal 时只能连续修复 head，不得再推进 deep"
+    assert terminal_second_newest["_scan_complete"] is False
+    terminal_second_state = terminal_second_newest["_scan_state"]
+    assert terminal_second_state["head_next_pn"] == 5
+    assert terminal_second_state["head_repair_until_pn"] == 6
+    assert terminal_second_state["deep_next_pn"] == 7
+    assert terminal_second_state["terminal_pn"] == 6
+    assert any(v["bvid"] == "BVterminal-page3-0" for v in terminal_second_new)
+    assert any(v["bvid"] == "BVterminal-page4-0" for v in terminal_second_new)
+
+    terminal_calls.clear()
+    terminal_last["scan"] = terminal_second_state
+    terminal_third_new, terminal_third_newest = auto_refresh.fetch_new(3, terminal_last)
+    assert [pn for _, _, pn in terminal_calls] == [1, 5]
+    assert any(v["bvid"] == "BVterminal-page5-0" for v in terminal_third_new)
+    assert terminal_third_newest["_scan_complete"] is True
+    assert "_scan_state" not in terminal_third_newest
+    assert all(pn <= 6 for _, _, pn in terminal_calls), \
+        "持久化 terminal 已足够证明 deep 终止，不得请求第 7 页"
 
 
 def test_fetch_new_stops_when_page_covered(monkeypatch):
@@ -316,7 +437,7 @@ def test_refresh_once_skips_when_already_running(monkeypatch):
         later.join(timeout=5)
 
 
-def test_is_running_reflects_lock():
+def test_is_running_reflects_lock(monkeypatch):
     """is_running() 必须如实反映「有没有一轮在跑」:未持锁 False、持锁 True、释放后 False。
 
     Property 4: Bug Condition —— 后来者跳过而非排队(的可观测面)。
@@ -341,6 +462,40 @@ def test_is_running_reflects_lock():
     finally:
         lock.release()
     assert auto_refresh.is_running() is False, "释放后应回到 False"
+
+    # 包装器在调用零参数模块符号时必须已经持有预约，且忙时不污染上一轮状态。
+    with auto_refresh._status_lock:
+        saved_status = dict(auto_refresh._status)
+    calls = []
+
+    def fake_refresh():
+        assert auto_refresh.is_running() is True, \
+            "run_refresh_with_status 调 refresh_once 前必须已原子预约"
+        calls.append(1)
+        return 3
+
+    monkeypatch.setattr(auto_refresh, "refresh_once", fake_refresh)
+    try:
+        assert auto_refresh.run_refresh_with_status("manual") == 3
+        assert calls == [1]
+        assert auto_refresh.is_running() is False, "终态提交后必须释放预约"
+
+        assert lock.acquire(timeout=5)
+        try:
+            with auto_refresh._status_lock:
+                before_busy = dict(auto_refresh._status)
+            assert auto_refresh.run_refresh_with_status("scheduled") == 0
+            with auto_refresh._status_lock:
+                after_busy = dict(auto_refresh._status)
+            assert after_busy == before_busy, \
+                "忙时包装器不得改写 last_trigger/last_started/last_error 等上一轮状态"
+            assert calls == [1], "忙时不得调用 monkeypatch 的 refresh_once"
+        finally:
+            lock.release()
+    finally:
+        with auto_refresh._status_lock:
+            auto_refresh._status.clear()
+            auto_refresh._status.update(saved_status)
 
 
 def test_refresh_once_releases_lock_on_exception(monkeypatch):

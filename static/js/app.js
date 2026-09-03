@@ -14,8 +14,8 @@ import * as login from './login.js';
 import * as downloads from './pages/downloads.js';
 import * as history from './pages/history.js';
 import * as feed from './pages/feed.js';
-import * as seasons from './pages/seasons.js';
-import * as fav from './pages/fav.js';
+import * as seasons from './pages/seasons.js?v=20260903a';
+import * as fav from './pages/fav.js?v=20260903a';
 import * as later from './pages/later.js';
 
 import * as newdl from './newdl.js';
@@ -83,6 +83,37 @@ Object.assign(window, {
   resolveTaskConflict: downloads.resolveTaskConflict,
 });
 
+/* ---------- 账号代际与静态可访问名称 ---------- */
+const ACCOUNT_BOUND_PAGES = new Set(['history', 'feed', 'seasons', 'fav', 'later']);
+
+function syncStaticButtonLabels() {
+  document.querySelectorAll('button[title]:not([aria-label])').forEach((button) => {
+    const label = button.getAttribute('title');
+    if (label) button.setAttribute('aria-label', label);
+  });
+}
+
+function clearAccountBoundViews() {
+  const activePage = lib.state.mode;
+  for (const name of ACCOUNT_BOUND_PAGES) {
+    const list = document.getElementById(`list-${name}`);
+    const meta = document.getElementById(`meta-${name}`);
+    if (list) list.replaceChildren();
+    if (meta) meta.textContent = '';
+  }
+  for (const id of ['season-overview', 'fav-folder-list']) {
+    const element = document.getElementById(id);
+    if (element) element.replaceChildren();
+  }
+  if (ACCOUNT_BOUND_PAGES.has(activePage)) {
+    lib.goPage(activePage);
+    lib.updateLibCount();
+  }
+}
+
+document.addEventListener('auth:changed', clearAccountBoundViews);
+syncStaticButtonLabels();
+
 /* ---------- 启动 ---------- */
 (async function init() {
   await settings.loadConfig();
@@ -94,6 +125,7 @@ Object.assign(window, {
   feed.syncSeg();
   await login.refreshLogin();
   lib.goPage('downloads');
+  downloads.startTaskUpdates();
   // 窗口宽度变化 → 每页条数自适应重算
   let _resizeT = null;
   window.addEventListener('resize', () => {
@@ -107,6 +139,4 @@ Object.assign(window, {
     if (_scroller.scrollTop + _scroller.clientHeight < _scroller.scrollHeight - 600) return;
     lib.maybeLoadMore();
   }, { passive: true });
-  // 后台自动下载入队靠轮询刷新角标,与 SSE 互为兜底
-  setInterval(() => { downloads.pollTasks(); }, 30000);
 })();

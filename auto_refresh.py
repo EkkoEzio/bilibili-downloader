@@ -35,6 +35,22 @@ MAX_PAGES = 3
 # 自动任务失败后不依赖时间游标重新发现，而从持久化任务史退避重试。
 AUTO_RETRY_BASE = 10 * 60
 AUTO_RETRY_MAX = 24 * 3600
+# 与 up_list 持久化边界共享同一来源；达到上限必须显式失败，不能裁掉旧页后
+# 继续推进游标，否则会造成永久漏稿。
+MAX_SCAN_ITEMS = up_list.MAX_SCAN_ITEMS
+
+
+class ScanCapacityError(RuntimeError):
+    """单个 UP 的续扫累计项超过安全边界。"""
+
+    def __init__(self, current: int) -> None:
+        self.current = int(current)
+        self.limit = int(MAX_SCAN_ITEMS)
+        super().__init__(
+            f"续扫状态含 {self.current} 项，超过安全上限 {self.limit}；"
+            "请重置该 UP 的已见记录后分轮重新扫描"
+        )
+
 
 # 保证「同一时刻只有一轮检查」。非阻塞获取:拿不到就跳过,不排队。
 # 阻塞获取(`with _lock:`)只保证互斥,不保证去重 —— 后来者会卡在锁上,等前一轮
@@ -42,6 +58,61 @@ AUTO_RETRY_MAX = 24 * 3600
 # 「立即检查新视频」就是串行跑 N 轮完整检查,正是 docs/COMPLIANCE.md 承诺要
 # 避免的账号级风控场景。需求 2.9 要的是「跳过」,不是「排队后补跑」。
 _lock = threading.Lock()
+
+
+class _RefreshReservation:
+    """一次性业务轮次预约；可由 HTTP 线程安全转交给 worker。"""
+
+    def __init__(self) -> None:
+        self._state_lock = threading.Lock()
+        self._claimed = False
+        self._released = False
+
+    def claim(self) -> None:
+        """声明由当前 worker 消费；重复消费属于编程错误。"""
+        with self._state_lock:
+            if self._released:
+                raise RuntimeError("追更预约已释放")
+            if self._claimed:
+                raise RuntimeError("追更预约已被消费")
+            self._claimed = True
+
+    def release(self) -> bool:
+        """幂等释放业务锁；线程启动失败时可由预约方回收。"""
+        with self._state_lock:
+            if self._released:
+                return False
+            self._released = True
+        _lock.release()
+        return True
+
+
+def try_reserve_refresh() -> Optional[_RefreshReservation]:
+    """原子预约一轮追更；忙时返回 ``None``，绝不排队。"""
+    if not _lock.acquire(blocking=False):
+        return None
+    try:
+        return _RefreshReservation()
+    except BaseException:
+        _lock.release()
+        raise
+
+
+# 生命周期状态与业务互斥锁分离：读取状态永不等待一轮慢速上游检查。
+_status_lock = threading.Lock()
+_scheduler_lock = threading.Lock()
+_scheduler_thread: Optional[threading.Thread] = None
+_cycle_metrics = threading.local()
+_status = {
+    "last_trigger": None,
+    "last_started_at": None,
+    "last_finished_at": None,
+    "last_success_at": None,
+    "last_error": None,
+    "last_enqueued": 0,
+    "last_partial_errors": 0,
+    "next_run_at": None,
+}
 
 
 def estimate_ps(fetched_at, now=None) -> int:
@@ -86,9 +157,10 @@ def fetch_new(mid: int, last: Optional[dict] = None):
     """增量拉取单个 UP，返回 ``(新增列表, 本轮头部或 None)``。
 
     公开二元返回保持兼容；头部字典的私有 ``_scan_complete/_scan_state`` 供
-    refresh_once 区分“完整覆盖旧游标”和“只耗尽本轮页预算”。未完整时保留
-    committed cursor，并持久化下一页；续扫先重取首页检测 offset 分页漂移，
-    每轮请求仍不超过 MAX_PAGES。
+    refresh_once 区分“完整覆盖旧游标”和“只耗尽本轮页预算”。续扫固定重取
+    首页；deep 前沿继续寻找旧游标/末页，head 前沿则在首页漂移后重新证明
+    ``[1, deep 接缝)`` 的连续覆盖。deep 提前见到终止证据时只持久化
+    ``terminal_pn``，必须等低页接缝闭合后才提交游标。每轮仍不超过 MAX_PAGES。
     """
     last = last or {}
     seen_ts = _as_ts(last.get("ts"))
@@ -109,50 +181,167 @@ def fetch_new(mid: int, last: Optional[dict] = None):
             ps = max(1, min(50, int(scan.get("ps") or FULL_PS)))
         except (TypeError, ValueError):
             ps = FULL_PS
-        collected = [dict(v) for v in (scan.get("items") or [])
+        raw_items = scan.get("items") or []
+        if not isinstance(raw_items, list):
+            raise ScanCapacityError(MAX_SCAN_ITEMS + 1)
+        if len(raw_items) > MAX_SCAN_ITEMS:
+            raise ScanCapacityError(len(raw_items))
+        collected = [dict(v) for v in raw_items
                      if isinstance(v, dict) and v.get("bvid")]
     else:
         ps = estimate_ps(last.get("fetched_at"))
         collected = []
 
+    def _merge_scanned(page: list[dict], *, prepend: bool = False) -> None:
+        _merge_page(collected, page, prepend=prepend)
+        if len(collected) > MAX_SCAN_ITEMS:
+            raise ScanCapacityError(len(collected))
+
+    def _pn(value, default: int) -> int:
+        try:
+            return max(2, int(value or default))
+        except (TypeError, ValueError):
+            return default
+
+    def _optional_pn(value) -> Optional[int]:
+        if value is None or value == "":
+            return None
+        try:
+            return max(2, int(value))
+        except (TypeError, ValueError):
+            return None
+
     complete = False
     pages_used = 0
-    next_pn = 1
+    # deep_next_pn 是旧游标方向的单调前沿；next_pn 保留给旧数据兼容。
+    deep_next_pn = _pn(
+        (scan or {}).get("deep_next_pn") or (scan or {}).get("next_pn"), 2
+    ) if scan else 1
+
+    if scan and "head_repair_until_pn" in scan:
+        head_next_pn = _pn(scan.get("head_next_pn"), 2)
+        head_repair_until_pn = _pn(
+            scan.get("head_repair_until_pn"), deep_next_pn)
+        terminal_pn = _optional_pn(scan.get("terminal_pn"))
+    elif scan:
+        # 旧 schema 无法证明曾修复过哪些低页：从第 2 页保守重证，
+        # 并把旧 deep 前沿冻结为接缝目标，不能沿用可能已跳过的 head_next_pn。
+        head_next_pn = 2
+        head_repair_until_pn = deep_next_pn
+        terminal_pn = None
+    else:
+        head_next_pn = 2
+        head_repair_until_pn = 2
+        terminal_pn = None
+
+    def _repair_closed() -> bool:
+        return head_next_pn >= head_repair_until_pn
+
+    observed_head = None
+    head_changed = False
 
     if scan:
-        # offset 分页在新投稿插入后会整体右移。先重取首页：头变则从第 2 页
-        # 重新衔接，头未变才信任持久化 next_pn；已有 items 始终按 BVID 去重。
         first = bapi.fetch_up_videos(mid, ps=ps, pn=1)
         pages_used = 1
         if not first:
             complete = True
         else:
+            observed_head = first[0] if isinstance(first[0], dict) else None
             old_head = (str(scan.get("head_bvid") or ""),
                         _as_ts(scan.get("head_ts")))
-            new_head = (str(first[0].get("bvid") or ""),
-                        _as_ts(first[0].get("view_at")))
-            _merge_page(collected, first, prepend=True)
+            new_head = (str((observed_head or {}).get("bvid") or ""),
+                        _as_ts((observed_head or {}).get("view_at")))
+            head_changed = new_head != old_head
+            if head_changed:
+                # 冻结漂移发生前的 deep 接缝。后续 deep 可以继续推进，但只有
+                # head 从第 2 页连续追到该接缝，才可使用终止证据提交游标。
+                head_next_pn = 2
+                head_repair_until_pn = deep_next_pn
+                terminal_pn = None
+            _merge_scanned(first, prepend=True)
             if _page_finishes_scan(first, ps, seen_ts):
                 complete = True
-            elif new_head != old_head:
-                next_pn = 2
-            else:
-                try:
-                    next_pn = max(2, int(scan.get("next_pn") or 2))
-                except (TypeError, ValueError):
-                    next_pn = 2
+            elif terminal_pn is not None and _repair_closed():
+                # 首页锚点稳定，上一轮保存的终止证据仍属于同一 offset。
+                complete = True
 
-    while not complete and pages_used < MAX_PAGES:
-        page = bapi.fetch_up_videos(mid, ps=ps, pn=next_pn)
-        pages_used += 1
-        requested_pn = next_pn
-        next_pn = requested_pn + 1
-        if not page:
-            complete = True
-            break
-        _merge_page(collected, page)
-        if _page_finishes_scan(page, ps, seen_ts):
-            complete = True
+        if not complete:
+            remaining = MAX_PAGES - pages_used
+            plan: list[list] = []
+
+            def _schedule(pn: int, role: str) -> None:
+                for item in plan:
+                    if item[0] == pn:
+                        item[1].add(role)
+                        return
+                if len(plan) < remaining:
+                    plan.append([pn, {role}])
+
+            if not _repair_closed():
+                if terminal_pn is not None:
+                    # deep 已找到末页/旧游标，只需把剩余预算用于闭合低页空洞。
+                    candidate = head_next_pn
+                    while (len(plan) < remaining
+                           and candidate < head_repair_until_pn):
+                        _schedule(candidate, "head")
+                        candidate += 1
+                else:
+                    # 一个槽修复低页，一个槽推进旧 continuation；同页时合并角色，
+                    # 把空出的槽继续给 deep，保证两个前沿都有实际进展。
+                    _schedule(head_next_pn, "head")
+                    _schedule(deep_next_pn, "deep")
+                    candidate = deep_next_pn + 1
+                    while len(plan) < remaining:
+                        _schedule(candidate, "deep")
+                        candidate += 1
+            else:
+                candidate = deep_next_pn
+                while len(plan) < remaining:
+                    _schedule(candidate, "deep")
+                    candidate += 1
+
+            for requested_pn, roles in plan:
+                page = bapi.fetch_up_videos(mid, ps=ps, pn=requested_pn)
+                pages_used += 1
+                if "head" in roles:
+                    head_next_pn = max(head_next_pn, requested_pn + 1)
+                if "deep" in roles:
+                    deep_next_pn = max(deep_next_pn, requested_pn + 1)
+
+                finishes = not page
+                if page:
+                    _merge_scanned(page)
+                    finishes = _page_finishes_scan(page, ps, seen_ts)
+                if finishes:
+                    terminal_pn = requested_pn
+                    if "head" in roles:
+                        # 终止页本身位于连续 head 前沿；其后的旧接缝无需再证明。
+                        head_repair_until_pn = min(
+                            head_repair_until_pn, head_next_pn)
+
+                if terminal_pn is not None and _repair_closed():
+                    complete = True
+                    break
+    else:
+        # 首轮仍按 1,2,3 顺序扫描；耗尽预算后从下一页建立 deep continuation。
+        while not complete and pages_used < MAX_PAGES:
+            page = bapi.fetch_up_videos(mid, ps=ps, pn=deep_next_pn)
+            pages_used += 1
+            requested_pn = deep_next_pn
+            deep_next_pn = requested_pn + 1
+            if not page:
+                complete = True
+                break
+            if observed_head is None:
+                observed_head = page[0] if isinstance(page[0], dict) else None
+            _merge_scanned(page)
+            if _page_finishes_scan(page, ps, seen_ts):
+                complete = True
+
+        if not complete:
+            # 本轮从第 1 页连续读到 deep 前沿，初始接缝已经有完整证明。
+            head_next_pn = deep_next_pn
+            head_repair_until_pn = deep_next_pn
 
     newest = dict(collected[0]) if collected else None
     new = []
@@ -165,12 +354,17 @@ def fetch_new(mid: int, last: Optional[dict] = None):
     if newest is not None:
         newest["_scan_complete"] = complete
         if not complete:
-            head = collected[0]
+            head = observed_head or collected[0]
             newest["_scan_state"] = {
                 "base_bvid": seen_bvid,
                 "base_ts": seen_ts,
                 "ps": ps,
-                "next_pn": next_pn,
+                # 旧版本只认识 next_pn；让它继续表示深页前沿。
+                "next_pn": deep_next_pn,
+                "deep_next_pn": deep_next_pn,
+                "head_next_pn": head_next_pn,
+                "head_repair_until_pn": head_repair_until_pn,
+                "terminal_pn": terminal_pn,
                 "head_bvid": str(head.get("bvid") or ""),
                 "head_ts": _as_ts(head.get("view_at")),
                 "items": collected,
@@ -179,11 +373,16 @@ def fetch_new(mid: int, last: Optional[dict] = None):
     return new, newest
 
 
-def _retry_items(mid: int, now: Optional[int] = None) -> list[dict]:
-    """从任务史恢复该 UP 最新一次失败/中断的自动任务，带指数退避。"""
+def _retry_items(mid: int, now: Optional[int] = None,
+                 tasks_snapshot: Optional[list[dict]] = None) -> list[dict]:
+    """从任务史恢复该 UP 最新一次失败/中断的自动任务，带指数退避。
+
+    调用方可传一轮共享的任务快照，避免按 UP 数重复完整扫描任务史。
+    """
     now = int(time.time()) if now is None else int(now)
+    tasks = downloader.list_tasks() if tasks_snapshot is None else tasks_snapshot
     latest: dict[tuple[str, int], dict] = {}
-    for task in downloader.list_tasks():
+    for task in tasks:
         if task.get("source") != "auto_refresh":
             continue
         try:
@@ -250,6 +449,79 @@ def is_running() -> bool:
     return _lock.locked()
 
 
+def _update_status(**changes) -> None:
+    with _status_lock:
+        _status.update(changes)
+
+
+def get_status() -> dict:
+    """返回不含账号或投稿内容的只读生命周期快照。"""
+    with _status_lock:
+        snapshot = dict(_status)
+    with _scheduler_lock:
+        scheduler = _scheduler_thread
+    snapshot.update({
+        "running": is_running(),
+        "scheduler_running": bool(scheduler and scheduler.is_alive()),
+    })
+    return snapshot
+
+
+def run_refresh_with_status(
+        trigger: str = "manual", *,
+        _reservation: Optional[_RefreshReservation] = None) -> int:
+    """预约并执行一轮检查，在同一预约内提交完整生命周期状态。
+
+    调用仍经过模块级零参数 ``refresh_once()``，保留测试与下游 monkeypatch
+    契约。忙时直接返回 0，且不改写上一轮任何 ``last_*`` 状态。
+    """
+    reservation = _reservation
+    if reservation is None:
+        reservation = try_reserve_refresh()
+        if reservation is None:
+            log.info("自动下载:已有一轮检查在运行,本次状态包装器跳过")
+            return 0
+    if not isinstance(reservation, _RefreshReservation):
+        raise TypeError("无效的追更预约")
+    reservation.claim()
+
+    had_marker = hasattr(_cycle_metrics, "reservation_held")
+    previous_marker = getattr(_cycle_metrics, "reservation_held", False)
+    _cycle_metrics.reservation_held = True
+    try:
+        started_at = int(time.time())
+        _cycle_metrics.partial_errors = 0
+        _update_status(last_trigger=str(trigger or "manual"),
+                       last_started_at=started_at, last_error=None)
+        try:
+            enqueued = refresh_once()
+        except Exception as exc:
+            _update_status(last_finished_at=int(time.time()),
+                           last_error=str(exc)[:500],
+                           last_enqueued=0,
+                           last_partial_errors=int(
+                               getattr(_cycle_metrics, "partial_errors", 0) or 0))
+            raise
+        finished_at = int(time.time())
+        _update_status(last_finished_at=finished_at,
+                       last_success_at=finished_at,
+                       last_error=None,
+                       last_enqueued=int(enqueued or 0),
+                       last_partial_errors=int(
+                           getattr(_cycle_metrics, "partial_errors", 0) or 0))
+        return enqueued
+    finally:
+        if had_marker:
+            _cycle_metrics.reservation_held = previous_marker
+        else:
+            try:
+                del _cycle_metrics.reservation_held
+            except AttributeError:
+                pass
+        # 成功/错误终态已经写完后才允许下一轮预约，避免生命周期状态交错。
+        reservation.release()
+
+
 def refresh_once() -> int:
     """跑一轮检查:清单里每个 UP 的新投稿(未下载过的)直接入队下载。
 
@@ -264,13 +536,23 @@ def refresh_once() -> int:
     检查(手动点击 + 后台轮询)都被误判成「已有一轮在跑」而跳过,自动下载彻底
     停摆且不报任何错。
     """
-    if not _lock.acquire(blocking=False):
+    _cycle_metrics.partial_errors = 0
+    reservation_held = bool(getattr(_cycle_metrics, "reservation_held", False))
+    acquired_here = False
+    if reservation_held:
+        if not _lock.locked():
+            raise RuntimeError("追更预约标记存在但业务锁未持有")
+    elif not _lock.acquire(blocking=False):
         log.info("自动下载:已有一轮检查在运行,本次跳过(不排队、不发请求)")
         return 0
+    else:
+        acquired_here = True
     try:
         ups = up_list.list_ups()
         if not ups:
             return 0
+        # 一轮只复制/扫描一次任务史；每个 UP 仍独立过滤自己的失败任务。
+        tasks_snapshot = downloader.list_tasks()
         enqueued = 0
         for i, up in enumerate(ups):
             try:
@@ -292,7 +574,7 @@ def refresh_once() -> int:
                 ]
                 # 任务记录本身充当 durable outbox：即使时间游标已推进，异步下载
                 # 后来失败/重启中断，下一轮仍会从任务史恢复，而非永久漏稿。
-                candidates = _retry_items(mid)
+                candidates = _retry_items(mid, tasks_snapshot=tasks_snapshot)
                 occupied = {
                     (str(v.get("url") or ""), int(v.get("page") or 1))
                     for v in candidates
@@ -321,29 +603,47 @@ def refresh_once() -> int:
                                  up.get("uname") or mid, MAX_PAGES,
                                  newest["_scan_state"].get("next_pn"))
             except Exception:
+                _cycle_metrics.partial_errors = int(
+                    getattr(_cycle_metrics, "partial_errors", 0) or 0) + 1
                 log.exception("自动下载处理 UP %s 异常", up.get("mid"))
             # 无论本轮结果如何,UP 之间都保持间隔(防风控的关键)
             if i < len(ups) - 1:
                 time.sleep(UP_INTERVAL)
         return enqueued
     finally:
-        # 任何出口都要放锁:正常 return、`ups` 为空的提前 return、以及
-        # list_ups() 之类锁内异常向上传播的路径。
-        _lock.release()
+        # 直接调用 refresh_once 时自行放锁；状态包装器持有的预约要延续到
+        # last_finished/last_error 提交完成，由 reservation.release() 统一释放。
+        if acquired_here:
+            _lock.release()
 
 
 def start_loop() -> threading.Thread:
-    """启动守护轮询线程;间隔运行时读 config.AUTO_REFRESH_MINUTES(实时可调)。"""
+    """幂等启动守护轮询线程；死亡线程可在后续调用中重建。"""
+    global _scheduler_thread
+
     def loop():
         while True:
-            time.sleep(max(60, config.AUTO_REFRESH_MINUTES * 60))
+            interval = max(60, config.AUTO_REFRESH_MINUTES * 60)
+            _update_status(next_run_at=int(time.time() + interval))
+            time.sleep(interval)
+            _update_status(next_run_at=None)
             try:
-                n = refresh_once()
+                n = run_refresh_with_status("scheduled")
                 if n:
                     log.info("自动下载本轮入队 %d 条", n)
             except Exception:
                 log.exception("自动下载轮询异常")
 
-    th = threading.Thread(target=loop, daemon=True, name="bd-auto-refresh")
-    th.start()
-    return th
+    with _scheduler_lock:
+        current = _scheduler_thread
+        if current is not None and current.is_alive():
+            return current
+        th = threading.Thread(target=loop, daemon=True, name="bd-auto-refresh")
+        _scheduler_thread = th
+        try:
+            th.start()
+        except Exception:
+            if _scheduler_thread is th:
+                _scheduler_thread = None
+            raise
+        return th

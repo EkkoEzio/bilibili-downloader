@@ -1,8 +1,8 @@
-"""B 站读接口客户端:历史/稍后再看/收藏夹/合集/关注/UP 投稿,及条目归一化。
+"""B 站读接口客户端：账号数据按 fingerprint + incarnation + generation 隔离。
 
-依赖 bilibili_auth 的会话(get_cookiejar / BROWSER_HEADERS / _session_lock);
-数据域缓存(_followings_cache/_follow_cache)归本模块,登出时由
-bilibili_auth.clear_session 经 reset_data_caches 清空。
+所有慢请求先取得同一份认证上下文与 Cookie 快照，返回/写缓存前再次确认
+完整上下文仍有效。账号、生命期或代际切换前发出的旧请求可以完成网络 I/O，
+但不得污染当前缓存，也不会作为当前认证上下文的成功响应返回。
 """
 import logging
 import threading
@@ -12,12 +12,24 @@ from typing import Optional
 import requests
 
 import up_list
-from bilibili_auth import (BROWSER_HEADERS, get_cookiejar,
-                           get_ytdlp_cookie_arg, _session_lock)
-from request_governor import (UpstreamRateLimitError, governed_get, governor)
+from bilibili_auth import (
+    AuthContextChangedError,
+    BROWSER_HEADERS,
+    _session_lock,
+    commit_if_current,
+    get_auth_context,
+    get_cookiejar,
+    get_ytdlp_cookie_arg,
+    is_auth_context_current,
+)
+from request_governor import UpstreamRateLimitError, governed_get, governor
 
 NAV_API = "https://api.bilibili.com/x/web-interface/nav"
 log = logging.getLogger("bd.bilibili_api")
+
+# 现有测试会把本模块符号替换成仅接受零参数的 lambda。替换时进入兼容模式，
+# 不读取/写入真实认证状态；生产路径仍自动绑定完整认证上下文。
+_ORIGINAL_GET_COOKIEJAR = get_cookiejar
 
 
 def _get(url: str, *, kind: str = "default", **kwargs):
@@ -38,6 +50,67 @@ def _safe_json(resp):
         return None
 
 
+def _context_key(context) -> Optional[tuple]:
+    """仅已确认账号身份的完整 incarnation context 可作为缓存命名空间。"""
+    if not isinstance(context, dict) or context.get("authenticated") is not True:
+        return None
+    fingerprint = str(context.get("fingerprint") or "").lower()
+    incarnation = str(context.get("incarnation") or "").lower()
+    try:
+        generation = int(context.get("generation"))
+    except (TypeError, ValueError):
+        return None
+    hex_chars = set("0123456789abcdef")
+    if (len(fingerprint) != 64 or any(ch not in hex_chars for ch in fingerprint)
+            or len(incarnation) != 32
+            or any(ch not in hex_chars for ch in incarnation)
+            or generation < 0):
+        return None
+    return (str(context.get("source") or "none"), fingerprint,
+            incarnation, generation)
+
+
+def _ensure_context_current(context) -> None:
+    if context is not None and not is_auth_context_current(context):
+        raise AuthContextChangedError("登录状态已变化，请重试")
+
+
+def _auth_session(context=None):
+    """取得一致的 ``(context, cookiejar)``；测试桩维持旧零参数契约。"""
+    if context is not None:
+        snapshot = dict(context)
+        _ensure_context_current(snapshot)
+        cookiejar = get_cookiejar(snapshot)
+        _ensure_context_current(snapshot)
+        return snapshot, cookiejar
+
+    if get_cookiejar is not _ORIGINAL_GET_COOKIEJAR:
+        return None, get_cookiejar()
+
+    # Cookie 首次暴露 DedeUserID 时认证层会升级 generation，重取即可。
+    for _ in range(3):
+        snapshot = get_auth_context()
+        cookiejar = get_cookiejar()
+        if is_auth_context_current(snapshot):
+            return snapshot, cookiejar
+    raise AuthContextChangedError("登录状态正在切换，请稍后重试")
+
+
+def _commit_data_cache(context, update) -> bool:
+    """把短内存提交与认证切换串行化；未确认账号时禁止缓存。"""
+    key = _context_key(context)
+    if key is None:
+        _ensure_context_current(context)
+        return False
+
+    def commit():
+        with _fetch_lock:
+            update(key)
+        return True
+
+    return bool(commit_if_current(context, commit))
+
+
 def _my_mid(cj) -> Optional[int]:
     try:
         resp = _get(NAV_API, cookies=cj, headers=BROWSER_HEADERS, timeout=10)
@@ -51,12 +124,7 @@ def _my_mid(cj) -> Optional[int]:
 
 def _video_item(it: dict, *, owner_key="owner", name_key="name", pic_key="pic",
                 view_at_key="view_at", mark_invalid=False, **extra) -> dict:
-    """把 B 站各接口的原始条目归一化成前端统一的视频卡字段。
-
-    各接口字段名不一:作者在 owner/upper 容器或顶层(arc 的 author),
-    封面 pic/cover,时间戳 view_at/tview_at/created/无——用参数对齐;
-    extra 直接覆盖/追加字段(如 watched_pct、uploader_mid)。
-    """
+    """把 B 站各接口的原始条目归一化成前端统一的视频卡字段。"""
     owner = (it.get(owner_key) or {}) if owner_key else {}
     bvid = it.get("bvid") or ""
     title = it.get("title") or ""
@@ -79,255 +147,286 @@ def _video_item(it: dict, *, owner_key="owner", name_key="name", pic_key="pic",
 
 
 def _paged_get(url: str, base_params: dict, *, what: str, max_pages: int, ps: int,
-               gap: float = 0.3, mid_param: str = "", parse) -> list:
-    """通用分页拉取:会话获取、code 判错、翻页限速。
-
-    parse(data_dict, fetched_count) -> (本页条目, 是否还有下一页)。
-    mid_param 给定时只取一次 _my_mid 塞进参数(旧行为每页重复打 nav 接口)。
-    """
-    cj = get_cookiejar()
-    if cj is None:
+               gap: float = 0.3, mid_param: str = "", parse,
+               context=None, cookiejar=None) -> list:
+    """通用分页拉取；整轮分页固定使用一份认证快照。"""
+    if cookiejar is None:
+        context, cookiejar = _auth_session(context)
+    else:
+        _ensure_context_current(context)
+    if cookiejar is None:
         raise RuntimeError(f"未登录,无法获取{what}")
     if mid_param:
-        mid = _my_mid(cj)
+        mid = _my_mid(cookiejar)
         if not mid:
             raise RuntimeError("无法获取用户 ID")
         base_params = {**base_params, mid_param: mid}
     out = []
     for pn in range(1, max_pages + 1):
-        resp = _get(url, cookies=cj, headers=BROWSER_HEADERS,
-                            params={**base_params, "pn": pn, "ps": ps}, timeout=12)
+        resp = _get(url, cookies=cookiejar, headers=BROWSER_HEADERS,
+                    params={**base_params, "pn": pn, "ps": ps}, timeout=12)
         data = _safe_json(resp)
         if not data or data.get("code") != 0:
-            raise RuntimeError((data or {}).get("message",
-                             f"获取{what}失败(可能被风控,稍后再试)"))
+            raise RuntimeError((data or {}).get(
+                "message", f"获取{what}失败(可能被风控,稍后再试)"))
         items, has_more = parse(data.get("data") or {}, len(out))
         out.extend(items)
         if not has_more:
             break
         if gap:
             time.sleep(gap)
+    _ensure_context_current(context)
     return out
 
 
-def fetch_history(page: int = 1, size: int = 50) -> list[dict]:
-    """拉取观看历史。返回归一化的视频列表(最新在前)。
-
-    需要 cookiejar(扫码/Edge/cookies.txt)。size 上限 100/页。
-    """
-    cj = get_cookiejar()
-    if cj is None:
+def fetch_history(page: int = 1, size: int = 50, *, context=None) -> list[dict]:
+    """拉取观看历史；返回归一化的视频列表（最新在前）。"""
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
         raise RuntimeError("未登录,无法获取观看历史")
-    # B 站接口偶发 SSL 断连,自动重试
     last = None
     for attempt in range(3):
         try:
             resp = _get("https://api.bilibili.com/x/v2/history",
-                                cookies=cj, headers=BROWSER_HEADERS,
-                                params={"pn": page, "ps": min(size, 100)}, timeout=12)
+                        cookies=cookiejar, headers=BROWSER_HEADERS,
+                        params={"pn": page, "ps": min(size, 100)}, timeout=12)
             data = resp.json()
             governor.note_api_code(data.get("code"),
                                    endpoint="https://api.bilibili.com/x/v2/history")
             break
-        except requests.RequestException as e:
-            last = e
+        except requests.RequestException as exc:
+            last = exc
             time.sleep(1 + attempt)
     else:
         raise RuntimeError(f"网络错误(已重试 3 次):{last}")
-    if data.get("code") != 0:
-        raise RuntimeError(data.get("message", "获取失败"))
+    if not isinstance(data, dict) or data.get("code") != 0:
+        raise RuntimeError((data or {}).get("message", "获取失败")
+                           if isinstance(data, dict) else "获取失败")
     items = []
     for it in data.get("data", []) or []:
         dur = it.get("duration", 0)
         watched = max(0, int(it.get("progress") or 0))
         pct = round(watched / dur * 100, 1) if dur else 0
         items.append(_video_item(it, watched_seconds=watched, watched_pct=pct))
+    _ensure_context_current(context)
     return items
 
 
-def fetch_watchlater() -> list[dict]:
-    """拉取「稍后再看」列表。直接用 B 站 toview 接口(比 yt-dlp 快且字段丰富)。
-    返回归一化项 [{bvid,title,uploader,thumbnail,duration,view_at,url}],
-    其中 view_at 是加入稍后再看的时间(tview_at)。
-    """
-    cj = get_cookiejar()
-    if cj is None:
+def fetch_watchlater(*, context=None) -> list[dict]:
+    """拉取「稍后再看」列表。"""
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
         raise RuntimeError("未登录,无法获取稍后再看")
     resp = _get("https://api.bilibili.com/x/v2/history/toview",
-                        cookies=cj, headers=BROWSER_HEADERS, timeout=12)
+                cookies=cookiejar, headers=BROWSER_HEADERS, timeout=12)
     data = _safe_json(resp)
     if not data or data.get("code") != 0:
         raise RuntimeError((data or {}).get("message", "获取稍后再看失败"))
-    out = []
-    for it in (data.get("data", {}) or {}).get("list", []) or []:
-        out.append(_video_item(it, view_at_key="tview_at"))
+    out = [_video_item(it, view_at_key="tview_at")
+           for it in (data.get("data", {}) or {}).get("list", []) or []]
+    _ensure_context_current(context)
     return out
 
 
-def fetch_fav_folders() -> list[dict]:
+def fetch_fav_folders(*, context=None) -> list[dict]:
     """列出我的收藏夹列表。"""
-    cj = get_cookiejar()
-    if cj is None:
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
         raise RuntimeError("未登录,无法获取收藏夹")
-    mid = _my_mid(cj)
+    mid = _my_mid(cookiejar)
     if not mid:
         raise RuntimeError("无法获取用户 ID")
     resp = _get("https://api.bilibili.com/x/v3/fav/folder/created/list-all",
-                        cookies=cj, headers=BROWSER_HEADERS,
-                        params={"up_mid": mid}, timeout=12)
+                cookies=cookiejar, headers=BROWSER_HEADERS,
+                params={"up_mid": mid}, timeout=12)
     data = _safe_json(resp)
     if not data or data.get("code") != 0:
         raise RuntimeError((data or {}).get("message", "获取收藏夹失败"))
     out = []
-    for f in (data.get("data", {}) or {}).get("list", []) or []:
+    for folder in (data.get("data", {}) or {}).get("list", []) or []:
         out.append({
-            "id": f.get("id"),
-            "fid": f.get("fid"),
-            "title": f.get("title", ""),
-            "media_count": f.get("media_count", 0),
-            "cover": (f.get("cover") or "").replace("http:", "https:"),
+            "id": folder.get("id"),
+            "fid": folder.get("fid"),
+            "title": folder.get("title", ""),
+            "media_count": folder.get("media_count", 0),
+            "cover": (folder.get("cover") or "").replace("http:", "https:"),
         })
+    _ensure_context_current(context)
     return out
 
 
-def fetch_collected_seasons(max_pages: int = 5) -> list[dict]:
-    """「我追的合集/收藏夹」列表(B 站收藏页左侧栏的合集区)。
-
-    官网调用 /x/v3/fav/folder/collected/list,必须带 platform=web,
-    否则 code=0 但永远返回空列表。item.id 就是 season_id。
-    """
-    def parse(d, _fetched):
-        items = [{"id": f.get("id"),
-                  "title": f.get("title", ""),
-                  "media_count": f.get("media_count", 0),
-                  "cover": (f.get("cover") or "").replace("http:", "https:")}
-                 for f in d.get("list") or []]
-        return items, bool(d.get("has_more"))
+def fetch_collected_seasons(max_pages: int = 5, *, context=None) -> list[dict]:
+    """「我追的合集/收藏夹」列表。"""
+    def parse(data, _fetched):
+        items = [{"id": folder.get("id"),
+                  "title": folder.get("title", ""),
+                  "media_count": folder.get("media_count", 0),
+                  "cover": (folder.get("cover") or "").replace("http:", "https:")}
+                 for folder in data.get("list") or []]
+        return items, bool(data.get("has_more"))
 
     return _paged_get("https://api.bilibili.com/x/v3/fav/folder/collected/list",
                       {"platform": "web"}, what="合集列表",
-                      max_pages=max_pages, ps=20, mid_param="up_mid", parse=parse)
+                      max_pages=max_pages, ps=20, mid_param="up_mid", parse=parse,
+                      context=context)
 
 
-def fetch_season_content(season_id: int, ps: int = 20, max_pages: int = 30) -> list[dict]:
-    """拉取合集(我追的合集)内的视频。/x/space/fav/season/list,pn 翻页。"""
-    def parse(d, _fetched):
-        items = [_video_item(m, owner_key="upper", pic_key="cover",
+def fetch_season_content(season_id: int, ps: int = 20, max_pages: int = 30,
+                         *, context=None) -> list[dict]:
+    """拉取合集内的视频。"""
+    def parse(data, _fetched):
+        items = [_video_item(media, owner_key="upper", pic_key="cover",
                              view_at_key=None, mark_invalid=True)
-                 for m in d.get("medias") or []]
-        return items, bool(d.get("has_more"))
+                 for media in data.get("medias") or []]
+        return items, bool(data.get("has_more"))
 
     return _paged_get("https://api.bilibili.com/x/space/fav/season/list",
                       {"season_id": season_id}, what="合集内容",
-                      max_pages=max_pages, ps=ps, parse=parse)
+                      max_pages=max_pages, ps=ps, parse=parse, context=context)
 
 
-def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20) -> list[dict]:
-    """拉取某个收藏夹内的视频。走 B 站原生 /x/v3/fav/resource/list。
-
-    media_id 是收藏夹的媒体列表 id(文件夹接口里的 `id` 字段,如 64425947),
-    不是 `fid`(如 644259)——传 fid 接口会返回 code=0 但 medias 为空。
-    旧实现用 yt-dlp 解析 medialist 页面,被风控时静默返回 [],已弃用。
-    """
-    def parse(d, _fetched):
-        items = [_video_item(m, owner_key="upper", pic_key="cover",
+def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20,
+                      *, context=None) -> list[dict]:
+    """拉取某个收藏夹内的视频。"""
+    def parse(data, _fetched):
+        items = [_video_item(media, owner_key="upper", pic_key="cover",
                              view_at_key=None, mark_invalid=True)
-                 for m in d.get("medias") or []]
-        return items, bool(d.get("has_more"))
+                 for media in data.get("medias") or []]
+        return items, bool(data.get("has_more"))
 
     return _paged_get("https://api.bilibili.com/x/v3/fav/resource/list",
                       {"media_id": media_id, "order": "mtime"}, what="收藏夹内容",
-                      max_pages=max_pages, ps=ps, parse=parse)
+                      max_pages=max_pages, ps=ps, parse=parse, context=context)
 
 
-def fetch_followings(page: int = 1, size: int = 50) -> list[dict]:
+def fetch_followings(page: int = 1, size: int = 50, *, context=None) -> list[dict]:
     """拉取我关注的 UP 主列表。"""
-    def parse(d, _fetched):
-        items = [{"mid": f.get("mid"), "uname": f.get("uname", ""),
-                  "face": (f.get("face") or "").replace("http:", "https:")}
-                 for f in d.get("list") or []]
+    def parse(data, _fetched):
+        items = [{"mid": following.get("mid"), "uname": following.get("uname", ""),
+                  "face": (following.get("face") or "").replace("http:", "https:")}
+                 for following in data.get("list") or []]
         return items, False
 
     return _paged_get("https://api.bilibili.com/x/relation/followings",
-                      {"order": "desc"}, what="关注列表",
-                      max_pages=1, ps=min(size, 50), mid_param="vmid", parse=parse)
+                      {"order": "desc"}, what="关注列表", max_pages=1,
+                      ps=min(size, 50), mid_param="vmid", parse=parse,
+                      context=context)
 
 
-_followings_cache = {"items": [], "total": 0, "ts": 0}
-# 数据域锁:罩 _followings_cache/_follow_cache。check/act 各自短锁,
-# 翻页等慢网络请求一律锁外,不给 B 站请求排队。
+_followings_cache = {"items": [], "total": 0, "ts": 0.0, "context": None}
+# 数据域锁只保护内存 check/commit，慢网络请求一律锁外。
 _fetch_lock = threading.Lock()
-# 冷缓存/强制刷新 single-flight：同一数据源同一时刻只允许一个真实上游抓取。
 _followings_refresh_lock = threading.Lock()
 _follow_refresh_lock = threading.Lock()
 
 
-def fetch_followings_all(force: bool = False, max_pages: int = 10) -> dict:
-    """拉取我关注的全部 UP(上限 max_pages*50)。10 分钟缓存。
-
-    relation 接口轻量,翻页间隔 0.2s 即可;与 arc/search 的账号级风控不是一类。
-    并发冷启动/强制刷新通过 single-flight 合并，等待者复用先完成的结果。
-    """
+def fetch_followings_all(force: bool = False, max_pages: int = 10,
+                         *, context=None) -> dict:
+    """拉取全部关注 UP；缓存按完整认证上下文隔离。"""
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
+        raise RuntimeError("未登录,无法获取关注列表")
+    cache_key = _context_key(context)
     started_at = time.time()
+    cached_result = None
     with _fetch_lock:
-        if (not force and _followings_cache["items"]
-                and started_at - _followings_cache["ts"] < 600):
-            return {"items": _followings_cache["items"], "total": _followings_cache["total"]}
+        if (cache_key is not None
+                and _followings_cache.get("context") == cache_key
+                and not force and _followings_cache.get("items")
+                and started_at - float(_followings_cache.get("ts", 0)) < 600):
+            cached_result = {"items": _followings_cache["items"],
+                             "total": _followings_cache.get("total", 0)}
+    if cached_result is not None:
+        _ensure_context_current(context)
+        return cached_result
 
     with _followings_refresh_lock:
-        # 等锁期间若已有请求刷新成功，即使本次原本 force 也复用该新结果。
+        cached_result = None
         with _fetch_lock:
-            if (_followings_cache["items"]
-                    and (_followings_cache["ts"] >= started_at
-                         or (not force and time.time() - _followings_cache["ts"] < 600))):
-                return {"items": _followings_cache["items"],
-                        "total": _followings_cache["total"]}
+            if (cache_key is not None
+                    and _followings_cache.get("context") == cache_key
+                    and _followings_cache.get("items")
+                    and (float(_followings_cache.get("ts", 0)) >= started_at
+                         or (not force and time.time()
+                             - float(_followings_cache.get("ts", 0)) < 600))):
+                cached_result = {"items": _followings_cache["items"],
+                                 "total": _followings_cache.get("total", 0)}
+        if cached_result is not None:
+            _ensure_context_current(context)
+            return cached_result
         box = {"total": 0}
 
-        def parse(d, fetched):
-            box["total"] = d.get("total", 0)
-            items = [{"mid": f.get("mid"), "uname": f.get("uname", ""),
-                      "face": (f.get("face") or "").replace("http:", "https:")}
-                     for f in d.get("list") or []]
+        def parse(data, fetched):
+            box["total"] = data.get("total", 0)
+            items = [{"mid": following.get("mid"),
+                      "uname": following.get("uname", ""),
+                      "face": (following.get("face") or "").replace("http:", "https:")}
+                     for following in data.get("list") or []]
             has_more = not (fetched + len(items) >= box["total"] or not items)
             return items, has_more
 
-        all_items = _paged_get("https://api.bilibili.com/x/relation/followings",
-                               {"order": "desc"}, what="关注列表",
-                               max_pages=max_pages, ps=50, gap=0.2,
-                               mid_param="vmid", parse=parse)
-        with _fetch_lock:
-            _followings_cache.update(items=all_items, total=box["total"], ts=time.time())
+        all_items = _paged_get(
+            "https://api.bilibili.com/x/relation/followings",
+            {"order": "desc"}, what="关注列表", max_pages=max_pages, ps=50,
+            gap=0.2, mid_param="vmid", parse=parse,
+            context=context, cookiejar=cookiejar)
+
+        def update(key):
+            _followings_cache.update(items=all_items, total=box["total"],
+                                     ts=time.time(), context=key)
+
+        _commit_data_cache(context, update)
         return {"items": all_items, "total": box["total"]}
 
 
 _wbi_ie = None
 
 
-def _get_wbi_ie():
-    """复用 yt-dlp 的 WBI 签名器(它内部处理 key 缓存)。锁内懒初始化,
-    防并发双重构造(旧 cookie 实例胜出会长期驻留)。锁与会话域共用
-    bilibili_auth._session_lock:签名器绑定当前 cookie,登出竞态下不得残留。"""
+def _get_wbi_ie(context=None):
+    """返回绑定完整认证上下文的 WBI 签名器，锁外构造、锁内短提交。"""
     global _wbi_ie
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
+        raise RuntimeError("未登录,无法初始化 WBI 签名器")
+    cache_key = _context_key(context)
     with _session_lock:
-        if _wbi_ie is not None:
-            return _wbi_ie
-        import yt_dlp
-        from yt_dlp.extractor.bilibili import BiliBiliIE
-        ydl = yt_dlp.YoutubeDL({"quiet": True, **get_ytdlp_cookie_arg()})
-        _wbi_ie = BiliBiliIE(ydl)
-        return _wbi_ie
+        cached = _wbi_ie
+        if (cache_key is not None and isinstance(cached, dict)
+                and cached.get("context") == cache_key):
+            signer = cached.get("ie")
+        else:
+            signer = None
+    if signer is not None:
+        _ensure_context_current(context)
+        return signer
+
+    # 不能在 _session_lock 内调用此函数：它会读取认证 context，普通 Lock 会自锁。
+    import yt_dlp
+    from yt_dlp.extractor.bilibili import BiliBiliIE
+    candidate = BiliBiliIE(yt_dlp.YoutubeDL(
+        {"quiet": True, **get_ytdlp_cookie_arg(context)}))
+    if cache_key is None:
+        _ensure_context_current(context)
+        return candidate
+
+    def commit():
+        global _wbi_ie
+        if (isinstance(_wbi_ie, dict)
+                and _wbi_ie.get("context") == cache_key
+                and _wbi_ie.get("ie") is not None):
+            return _wbi_ie["ie"]
+        _wbi_ie = {"ie": candidate, "context": cache_key}
+        return candidate
+
+    return commit_if_current(context, commit)
 
 
 def fetch_up_card(mid: int) -> Optional[dict]:
-    """公开的用户卡片接口:mid → {"uname", "face"}。普通失败返回 None。
-
-    明确限流异常必须向上传播，避免添加 UP 时把“被风控”误判成“没有数据”。
-    """
+    """公开用户卡片接口；普通失败返回 None，明确限流向上传播。"""
     try:
-        r = _get("https://api.bilibili.com/x/web-interface/card",
-                 params={"mid": mid}, headers=BROWSER_HEADERS, timeout=10)
-        data = _safe_json(r)
+        response = _get("https://api.bilibili.com/x/web-interface/card",
+                        params={"mid": mid}, headers=BROWSER_HEADERS, timeout=10)
+        data = _safe_json(response)
         if not data or data.get("code") != 0:
             return None
         card = (data.get("data") or {}).get("card") or {}
@@ -338,19 +437,17 @@ def fetch_up_card(mid: int) -> Optional[dict]:
         return None
 
 
-def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
-    """WBI 签名调 arc/search,返回某 UP 最近投稿(按 pubdate 倒序)。
-
-    arc/search 走敏感接口队列。限流、非 JSON 和业务错误不再伪装成空列表，
-    让上层保留 last-good cache 和 last_seen；调用方可按单 UP 隔离普通失败。
-    """
+def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1,
+                    *, context=None) -> list[dict]:
+    """WBI 签名调 arc/search，返回某 UP 最近投稿。"""
     try:
-        ie = _get_wbi_ie()
+        context, cookiejar = _auth_session(context)
+        ie = _get_wbi_ie(context)
         signed = ie._sign_wbi({"mid": str(mid), "ps": str(ps), "pn": str(pn),
                                "order": "pubdate"}, str(mid))
         endpoint = "https://api.bilibili.com/x/space/wbi/arc/search"
         resp = _get(endpoint, kind="sensitive", params=signed,
-                    cookies=get_cookiejar(),
+                    cookies=cookiejar,
                     headers={**BROWSER_HEADERS,
                              "Referer": f"https://space.bilibili.com/{mid}"},
                     timeout=12)
@@ -359,73 +456,86 @@ def fetch_up_videos(mid: int, ps: int = 10, pn: int = 1) -> list[dict]:
             raise RuntimeError("UP 投稿接口返回非 JSON 数据")
         if data.get("code") != 0:
             raise RuntimeError(data.get("message") or "获取 UP 投稿失败")
-    except UpstreamRateLimitError:
+        _ensure_context_current(context)
+    except (UpstreamRateLimitError, AuthContextChangedError):
         raise
-    except Exception as e:
-        raise RuntimeError(f"获取 UP {mid} 投稿失败: {e}") from e
+    except Exception as exc:
+        raise RuntimeError(f"获取 UP {mid} 投稿失败: {exc}") from exc
 
-    items = []
-    for v in (data.get("data", {}) or {}).get("list", {}).get("vlist", []) or []:
-        items.append(_video_item(v, owner_key=None, name_key="author",
-                                 view_at_key="created", uploader_mid=mid))
-    return items
+    return [_video_item(video, owner_key=None, name_key="author",
+                        view_at_key="created", uploader_mid=mid)
+            for video in (data.get("data", {}) or {}).get("list", {}).get("vlist", []) or []]
 
 
-_follow_cache = {"items": None, "ts": 0.0}
+_follow_cache = {"items": None, "ts": 0.0, "context": None}
 
 
-def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False) -> list[dict]:
-    """拉取前 max_ups 个关注 UP 的最近投稿,合并按时间倒序。带 5 分钟缓存。
-
-    arc/search 串行且由统一治理器做最小间隔/账号冷却。并发刷新通过
-    single-flight 合并；明确限流时整轮失败并保留 last-good cache，普通单 UP
-    错误只隔离该 UP，避免一人异常拖垮整页。
-    """
+def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False,
+                         *, context=None) -> list[dict]:
+    """合并关注 UP 最近投稿；缓存按完整认证上下文隔离。"""
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
+        raise RuntimeError("未登录,无法获取关注动态")
+    cache_key = _context_key(context)
     started_at = time.time()
+    cache_hit = False
+    cached_result = None
     with _fetch_lock:
-        if (not force and _follow_cache["items"] is not None
-                and started_at - _follow_cache["ts"] < 300):
-            return _follow_cache["items"]
+        if (cache_key is not None and _follow_cache.get("context") == cache_key
+                and not force and _follow_cache.get("items") is not None
+                and started_at - float(_follow_cache.get("ts", 0)) < 300):
+            cached_result = _follow_cache["items"]
+            cache_hit = True
+    if cache_hit:
+        _ensure_context_current(context)
+        return cached_result
 
     with _follow_refresh_lock:
+        cache_hit = False
+        cached_result = None
         with _fetch_lock:
-            if (_follow_cache["items"] is not None
-                    and (_follow_cache["ts"] >= started_at
-                         or (not force and time.time() - _follow_cache["ts"] < 300))):
-                return _follow_cache["items"]
+            if (cache_key is not None and _follow_cache.get("context") == cache_key
+                    and _follow_cache.get("items") is not None
+                    and (float(_follow_cache.get("ts", 0)) >= started_at
+                         or (not force and time.time()
+                             - float(_follow_cache.get("ts", 0)) < 300))):
+                cached_result = _follow_cache["items"]
+                cache_hit = True
+        if cache_hit:
+            _ensure_context_current(context)
+            return cached_result
 
-        follows = fetch_followings(1, max_ups)
+        follows = fetch_followings(1, max_ups, context=context)
         results = []
         succeeded = 0
-        for i, up in enumerate(follows):
+        for index, following in enumerate(follows):
             try:
-                results.extend(fetch_up_videos(up["mid"], ps))
+                results.extend(fetch_up_videos(following["mid"], ps, context=context))
                 succeeded += 1
-            except UpstreamRateLimitError:
+            except (UpstreamRateLimitError, AuthContextChangedError):
                 raise
-            except Exception as e:
-                log.warning("关注动态:UP %s 拉取失败:%s", up.get("mid"), e)
-            if i < len(follows) - 1:
+            except Exception as exc:
+                log.warning("关注动态:UP %s 拉取失败:%s", following.get("mid"), exc)
+            if index < len(follows) - 1:
                 time.sleep(1.5)
 
         if follows and succeeded == 0:
             raise RuntimeError("关注动态全部拉取失败，已保留上次缓存")
-        results.sort(key=lambda x: x.get("view_at", 0), reverse=True)
-        with _fetch_lock:
-            _follow_cache.update(items=results, ts=time.time())
+        results.sort(key=lambda item: item.get("view_at", 0), reverse=True)
+
+        def update(key):
+            _follow_cache.update(items=results, ts=time.time(), context=key)
+
+        _commit_data_cache(context, update)
         return results
 
 
 def reset_data_caches() -> None:
-    """登录世代变化时清身份相关数据、WBI 签名器与接口间隔。
-
-    会话锁和数据锁分开获取、不嵌套，避免与 get_cookiejar/_get_wbi_ie 形成
-    锁顺序反转。账号级 412/429 冷却刻意保留，切换登录态不能绕过熔断。
-    """
+    """登录世代变化时清身份缓存；账号级 412/429 冷却刻意保留。"""
     global _wbi_ie
     with _fetch_lock:
-        _followings_cache.update(items=[], total=0, ts=0.0)
-        _follow_cache.update(items=None, ts=0.0)
+        _followings_cache.update(items=[], total=0, ts=0.0, context=None)
+        _follow_cache.update(items=None, ts=0.0, context=None)
     with _session_lock:
         _wbi_ie = None
     governor.reset_spacing()
@@ -439,8 +549,6 @@ def register_up(mid: int) -> dict:
         uname, face = card.get("uname", ""), card.get("face", "")
 
     now = int(time.time())
-    # 普通接口错误和明确限流都必须向上返回；只有真实空列表才使用“当前时刻”
-    # 基线。否则一次网络故障会伪装成无投稿，并永久掩盖故障前的存量视频。
     page = fetch_up_videos(mid, ps=1)
     newest = page[0] if page else None
     if not uname and newest:

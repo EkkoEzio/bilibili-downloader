@@ -8,14 +8,26 @@ import math
 import re
 import threading
 import time
+from logging.handlers import RotatingFileHandler
 from typing import Optional
 from urllib.parse import urlsplit
 
+# 必须早于任何会读取/迁移 data 状态的模块。否则第二实例即使最终因端口冲突
+# 退出，也可能已经把第一实例的活跃任务改写为 interrupted。
+from instance_lock import AlreadyRunningError, acquire_instance_lock
+
+try:
+    acquire_instance_lock()
+except AlreadyRunningError as exc:
+    raise SystemExit(f"启动失败：{exc}") from exc
+
 from flask import Flask, request, jsonify, render_template, Response, stream_with_context
+from werkzeug.exceptions import HTTPException
 
 import qrcode
 import auto_refresh
 import pagecache
+import parsing
 import up_list
 import bilibili_auth as auth
 import bilibili_api as bapi
@@ -25,20 +37,169 @@ from config import PORT, BROWSER_COOKIE_SOURCE
 import config  # DOWNLOAD_DIR 运行时可变,用 config.DOWNLOAD_DIR 实时读
 from request_governor import UpstreamRateLimitError, governor
 
-# 日志:控制台 + data/app.log(排 B 站 412/风控/下载失败要看这里)
+# 日志:控制台 + 有界轮转文件，避免无人值守运行时 app.log 无限增长。
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     handlers=[
-        logging.FileHandler(config.DATA_DIR / "app.log", encoding="utf-8"),
+        RotatingFileHandler(
+            config.DATA_DIR / "app.log", maxBytes=5 * 1024 * 1024,
+            backupCount=3, encoding="utf-8"),
         logging.StreamHandler(),
     ],
 )
 log = logging.getLogger("bd.app")
 
 app = Flask(__name__)
+app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
+_MAX_URL_LENGTH = 8192
+_MAX_TEXT_LENGTH = 256
+_MAX_BATCH_ITEMS = parsing.MAX_PLAYLIST_ITEMS
+_MAX_COOKIE_BYTES = 1024 * 1024
+_MAX_SSE_CONNECTIONS = 16
+_sse_slots = threading.BoundedSemaphore(_MAX_SSE_CONNECTIONS)
+_manual_check_lock = threading.Lock()
+_manual_check_thread: Optional[threading.Thread] = None
+
+
+class ApiError(ValueError):
+    """可安全回显的 API 输入/状态错误。"""
+
+    def __init__(self, status: int, code: str, message: str, *, field: str = None):
+        super().__init__(message)
+        self.status = int(status)
+        self.code = str(code)
+        self.message = str(message)
+        self.field = field
+
+
+def _json_error(message: str, status: int, code: str, *, field: str = None,
+                **extra):
+    body = {"ok": False, "error": str(message), "code": str(code), **extra}
+    if field:
+        body["field"] = field
+    response = jsonify(body)
+    response.status_code = int(status)
+    return response
+
+
+def _json_object() -> dict:
+    """严格读取 JSON object；不再把空 body、坏 JSON、数组根混成 ``{}``。"""
+    if not request.is_json:
+        raise ApiError(400, "invalid_json", "请求体必须是 JSON 对象")
+    body = request.get_json(silent=True)
+    if not isinstance(body, dict):
+        raise ApiError(400, "invalid_json", "请求体必须是 JSON 对象")
+    return body
+
+
+def _string(value, field: str, *, required: bool = False,
+            max_length: int = _MAX_TEXT_LENGTH, strip: bool = True) -> str:
+    if value is None and not required:
+        return ""
+    if not isinstance(value, str):
+        raise ApiError(400, "invalid_field", f"{field} 必须是字符串", field=field)
+    result = value.strip() if strip else value
+    if required and not result:
+        raise ApiError(400, "missing_field", f"缺少 {field}", field=field)
+    if len(result) > max_length:
+        raise ApiError(400, "field_too_long",
+                       f"{field} 长度不能超过 {max_length}", field=field)
+    return result
+
+
+def _integer(value, field: str, *, default=None, minimum=None, maximum=None) -> int:
+    if value is None or value == "":
+        if default is None:
+            raise ApiError(400, "missing_field", f"缺少 {field}", field=field)
+        value = default
+    if isinstance(value, bool):
+        raise ApiError(400, "invalid_field", f"{field} 必须是整数", field=field)
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, str) and re.fullmatch(r"[+-]?\d+", value.strip()):
+        result = int(value.strip())
+    else:
+        raise ApiError(400, "invalid_field", f"{field} 必须是整数", field=field)
+    if minimum is not None and result < minimum:
+        raise ApiError(400, "invalid_field", f"{field} 不能小于 {minimum}", field=field)
+    if maximum is not None and result > maximum:
+        raise ApiError(400, "invalid_field", f"{field} 不能大于 {maximum}", field=field)
+    return result
+
+
+def _number(value, field: str, *, default=None, minimum=None, maximum=None):
+    """读取有限数值；整数保持 int，小数保持 float。"""
+    if value is None or value == "":
+        if default is None:
+            raise ApiError(400, "missing_field", f"缺少 {field}", field=field)
+        value = default
+    if isinstance(value, bool):
+        raise ApiError(400, "invalid_field", f"{field} 必须是有限数值", field=field)
+    if isinstance(value, int):
+        result = value
+    elif isinstance(value, float):
+        result = value
+    elif isinstance(value, str):
+        token = value.strip()
+        try:
+            result = int(token) if re.fullmatch(r"[+-]?\d+", token) else float(token)
+        except (TypeError, ValueError, OverflowError):
+            raise ApiError(
+                400, "invalid_field", f"{field} 必须是有限数值", field=field)
+    else:
+        raise ApiError(400, "invalid_field", f"{field} 必须是有限数值", field=field)
+    if isinstance(result, float) and not math.isfinite(result):
+        raise ApiError(400, "invalid_field", f"{field} 必须是有限数值", field=field)
+    if minimum is not None and result < minimum:
+        raise ApiError(400, "invalid_field", f"{field} 不能小于 {minimum}", field=field)
+    if maximum is not None and result > maximum:
+        raise ApiError(400, "invalid_field", f"{field} 不能大于 {maximum}", field=field)
+    return result
+
+
+def _boolean(value, field: str, *, default=None) -> bool:
+    if value is None:
+        if default is None:
+            raise ApiError(400, "missing_field", f"缺少 {field}", field=field)
+        return bool(default)
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        token = value.strip().lower()
+        if token == "true":
+            return True
+        if token == "false":
+            return False
+    raise ApiError(400, "invalid_field", f"{field} 必须是 true 或 false", field=field)
+
+
+def _string_list(value, field: str, *, max_items: int = _MAX_BATCH_ITEMS,
+                 item_max_length: int = _MAX_TEXT_LENGTH) -> list[str]:
+    if not isinstance(value, list):
+        raise ApiError(400, "invalid_field", f"{field} 必须是数组", field=field)
+    if len(value) > max_items:
+        raise ApiError(400, "too_many_items",
+                       f"{field} 最多允许 {max_items} 项", field=field)
+    return [_string(item, f"{field}[{index}]", required=True,
+                    max_length=item_max_length)
+            for index, item in enumerate(value)]
+
+
+def _request_auth_context():
+    """生产请求绑定账号快照；测试维持既有零参数 monkeypatch 契约。"""
+    if app.testing:
+        return None
+    context, _cookiejar = auth.get_auth_snapshot()
+    return context
+
+
+def _account_call(func, *args, context=None, **kwargs):
+    if context is None:
+        return func(*args, **kwargs)
+    return func(*args, context=context, **kwargs)
 
 
 def _loopback_authority(authority: str):
@@ -141,25 +302,43 @@ def local_request_guard():
     expected = _request_origin_key()
     fetch_site = request.headers.get("Sec-Fetch-Site")
     if expected is None:
-        return jsonify({"ok": False, "error": "仅允许本机访问"}), 403
+        return _json_error("仅允许本机访问", 403, "local_only")
     if fetch_site is not None and fetch_site.strip().lower() not in ("same-origin", "none"):
-        return jsonify({"ok": False, "error": "拒绝跨站请求"}), 403
+        return _json_error("拒绝跨站请求", 403, "cross_site_request")
 
     origin = request.headers.get("Origin")
     if origin is not None and _origin_key(origin) != expected:
-        return jsonify({"ok": False, "error": "请求来源与本机服务不同源"}), 403
+        return _json_error("请求来源与本机服务不同源", 403, "origin_mismatch")
     referer = request.headers.get("Referer")
     if referer is not None and _origin_key(referer, allow_path=True) != expected:
-        return jsonify({"ok": False, "error": "请求来源与本机服务不同源"}), 403
+        return _json_error("请求来源与本机服务不同源", 403, "origin_mismatch")
     return None
 
 
+def _capacity_error(exc, code: str):
+    return _json_error(
+        str(exc), 409, code,
+        capacity=getattr(exc, "capacity", ""),
+        limit=getattr(exc, "limit", 0),
+        current=getattr(exc, "current", 0),
+        requested=getattr(exc, "requested", 0),
+    )
+
+
 def api_errors(f):
-    """统一异常出口：上游风控 → 429，其余意外异常 → 500 JSON。"""
+    """统一异常出口：输入/认证竞态/上游风控均使用稳定 JSON code。"""
     @functools.wraps(f)
-    def wrapper(*a, **kw):
+    def wrapper(*args, **kwargs):
         try:
-            return f(*a, **kw)
+            return f(*args, **kwargs)
+        except ApiError as exc:
+            return _json_error(exc.message, exc.status, exc.code, field=exc.field)
+        except taskstore.TaskCapacityError as exc:
+            return _capacity_error(exc, "task_capacity_exceeded")
+        except up_list.UpListCapacityError as exc:
+            return _capacity_error(exc, "up_list_capacity_exceeded")
+        except auth.AuthContextChangedError as exc:
+            return _json_error(str(exc), 409, "auth_context_changed")
         except UpstreamRateLimitError as exc:
             seconds = float(exc.retry_after or 0.0)
             if not math.isfinite(seconds) or seconds <= 0:
@@ -167,16 +346,64 @@ def api_errors(f):
             retry_after = max(1, math.ceil(seconds))
             log.warning("路由 %s 遇到 B 站风控 status=%s retry_after=%ss",
                         f.__name__, exc.status_code, retry_after)
-            response = jsonify({"ok": False, "error": str(exc),
-                                "retry_after": retry_after})
-            response.status_code = 429
+            response = _json_error(str(exc), 429, "upstream_rate_limited",
+                                   retry_after=retry_after)
             response.headers["Retry-After"] = str(retry_after)
-            response.headers["Cache-Control"] = "no-store"
             return response
-        except Exception as exc:
+        except Exception:
             log.exception("路由 %s 异常", f.__name__)
-            return jsonify({"ok": False, "error": str(exc)}), 500
+            return _json_error("服务器处理失败，请查看应用日志", 500,
+                               "internal_error")
     return wrapper
+
+
+@app.errorhandler(ApiError)
+def handle_api_error(exc):
+    return _json_error(exc.message, exc.status, exc.code, field=exc.field)
+
+
+@app.errorhandler(taskstore.TaskCapacityError)
+def handle_task_capacity_error(exc):
+    return _capacity_error(exc, "task_capacity_exceeded")
+
+
+@app.errorhandler(up_list.UpListCapacityError)
+def handle_up_list_capacity_error(exc):
+    return _capacity_error(exc, "up_list_capacity_exceeded")
+
+
+@app.errorhandler(auth.AuthContextChangedError)
+def handle_auth_context_changed(exc):
+    return _json_error(str(exc), 409, "auth_context_changed")
+
+
+@app.errorhandler(HTTPException)
+def handle_http_error(exc):
+    if not request.path.startswith("/api/"):
+        return exc
+    codes = {400: "bad_request", 404: "not_found", 405: "method_not_allowed",
+             413: "payload_too_large"}
+    message = "请求体过大" if exc.code == 413 else (exc.description or exc.name)
+    return _json_error(message, exc.code or 500,
+                       codes.get(exc.code, "http_error"))
+
+
+@app.errorhandler(Exception)
+def handle_unexpected_error(exc):
+    if request.path.startswith("/api/"):
+        log.exception("未捕获的 API 异常", exc_info=exc)
+        return _json_error("服务器处理失败，请查看应用日志", 500,
+                           "internal_error")
+    log.exception("页面请求异常", exc_info=exc)
+    return "Internal Server Error", 500
+
+
+@app.after_request
+def disable_api_caching(response):
+    if request.path.startswith("/api/"):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["Pragma"] = "no-cache"
+    return response
 
 
 @app.route("/")
@@ -214,56 +441,86 @@ def governor_status():
     return response
 
 
+@app.route("/api/auto-refresh/status")
+def auto_refresh_status():
+    """只读生命周期状态；不会触发 B 站请求或排队新一轮检查。"""
+    return jsonify({"ok": True, **auto_refresh.get_status()})
+
+
 @app.route("/api/login/qrcode-image")
+@api_errors
 def login_qrcode_image():
-    """本地用 qrcode 库把扫码 URL 画成 PNG,不依赖第三方服务。
-    必须传 ?url=(与前端轮询 key 配对的登录 URL):自行 generate 会产生新 key,
-    图与轮询 key 不一致,扫了也一直「未扫码」。域名白名单防钓鱼码。"""
-    url = request.args.get("url", "")
-    if not url.startswith("https://passport.bilibili.com/"):
-        return jsonify({"ok": False, "error": "缺少/非法 url"}), 400
+    """使用 generate 返回的同一 URL 画码，并严格限制为 B 站护照域名。"""
+    url = _string(request.args.get("url"), "url", required=True,
+                  max_length=_MAX_URL_LENGTH)
+    try:
+        parsed = urlsplit(url)
+        valid = (parsed.scheme == "https"
+                 and (parsed.hostname or "").lower() == "passport.bilibili.com"
+                 and parsed.username is None and parsed.password is None
+                 and parsed.port in (None, 443))
+    except ValueError:
+        valid = False
+    if not valid:
+        raise ApiError(400, "invalid_url", "缺少/非法 url", field="url")
     img = qrcode.make(url)
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
-    return Response(buf.getvalue(), mimetype="image/png",
-                    headers={"Cache-Control": "no-store"})
+    return Response(buf.getvalue(), mimetype="image/png")
 
 
 @app.route("/api/login/qrcode/poll")
 @api_errors
 def login_qrcode_poll():
-    key = request.args.get("key", "")
-    r = auth.qrcode_poll(key)
-    if r["status"] == "success" and r["sessdata"]:
-        saved = auth.save_session(
-            r["sessdata"], r.get("dede_userid", ""), r.get("bili_jct", ""))
-        if not saved:
-            # B 站侧虽已确认扫码，本地凭据没有落盘就不能宣称登录完成。
-            return jsonify({**r, "status": "error",
-                            "message": "登录凭据保存失败，请检查磁盘后重试",
-                            "error": "登录凭据未写入磁盘"}), 500
-    return jsonify(r)
+    key = _string(request.args.get("key"), "key", required=True, max_length=512)
+    if not re.fullmatch(r"[A-Za-z0-9_-]+", key):
+        raise ApiError(400, "invalid_field", "二维码 key 格式无效", field="key")
+    result = auth.qrcode_poll(key)
+    status = str(result.get("status") or "unknown")
+    message = str(result.get("message") or "未知状态")
+    if status == "success":
+        sessdata = result.get("sessdata")
+        if not sessdata:
+            raise ApiError(502, "invalid_upstream_response",
+                           "扫码成功但上游未返回登录凭据")
+        if not auth.save_session(sessdata, result.get("dede_userid", ""),
+                                 result.get("bili_jct", "")):
+            raise ApiError(500, "credential_persist_failed",
+                           "登录凭据保存失败，请检查磁盘后重试")
+    # 只白名单输出状态；SESSDATA / DedeUserID / bili_jct 永不进入 HTTP 响应。
+    return jsonify({"status": status, "message": message})
 
 
 @app.route("/api/login/use-browser", methods=["POST"])
+@api_errors
 def login_use_browser():
-    auth.clear_session()
+    if not auth.select_browser():
+        raise ApiError(500, "auth_persist_failed", "切换浏览器登录态失败")
     return jsonify({"ok": True, "mode": BROWSER_COOKIE_SOURCE})
 
 
 @app.route("/api/login/cookie-txt", methods=["POST"])
+@api_errors
 def login_cookie_txt():
+    content_length = request.content_length
+    if content_length is not None and content_length > _MAX_COOKIE_BYTES:
+        raise ApiError(413, "payload_too_large", "cookies.txt 不能超过 1 MiB")
     text = request.get_data(as_text=True)
+    if len(text.encode("utf-8")) > _MAX_COOKIE_BYTES:
+        raise ApiError(413, "payload_too_large", "cookies.txt 不能超过 1 MiB")
     if "SESSDATA" not in text:
-        return jsonify({"ok": False, "error": "未找到 SESSDATA"}), 400
-    auth.import_cookies_txt(text)  # 写盘归 bilibili_auth 管,路由层不碰文件
+        raise ApiError(400, "missing_cookie", "未找到 SESSDATA", field="SESSDATA")
+    if not auth.import_cookies_txt(text):
+        raise ApiError(500, "credential_persist_failed", "Cookie 导入失败，凭据未写入")
     return jsonify({"ok": True})
 
 
 @app.route("/api/login/logout", methods=["POST"])
+@api_errors
 def login_logout():
-    auth.logout()
+    if not auth.logout():
+        raise ApiError(500, "credential_persist_failed", "退出失败，登录状态未完整清理")
     return jsonify({"ok": True})
 
 
@@ -271,51 +528,54 @@ def login_logout():
 @app.route("/api/parse", methods=["POST"])
 @api_errors
 def parse():
-    url = (request.get_json(silent=True) or {}).get("url", "").strip()
-    if not url:
-        return jsonify({"ok": False, "error": "请输入 URL"}), 400
+    body = _json_object()
+    url = _string(body.get("url"), "url", required=True,
+                  max_length=_MAX_URL_LENGTH)
     info = downloader.parse_video(url)
-    # 附带登录态信息,前端据此提示"未登录仅公开画质"
     status = auth.get_login_status()
-    return jsonify({"ok": True, "info": info, "logged_in": status.get("logged_in", False)})
+    return jsonify({"ok": True, "info": info,
+                    "logged_in": status.get("logged_in", False)})
 
 
 @app.route("/api/parse-part", methods=["POST"])
 @api_errors
 def parse_part():
-    """多 P 视频选了具体分 P 后,拉该 P 的清晰度。"""
-    body = request.get_json(silent=True) or {}
-    url = body.get("url", "").strip()
-    page = int(body.get("page", 1))
-    if not url:
-        return jsonify({"ok": False, "error": "请输入 URL"}), 400
+    """多 P 视频选了具体分 P 后，拉该 P 的清晰度。"""
+    body = _json_object()
+    url = _string(body.get("url"), "url", required=True,
+                  max_length=_MAX_URL_LENGTH)
+    page = _integer(body.get("page"), "page", default=1,
+                    minimum=1, maximum=1_000_000)
     return jsonify({"ok": True, "info": downloader.parse_part(url, page)})
 
 
 @app.route("/api/download", methods=["POST"])
 @api_errors
 def download():
-    body = request.get_json(silent=True) or {}
-    url = body.get("url", "").strip()
-    label = body.get("label", "")
-    page = int(body.get("page", 1))
-    uploader_mid = int(body.get("uploader_mid") or 0)  # 前端解析时拿到就带上
-    if not url:
-        return jsonify({"ok": False, "error": "请输入 URL"}), 400
-    # 快速预查减少已知重复任务的无效解析；start_download 内仍会原子复查，
-    # 关闭两个并发请求同时越过这里的竞态窗口。
+    body = _json_object()
+    url = _string(body.get("url"), "url", required=True,
+                  max_length=_MAX_URL_LENGTH)
+    label = _string(body.get("label"), "label", max_length=_MAX_TEXT_LENGTH)
+    page = _integer(body.get("page"), "page", default=1,
+                    minimum=1, maximum=1_000_000)
+    uploader_mid = _integer(body.get("uploader_mid"), "uploader_mid", default=0,
+                            minimum=0, maximum=10 ** 20)
     existing = downloader.find_active_by_url(url, label, page)
     if existing:
-        return jsonify({"ok": False, "error": "该视频相同清晰度正在下载中", "task_id": existing}), 409
+        return _json_error("该视频相同清晰度正在下载中", 409,
+                           "duplicate_task", task_id=existing)
     try:
-        tid = downloader.start_download(url, label, page, uploader_mid=uploader_mid)
-    except downloader.DuplicateActiveTask as e:
-        return jsonify({"ok": False, "error": str(e), "task_id": e.task_id}), 409
-    return jsonify({"ok": True, "task_id": tid})
+        task_id = downloader.start_download(
+            url, label, page, uploader_mid=uploader_mid)
+    except downloader.DuplicateActiveTask as exc:
+        return _json_error(str(exc), 409, "duplicate_task", task_id=exc.task_id)
+    return jsonify({"ok": True, "task_id": task_id})
 
 
 @app.route("/api/cancel/<task_id>", methods=["POST"])
+@api_errors
 def cancel(task_id):
+    task_id = _string(task_id, "task_id", required=True, max_length=_MAX_TEXT_LENGTH)
     ok = downloader.cancel_download(task_id)
     return jsonify({"ok": ok})
 
@@ -324,23 +584,23 @@ def cancel(task_id):
 @api_errors
 def task_delete():
     """删除任务。{ids:[...], delete_file:bool}"""
-    body = request.get_json(silent=True) or {}
-    ids = body.get("ids") or []
-    delete_file = bool(body.get("delete_file"))
-    if not ids:
-        return jsonify({"ok": False, "error": "未选择任务"}), 400
-    n = downloader.delete_tasks(ids, delete_file)
-    return jsonify({"ok": True, "count": n})
+    body = _json_object()
+    task_ids = _string_list(body.get("ids"), "ids", item_max_length=_MAX_TEXT_LENGTH)
+    delete_file = _boolean(body.get("delete_file"), "delete_file", default=False)
+    if not task_ids:
+        raise ApiError(400, "missing_field", "未选择任务", field="ids")
+    result = downloader.delete_tasks_detailed(task_ids, delete_file)
+    return jsonify({"ok": True, **result})
 
 
 @app.route("/api/tasks/clear", methods=["POST"])
 @api_errors
 def tasks_clear():
     """清除所有已完成/失败记录。{delete_file:bool}"""
-    body = request.get_json(silent=True) or {}
-    delete_file = bool(body.get("delete_file"))
-    n = downloader.clear_tasks(delete_file)
-    return jsonify({"ok": True, "count": n})
+    body = _json_object()
+    delete_file = _boolean(body.get("delete_file"), "delete_file", default=False)
+    count = downloader.clear_tasks(delete_file)
+    return jsonify({"ok": True, "count": count})
 
 
 @app.route("/api/tasks/clean-invalid", methods=["POST"])
@@ -355,36 +615,44 @@ def tasks_clean_invalid():
 @app.route("/api/batch/parse", methods=["POST"])
 @api_errors
 def batch_parse():
-    """批量解析。接受:
-    - urls: [多个视频链接]  → 逐个返回标题/时长
-    - url: 单个收藏夹/合集/UP主页链接 → 返回里面所有视频
-    返回统一的 {items:[{title,url,duration}]}
-    """
-    body = request.get_json(silent=True) or {}
-    urls = body.get("urls")  # 多链接模式
-    url = body.get("url", "").strip()  # 收藏夹/合集模式
+    """批量解析：输入及累计输出都最多允许共享边界数量。"""
+    body = _json_object()
+    urls_value = body.get("urls")
+    single_url = _string(body.get("url"), "url", max_length=_MAX_URL_LENGTH)
+    urls = None
+    if urls_value is not None:
+        urls = _string_list(urls_value, "urls", max_items=_MAX_BATCH_ITEMS,
+                            item_max_length=_MAX_URL_LENGTH)
 
     items = []
-    if urls and isinstance(urls, list):
-        # 多链接模式:逐个 flat 解析
-        for u in urls:
-            u = (u or "").strip()
-            if not u:
-                continue
+    if urls:
+        for url in urls:
             try:
-                r = downloader.resolve_playlist(u)
-                items.extend(r["items"])
+                result = downloader.resolve_playlist(url)
+                additions = result["items"]
             except UpstreamRateLimitError:
                 raise
-            except Exception as e:
-                items.append({"title": f"(解析失败: {str(e)[:40]})",
-                              "url": u, "duration": 0, "error": str(e)[:80]})
-    elif url:
-        r = downloader.resolve_playlist(url)
-        return jsonify({"ok": True, "items": r["items"], "title": r.get("title", "")})
+            except Exception as exc:
+                additions = [{"title": f"(解析失败: {str(exc)[:40]})",
+                              "url": url, "duration": 0,
+                              "error": str(exc)[:80]}]
+            # 必须在宽泛 except 之外检查，避免本路由抛出的 ApiError 被当成
+            # 某个 URL 的普通解析失败吞掉后继续扩张输出。
+            if len(items) + len(additions) > _MAX_BATCH_ITEMS:
+                raise ApiError(
+                    400, "too_many_items",
+                    f"累计解析结果超过 {_MAX_BATCH_ITEMS} 项，请分批处理")
+            items.extend(additions)
+    elif single_url:
+        result = downloader.resolve_playlist(single_url)
+        resolved = result.get("items") or []
+        if len(resolved) > _MAX_BATCH_ITEMS:
+            raise ApiError(400, "too_many_items",
+                           f"解析结果超过 {_MAX_BATCH_ITEMS} 项，请分批处理")
+        return jsonify({"ok": True, "items": resolved,
+                        "title": result.get("title", "")})
     else:
-        return jsonify({"ok": False, "error": "请提供 url 或 urls"}), 400
-
+        raise ApiError(400, "missing_field", "请提供 url 或 urls")
     return jsonify({"ok": True, "items": items})
 
 
@@ -392,21 +660,57 @@ def batch_parse():
 @api_errors
 def batch_download():
     """批量启动下载。{items:[{url,title,page}], label}"""
-    body = request.get_json(silent=True) or {}
-    items = body.get("items") or []
-    label = body.get("label", "")
-    if not items:
-        return jsonify({"ok": False, "error": "没有待下载项"}), 400
-    tids = downloader.start_batch(items, label)
-    return jsonify({"ok": True, "task_ids": tids, "count": len(tids)})
+    body = _json_object()
+    raw_items = body.get("items")
+    if not isinstance(raw_items, list):
+        raise ApiError(400, "invalid_field", "items 必须是数组", field="items")
+    if not raw_items:
+        raise ApiError(400, "missing_field", "没有待下载项", field="items")
+    if len(raw_items) > _MAX_BATCH_ITEMS:
+        raise ApiError(400, "too_many_items",
+                       f"items 最多允许 {_MAX_BATCH_ITEMS} 项", field="items")
+    label = _string(body.get("label"), "label", max_length=_MAX_TEXT_LENGTH)
+    items = []
+    for index, raw in enumerate(raw_items):
+        if not isinstance(raw, dict):
+            raise ApiError(400, "invalid_field",
+                           f"items[{index}] 必须是对象", field=f"items[{index}]")
+        item = {
+            "url": _string(raw.get("url"), f"items[{index}].url", required=True,
+                           max_length=_MAX_URL_LENGTH),
+            "title": _string(raw.get("title"), f"items[{index}].title",
+                             max_length=_MAX_TEXT_LENGTH),
+            "page": _integer(raw.get("page"), f"items[{index}].page", default=1,
+                             minimum=1, maximum=1_000_000),
+            "thumbnail": _string(raw.get("thumbnail"),
+                                 f"items[{index}].thumbnail", max_length=_MAX_URL_LENGTH),
+            "uploader": _string(raw.get("uploader"), f"items[{index}].uploader",
+                                max_length=_MAX_TEXT_LENGTH),
+            "uploader_mid": _integer(raw.get("uploader_mid"),
+                                     f"items[{index}].uploader_mid", default=0,
+                                     minimum=0, maximum=10 ** 20),
+            "duration": _number(raw.get("duration"), f"items[{index}].duration",
+                                default=0, minimum=0, maximum=10 ** 9),
+            "bvid": _string(raw.get("bvid"), f"items[{index}].bvid", max_length=128),
+            "source": _string(raw.get("source"), f"items[{index}].source",
+                              max_length=128),
+            "auto_attempt": _integer(raw.get("auto_attempt"),
+                                     f"items[{index}].auto_attempt", default=0,
+                                     minimum=0, maximum=100),
+        }
+        items.append(item)
+    task_ids = downloader.start_batch(items, label)
+    return jsonify({"ok": True, "task_ids": task_ids, "count": len(task_ids)})
 
 
 # ---------- 内容浏览(慢数据源统一「缓存优先 + 后台拉新」) ----------
 
 @app.route("/api/cache/<key>")
+@api_errors
 def cache_get(key):
-    """读某数据源的上次结果(前端秒显用)。纯本地文件,不打 B 站接口。"""
-    entry = pagecache.load(key)
+    """读取当前账号 exact 完整认证上下文的上次结果；miss 仍保持 HTTP 200。"""
+    context = _request_auth_context()
+    entry = pagecache.load(key, context=context)
     if not entry:
         return jsonify({"ok": False})
     return jsonify({"ok": True, "saved_at": entry.get("saved_at"),
@@ -417,18 +721,24 @@ def cache_get(key):
 @api_errors
 def history():
     """观看历史。?page=1&size=50"""
-    page = int(request.args.get("page", 1))
-    size = int(request.args.get("size", 50))
-    items = bapi.fetch_history(page, size)
+    page = _integer(request.args.get("page"), "page", default=1,
+                    minimum=1, maximum=1_000_000)
+    size = _integer(request.args.get("size"), "size", default=50,
+                    minimum=1, maximum=100)
+    context = _request_auth_context()
+    items = _account_call(bapi.fetch_history, page, size, context=context)
     return jsonify({"ok": True, "items": items})
 
 
 @app.route("/api/follow-updates")
 @api_errors
 def follow_updates():
-    """关注 UP 主最近投稿,合并按时间倒序。?force=true 跳过缓存强制刷新。"""
-    items = bapi.fetch_follow_updates(force=request.args.get("force") == "true")
-    pagecache.save("follow_updates", {"ok": True, "items": items})
+    """关注 UP 最近投稿。?force=true 跳过内存缓存。"""
+    force = _boolean(request.args.get("force"), "force", default=False)
+    context = _request_auth_context()
+    items = _account_call(bapi.fetch_follow_updates, force=force, context=context)
+    pagecache.save("follow_updates", {"ok": True, "items": items},
+                   context=context)
     return jsonify({"ok": True, "items": items})
 
 
@@ -460,80 +770,91 @@ def up_list_get():
 @app.route("/api/up-list/add", methods=["POST"])
 @api_errors
 def up_list_add():
-    """添加 UP(加入清单 = 之后新投稿自动下载)。{input: 'https://space.bilibili.com/12345' 或 '12345'}"""
-    body = request.get_json(silent=True) or {}
-    mid = _parse_mid_from_input(body.get("input", ""))
+    """添加 UP：input 可为主页 URL 或纯 mid。"""
+    body = _json_object()
+    value = _string(body.get("input"), "input", required=True,
+                    max_length=_MAX_URL_LENGTH)
+    mid = _parse_mid_from_input(value)
     if not mid:
-        return jsonify({"ok": False, "error": "请输入 B 站主页链接或 UP 的 mid"}), 400
-    # 取名/头像、写清单、打「已见」基线的业务编排在 bilibili_api.register_up,
-    # 路由层只做输入解析
-    u = bapi.register_up(mid)
-    return jsonify({"ok": True, "up": u})
+        raise ApiError(400, "invalid_field",
+                       "请输入 B 站主页链接或 UP 的 mid", field="input")
+    user = bapi.register_up(mid)
+    return jsonify({"ok": True, "up": user})
 
 
 @app.route("/api/up-list/remove", methods=["POST"])
 @api_errors
 def up_list_remove():
-    body = request.get_json(silent=True) or {}
-    mid = body.get("mid")
-    if mid is None:
-        return jsonify({"ok": False, "error": "缺少 mid"}), 400
-    ok = up_list.remove_up(int(mid))
+    body = _json_object()
+    mid = _integer(body.get("mid"), "mid", minimum=1, maximum=10 ** 20)
+    ok = up_list.remove_up(mid)
     return jsonify({"ok": ok})
 
 
 @app.route("/api/up-list/set-quality", methods=["POST"])
 @api_errors
 def up_list_set_quality():
-    """设置某 UP 新视频自动下载的默认清晰度。{mid, quality};空串=最高画质自动。"""
-    body = request.get_json(silent=True) or {}
-    mid = body.get("mid")
-    if mid is None:
-        return jsonify({"ok": False, "error": "缺少 mid"}), 400
-    ok = up_list.set_quality(int(mid), str(body.get("quality", "")))
+    """设置某 UP 新视频自动下载的默认清晰度；空串表示自动最高。"""
+    body = _json_object()
+    mid = _integer(body.get("mid"), "mid", minimum=1, maximum=10 ** 20)
+    quality = _string(body.get("quality"), "quality", max_length=_MAX_TEXT_LENGTH)
+    ok = up_list.set_quality(mid, quality)
     return jsonify({"ok": ok})
 
 
 @app.route("/api/up-list/reset-seen", methods=["POST"])
 @api_errors
 def up_list_reset_seen():
-    body = request.get_json(silent=True) or {}
-    mid = body.get("mid")
-    if mid is None:
-        return jsonify({"ok": False, "error": "缺少 mid"}), 400
-    up_list.reset_seen(int(mid))
-    # reset_seen 只有在候选 JSON 成功提交后才返回；写盘异常由 api_errors 转成 JSON 500。
+    body = _json_object()
+    mid = _integer(body.get("mid"), "mid", minimum=1, maximum=10 ** 20)
+    up_list.reset_seen(mid)
     return jsonify({"ok": True})
 
 
 @app.route("/api/up-list/check", methods=["POST"])
 def up_list_check():
-    """手动触发一轮检查(与后台自动下载同一逻辑):清单 UP 的新投稿直接入队下载。
-    串行 + UP 间隔,耗时数十秒,放后台线程跑,前端靠队列轮询看结果。
+    """异步触发一轮追更；在返回 started=True 前原子预约业务锁。"""
+    global _manual_check_thread
 
-    已有一轮在跑时如实回报 started=False(需求 2.10):不排队、不发 B 站请求、
-    连线程都不起,前端据此提示,不再用固定 30 秒的假禁用窗口装样子。
-    `ok` 仍为 True —— 「已有检查在进行中」不是错误,是如实告知。
+    with _manual_check_lock:
+        current = _manual_check_thread
+        if current is not None and current.is_alive():
+            return jsonify({"ok": True, "started": False,
+                            "message": "已有检查在进行中,本次未启动新一轮"})
+        _manual_check_thread = None
 
-    接受的乐观回报竞态:`is_running()` 与 `Thread.start()` 之间有一个极窄窗口,
-    两个并发请求可能都读到 False 并各起一个线程,于是响应乐观地报 started=True
-    而实际那一轮被跳过。这个代价是有意接受的 —— `refresh_once` 的非阻塞获取
-    保证后到的线程立即返回 0,**绝不并发、绝不排队**,风控真正需要的不变量在
-    任何情况下都成立;窗口内失准的只是一句响应文案。要让响应严格一致,得改成
-    「请求线程 try-acquire、worker 在 finally 释放」的跨线程持锁方案,锁的所有权
-    跨线程会让生命周期难以推理,不值得为一句文案付这个代价。
-    """
-    if auto_refresh.is_running():
-        return jsonify({"ok": True, "started": False,
-                        "message": "已有检查在进行中,本次未启动新一轮"})
+        reservation = auto_refresh.try_reserve_refresh()
+        if reservation is None:
+            return jsonify({"ok": True, "started": False,
+                            "message": "已有检查在进行中,本次未启动新一轮"})
 
-    def _run():
+        def _run():
+            global _manual_check_thread
+            try:
+                n = auto_refresh.run_refresh_with_status(
+                    "manual", _reservation=reservation)
+                log.info("手动检查完成,入队 %d 条", n)
+            except Exception:
+                log.exception("手动检查异常")
+            finally:
+                # run_refresh_with_status 已先释放业务预约；这里再清 worker 登记，
+                # 锁序不会形成 _manual_check_lock ↔ auto_refresh._lock 反转。
+                me = threading.current_thread()
+                with _manual_check_lock:
+                    if _manual_check_thread is me:
+                        _manual_check_thread = None
+
+        worker = None
         try:
-            n = auto_refresh.refresh_once()
-            log.info("手动检查完成,入队 %d 条", n)
+            worker = threading.Thread(
+                target=_run, daemon=True, name="bd-manual-check")
+            _manual_check_thread = worker
+            worker.start()
         except Exception:
-            log.exception("手动检查异常")
-    threading.Thread(target=_run, daemon=True, name="bd-manual-check").start()
+            if _manual_check_thread is worker:
+                _manual_check_thread = None
+            reservation.release()
+            raise
     return jsonify({"ok": True, "started": True, "message": "已在后台开始检查"})
 
 
@@ -541,81 +862,183 @@ def up_list_check():
 @app.route("/api/fav-folders")
 @api_errors
 def fav_folders():
-    folders = bapi.fetch_fav_folders()
-    pagecache.save("fav_folders", {"ok": True, "folders": folders})
+    context = _request_auth_context()
+    folders = _account_call(bapi.fetch_fav_folders, context=context)
+    pagecache.save("fav_folders", {"ok": True, "folders": folders},
+                   context=context)
     return jsonify({"ok": True, "folders": folders})
 
 
 @app.route("/api/fav-seasons")
 @api_errors
 def fav_seasons():
-    """「我追的合集」列表(B 站收藏页左侧的合集区)。"""
-    seasons = bapi.fetch_collected_seasons()
-    pagecache.save("fav_seasons", {"ok": True, "seasons": seasons})
+    context = _request_auth_context()
+    seasons = _account_call(bapi.fetch_collected_seasons, context=context)
+    pagecache.save("fav_seasons", {"ok": True, "seasons": seasons},
+                   context=context)
     return jsonify({"ok": True, "seasons": seasons})
 
 
 @app.route("/api/season-content")
 @api_errors
 def season_content():
-    """合集内的视频列表。?season_id="""
-    season_id = int(request.args.get("season_id", 0) or 0)
-    if not season_id:
-        return jsonify({"ok": False, "error": "缺少 season_id"}), 400
-    items = bapi.fetch_season_content(season_id)
+    season_id = _integer(request.args.get("season_id"), "season_id",
+                         minimum=1, maximum=10 ** 20)
+    context = _request_auth_context()
+    items = _account_call(bapi.fetch_season_content, season_id, context=context)
     return jsonify({"ok": True, "items": items})
 
 
 @app.route("/api/fav-content")
 @api_errors
 def fav_content():
-    # media_id 是文件夹接口里的 id(长 id);旧前端只传 fid 会拿到空列表
-    media_id = int(request.args.get("media_id", 0) or request.args.get("fid", 0))
-    if not media_id:
-        return jsonify({"ok": False, "error": "缺少 media_id"}), 400
-    items = bapi.fetch_fav_content(media_id)
+    raw_media_id = request.args.get("media_id")
+    if raw_media_id in (None, ""):
+        raw_media_id = request.args.get("fid")
+    media_id = _integer(raw_media_id, "media_id", minimum=1, maximum=10 ** 20)
+    context = _request_auth_context()
+    items = _account_call(bapi.fetch_fav_content, media_id, context=context)
     return jsonify({"ok": True, "items": items})
 
 
 @app.route("/api/followings")
 @api_errors
 def followings():
-    """我关注的全部 UP(用于「站点关注」→「关注 UP」视图),附带本地清单已有 mid。"""
-    r = bapi.fetch_followings_all(force=request.args.get("force") == "true")
-    local = sorted(int(u["mid"]) for u in up_list.list_ups())
-    body = {"ok": True, "items": r["items"], "total": r["total"],
+    force = _boolean(request.args.get("force"), "force", default=False)
+    context = _request_auth_context()
+    result = _account_call(bapi.fetch_followings_all, force=force, context=context)
+    local = sorted(int(user["mid"]) for user in up_list.list_ups())
+    body = {"ok": True, "items": result["items"], "total": result["total"],
             "local_mids": local}
-    pagecache.save("followings", body)
+    pagecache.save("followings", body, context=context)
     return jsonify(body)
 
 
 @app.route("/api/watchlater")
 @api_errors
 def watchlater():
-    """「稍后再看」列表。"""
-    items = bapi.fetch_watchlater()
-    pagecache.save("watchlater", {"ok": True, "items": items})
+    context = _request_auth_context()
+    items = _account_call(bapi.fetch_watchlater, context=context)
+    pagecache.save("watchlater", {"ok": True, "items": items}, context=context)
     return jsonify({"ok": True, "items": items})
+
+
+def _task_map(tasks_snapshot):
+    """把深拷贝任务快照整理为稳定 ID Map；忽略无 ID 的损坏记录。"""
+    result = {}
+    for task in tasks_snapshot:
+        task_id = str(task.get("task_id") or "")
+        if task_id:
+            result[task_id] = task
+    return result
+
+
+def _sse_message(event: str, payload: dict) -> str:
+    data = json.dumps(payload, ensure_ascii=False, separators=(",", ":"))
+    return f"event: {event}\ndata: {data}\n\n"
+
+
+def _reserve_sse_slot():
+    """取得共享 SSE 槽并返回幂等释放函数。"""
+    if not _sse_slots.acquire(blocking=False):
+        raise ApiError(
+            503, "sse_capacity_exceeded",
+            f"实时连接已达 {_MAX_SSE_CONNECTIONS} 条上限，请稍后重试")
+    guard = threading.Lock()
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        with guard:
+            if released:
+                return
+            released = True
+        _sse_slots.release()
+
+    return release
+
+
+@app.route("/api/tasks/events")
+def task_events():
+    """单一任务事件流：首包 snapshot，随后按任务 ID 推 patch。"""
+    release_slot = _reserve_sse_slot()
+
+    def gen():
+        try:
+            revision = 1
+            previous = _task_map(downloader.list_tasks())
+            last_emit = time.monotonic()
+            yield _sse_message("snapshot", {
+                "revision": revision,
+                "tasks": list(previous.values()),
+            })
+            while True:
+                time.sleep(1.0)
+                current = _task_map(downloader.list_tasks())
+                upserts = [task for task_id, task in current.items()
+                           if previous.get(task_id) != task]
+                removed = [task_id for task_id in previous
+                           if task_id not in current]
+                if upserts or removed:
+                    revision += 1
+                    yield _sse_message("patch", {
+                        "revision": revision,
+                        "upserts": upserts,
+                        "removed": removed,
+                    })
+                    previous = current
+                    last_emit = time.monotonic()
+                elif time.monotonic() - last_emit >= 15.0:
+                    yield _sse_message("heartbeat", {"revision": revision})
+                    last_emit = time.monotonic()
+        except GeneratorExit:
+            return
+        except Exception:
+            log.exception("任务聚合事件流异常")
+            yield _sse_message("stream-error", {
+                "code": "task_stream_failed",
+                "message": "任务事件流中断",
+            })
+        finally:
+            release_slot()
+
+    try:
+        response = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    except Exception:
+        release_slot()
+        raise
+    response.headers["X-Accel-Buffering"] = "no"
+    response.headers["Connection"] = "keep-alive"
+    response.call_on_close(release_slot)
+    return response
 
 
 @app.route("/api/progress/<task_id>")
 def progress(task_id):
-    """SSE 推送单个任务进度,任务进终态后收流。
+    """兼容一个周期的单任务 SSE；与聚合流共享连接容量。"""
+    release_slot = _reserve_sse_slot()
 
-    终态取 taskstore.TERMINAL(done/failed/cancelled/interrupted)——早先只判
-    done/failed,取消或中断的任务服务端会一直 1 秒一推,靠前端主动 close 才停。
-    """
     def gen():
-        while True:
-            t = downloader.get_task(task_id)
-            if not t:
-                yield "event: end\ndata: {}\n\n"
-                break
-            yield f"data: {json.dumps(t, ensure_ascii=False)}\n\n"
-            if t["status"] in taskstore.TERMINAL:
-                break
-            time.sleep(1)
-    return Response(stream_with_context(gen()), mimetype="text/event-stream")
+        try:
+            while True:
+                task = downloader.get_task(task_id)
+                if not task:
+                    yield "event: end\ndata: {}\n\n"
+                    break
+                yield f"data: {json.dumps(task, ensure_ascii=False)}\n\n"
+                if task["status"] in taskstore.TERMINAL:
+                    break
+                time.sleep(1)
+        finally:
+            release_slot()
+
+    try:
+        response = Response(stream_with_context(gen()), mimetype="text/event-stream")
+    except Exception:
+        release_slot()
+        raise
+    response.call_on_close(release_slot)
+    return response
 
 
 @app.route("/api/tasks")
@@ -638,49 +1061,53 @@ def get_config():
 @app.route("/api/config", methods=["POST"])
 @api_errors
 def set_config():
-    """部分更新配置。body 可含 download_dir / max_concurrent / ratelimit_mbps 任意字段。"""
-    body = request.get_json(silent=True) or {}
+    """部分更新配置。"""
+    body = _json_object()
     if not body:
-        return jsonify({"ok": False, "error": "无更新字段"}), 400
-    r = config.set_config(body)
-    if not r.get("ok"):
-        # 参数无效是客户端错误；候选配置无法落盘是服务端持久化故障。
-        status = 500 if r.get("persist_error") else 400
-        return jsonify(r), status
-    return jsonify(r)
+        raise ApiError(400, "missing_field", "无更新字段")
+    result = config.set_config(body)
+    if not result.get("ok"):
+        status = 500 if result.get("persist_error") else 400
+        return _json_error(result.get("error", "配置更新失败"), status,
+                           "config_persist_failed" if status == 500
+                           else "invalid_config")
+    return jsonify(result)
 
 
 @app.route("/api/task/<task_id>/reveal", methods=["POST"])
 @api_errors
 def task_reveal(task_id):
-    """在文件管理器中定位该任务下载到的文件(按 UP 归档时是子目录里的那个)。
-    找不到文件时退回打开下载目录。跨平台细节在 files.reveal_path/open_dir。"""
-    files = downloader.find_task_files(task_id)
-    if files:
-        downloader.reveal_path(files[0])
+    """在文件管理器中定位任务产物；找不到时打开下载目录。"""
+    task_id = _string(task_id, "task_id", required=True, max_length=_MAX_TEXT_LENGTH)
+    task_files = downloader.find_task_files(task_id)
+    if task_files:
+        downloader.reveal_path(task_files[0])
         return jsonify({"ok": True, "found": True})
     downloader.open_dir(config.DOWNLOAD_DIR)
     return jsonify({"ok": True, "found": False})
 
 
 @app.route("/api/task/<task_id>/resolve-conflict", methods=["POST"])
+@api_errors
 def task_resolve_conflict(task_id):
-    """处理下载文件名冲突。{action: 'rename_with_index' | 'cancel' | 'open_existing'}
-    - rename_with_index: 期望名后加 ` (1)` 递增改名(到 (9) 封顶)
-    - cancel: 忽略冲突,清掉标记
-    - open_existing: 在 Finder 中定位占用期望名的现有文件
-    """
-    action = (request.get_json(silent=True) or {}).get("action", "")
-    r = downloader.resolve_rename_conflict(task_id, action)
-    if not r.get("ok"):
-        return jsonify(r), 400
-    if action == "open_existing" and r.get("path"):
-        downloader.reveal_path(r["path"])
-    return jsonify(r)
+    task_id = _string(task_id, "task_id", required=True, max_length=_MAX_TEXT_LENGTH)
+    body = _json_object()
+    action = _string(body.get("action"), "action", required=True, max_length=32)
+    allowed = {"rename_with_index", "cancel", "open_existing"}
+    if action not in allowed:
+        raise ApiError(400, "invalid_field", "非法处理动作", field="action")
+    result = downloader.resolve_rename_conflict(task_id, action)
+    if not result.get("ok"):
+        return _json_error(result.get("error", "处理失败"), 400,
+                           "conflict_action_failed")
+    if action == "open_existing" and result.get("path"):
+        downloader.reveal_path(result["path"])
+    return jsonify(result)
 
 
 if __name__ == "__main__":
     print(f"\n  浏览器打开: http://localhost:{PORT}\n")
     pagecache.purge_stale()  # 清掉超 30 天没更新的缓存文件
     auto_refresh.start_loop()  # 订阅追更轮询(间隔见 config.AUTO_REFRESH_MINUTES)
-    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True)
+    app.run(host="127.0.0.1", port=PORT, debug=False, threaded=True,
+            use_reloader=False)

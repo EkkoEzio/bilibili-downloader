@@ -10,6 +10,7 @@ const ICONS = {
   chevron: _I('<polyline points="9 18 15 12 9 6"/>'),
   play: _I('<polygon points="7 4 19 12 7 20 7 4" fill="currentColor" stroke="none"/>'),
   folder: _I('<path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/>'),
+  bilibili: _I('<path d="m7.5 3 3 3m6-3-3 3"/><rect x="3" y="6" width="18" height="15" rx="3"/><path d="M8.5 12v2.5m7-2.5v2.5"/>'),
   layers: _I('<polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/>'),
 };
 export const icon = (name) => ICONS[name] || '';

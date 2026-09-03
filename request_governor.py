@@ -170,18 +170,47 @@ class RequestGovernor:
 
     def call(self, kind: str, request_fn: Callable[..., Any], url: str,
              **kwargs: Any) -> Any:
-        """执行一次受治理请求；HTTP 412/429 自动转成冷却异常。"""
-        self._reserve(kind, url)
-        self._slots.acquire()
+        """执行一次受治理请求；HTTP 412/429 自动转成冷却异常。
+
+        admission 必须同时满足「有并发槽」和「接口间隔已到」。先在锁外取槽，
+        再在互斥锁内原子检查冷却/截止时间并登记启动；尚未到点就立即还槽，
+        锁外短睡后重试。这样排队线程不会提前消费 kind deadline，也不会拿着
+        稀缺槽睡完整间隔。
+        """
+        kind = kind if kind in self._INTERVALS else "default"
+        slot_held = False
         counted = False
         try:
-            with self._lock:
-                err = self._cooldown_error_locked(url)
-                if err:
+            while True:
+                # 绝不持 self._lock 等 semaphore；完成 admission 前也不长期占槽。
+                self._slots.acquire()
+                slot_held = True
+                admitted = False
+                wait = 0.0
+                with self._lock:
+                    err = self._cooldown_error_locked(url)
+                    if err is None:
+                        now = time.monotonic()
+                        wait = self._next_allowed.get(kind, 0.0) - now
+                        if wait <= 0:
+                            interval = self._INTERVALS[kind]
+                            jitter = random.uniform(0.0, self._JITTER[kind])
+                            self._next_allowed[kind] = now + interval + jitter
+                            self._in_flight += 1
+                            self._total_requests += 1
+                            counted = True
+                            admitted = True
+
+                if err is not None:
                     raise err
-                self._in_flight += 1
-                self._total_requests += 1
-                counted = True
+                if admitted:
+                    break
+
+                # deadline 尚早：先还槽，再在所有锁之外等待并重试。
+                self._slots.release()
+                slot_held = False
+                time.sleep(min(wait, 1.0))
+
             response = request_fn(url, **kwargs)
             status = int(getattr(response, "status_code", 0) or 0)
             if status in (412, 429):
@@ -193,7 +222,8 @@ class RequestGovernor:
             if counted:
                 with self._lock:
                     self._in_flight -= 1
-            self._slots.release()
+            if slot_held:
+                self._slots.release()
 
     def snapshot(self) -> GovernorSnapshot:
         with self._lock:

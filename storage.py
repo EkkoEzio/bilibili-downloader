@@ -20,6 +20,15 @@ log = logging.getLogger("bd.storage")
 _write_lock = threading.Lock()
 
 
+class JsonReadLimitError(RuntimeError):
+    """JSON 文件超过调用方声明的安全读取上限；原文件保持不动。"""
+
+    def __init__(self, path: Path, limit: int) -> None:
+        super().__init__(f"{path.name} 超过安全读取上限 {limit} 字节")
+        self.path = path
+        self.limit = int(limit)
+
+
 def write_json(path: Path, data: Any, *, indent: Optional[int] = None) -> bool:
     """原子写 JSON。成功返回 True；失败记日志、清临时文件并返回 False。"""
     with _write_lock:
@@ -38,12 +47,28 @@ def write_json(path: Path, data: Any, *, indent: Optional[int] = None) -> bool:
             return False
 
 
-def read_json(path: Path, default: Any = None) -> Any:
-    """读 JSON。不存在 → default;损坏 → 备份 .corrupt-<ts> 后返回 default。"""
+def read_json(path: Path, default: Any = None, *, max_bytes: Optional[int] = None) -> Any:
+    """读 JSON。
+
+    不存在返回 ``default``；语法/编码损坏会备份为 ``.corrupt-*``。传入
+    ``max_bytes`` 时只读取上限再多 1 字节，超限抛 ``JsonReadLimitError``，
+    不把合法但过大的状态文件改名、截断或覆盖。
+    """
     if not path.exists():
         return default
     try:
-        return json.loads(path.read_text(encoding="utf-8"))
+        if max_bytes is None:
+            text = path.read_text(encoding="utf-8")
+        else:
+            limit = max(0, int(max_bytes))
+            with path.open("rb") as handle:
+                payload = handle.read(limit + 1)
+            if len(payload) > limit:
+                raise JsonReadLimitError(path, limit)
+            text = payload.decode("utf-8")
+        return json.loads(text)
+    except JsonReadLimitError:
+        raise
     except Exception:
         backup = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
         try:

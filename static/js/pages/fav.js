@@ -1,11 +1,29 @@
-/* 我的收藏:两级视图——顶层收藏夹卡片 / 进入后夹内视频列表。 */
-import { registerPage, state, libDom, renderDefaultList, cachedLoad, getLibSearchQuery } from '../lib.js';
-import { getJSON } from '../net.js';
-import { icon } from '../icons.js';
+/* 我的收藏：两级视图——顶层收藏夹卡片 / 进入后夹内视频列表。 */
+import { registerPage, state, libDom, renderDefaultList, cachedLoad,
+         getLibSearchQuery, replaceItems } from '../lib.js';
+import { getJSON, isAbortError } from '../net.js';
+import { icon } from '../icons.js?v=20260903a';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
 let _favFolders = [];
-let _favCurrent = null;  // 已进入的收藏夹 id
+let _favCurrent = null;
+let _favGeneration = 0;
+let _favController = null;
+const _favLearnedCovers = new Map();
+
+function cancelFavContent() {
+  _favGeneration++;
+  if (_favController) _favController.abort();
+  _favController = null;
+}
+
+function favRequestIsCurrent(generation, controller, fid) {
+  return generation === _favGeneration
+    && controller === _favController
+    && !controller.signal.aborted
+    && state.mode === 'fav'
+    && String(_favCurrent) === String(fid);
+}
 
 function showFolders() {
   document.getElementById('fav-folder-list').style.display = '';
@@ -18,7 +36,9 @@ function showFolders() {
 }
 
 export async function favLoadFolders() {
+  cancelFavContent();
   _favCurrent = null;
+  replaceItems([]);
   showFolders();
   await cachedLoad({
     page: 'fav',
@@ -43,7 +63,6 @@ export async function favLoadFolders() {
   });
 }
 
-/* 顶层:收藏夹卡片/行,支持列表/网格两种视图与标题搜索 */
 function renderFolders() {
   const box = document.getElementById('fav-folder-list');
   if (!box) return;
@@ -57,7 +76,7 @@ function renderFolders() {
       : (_favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '');
   }
   if (list.length === 0) {
-    box.innerHTML = `<div class="empty">${q ? '没有匹配的收藏夹(试试其他关键词)' : '暂无收藏夹'}</div>`;
+    box.innerHTML = `<div class="empty">${q ? '没有匹配的收藏夹（试试其他关键词）' : '暂无收藏夹'}</div>`;
     return;
   }
   box.innerHTML = state.view === 'grid'
@@ -65,35 +84,49 @@ function renderFolders() {
     : `<div class="panel"><div class="panel-body tight">${list.map(folderRow).join('')}</div></div>`;
 }
 
+const normalizedCover = (value) => safeHttpUrl(value, { httpsOnly: true });
+
+const coverMarkup = (cover) => {
+  const coverUrl = normalizedCover(cover);
+  const image = coverUrl
+    ? `<img src="${escapeAttr(coverUrl)}" alt="" onerror="this.hidden=true" loading="lazy">`
+    : '';
+  return `
+      <span class="fc-placeholder" aria-hidden="true">${icon('bilibili')}<span>暂无封面</span></span>
+      ${image}`;
+};
+
 const _card = (cover, count, title, subHtml, id) => {
-  const coverUrl = safeHttpUrl(cover, { httpsOnly: true });
   const itemCount = nonNegativeInt(count);
   return `
-  <div class="fav-card" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(id ?? ''))}">
+  <button type="button" class="fav-card" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(id ?? ''))}">
     <div class="fc-cover">
-      <img src="${escapeAttr(coverUrl)}" onerror="this.style.visibility='hidden'" loading="lazy">
+      ${coverMarkup(cover)}
       <span class="fc-count">${itemCount} 个视频</span>
     </div>
     <div class="fc-title">${escapeHtml(title)}</div>
     <div class="fc-sub">${subHtml}</div>
-  </div>`;
+  </button>`;
 };
 
-const folderCard = (f) =>
-  _card(f.cover || '', f.media_count, f.title || '(未命名)',
-        icon('folder') + '收藏夹', f.id);
+const folderCard = (f) => {
+  const learnedCover = _favLearnedCovers.get(String(f.id)) || '';
+  return _card(normalizedCover(f.cover) || learnedCover,
+               f.media_count, f.title || '(未命名)',
+               icon('folder') + '收藏夹', f.id);
+};
 
 function folderRow(f) {
   const itemCount = nonNegativeInt(f.media_count);
   return `
-    <div class="fav-folder" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(f.id ?? ''))}">
+    <button type="button" class="fav-folder" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(f.id ?? ''))}">
       <div class="fav-icon">${escapeHtml((f.title || '?').slice(0, 1))}</div>
       <div>
         <div class="fav-name">${escapeHtml(f.title)}</div>
         <div class="fav-count">${itemCount} 个视频</div>
       </div>
       <span class="fav-arrow">${icon('chevron')}</span>
-    </div>`;
+    </button>`;
 }
 
 function showList(title) {
@@ -105,31 +138,41 @@ function showList(title) {
 }
 
 export async function favEnter(fid) {
-  // fid 参数实际传的是文件夹的媒体列表 id(长 id),接口按 media_id 查
   const folder = _favFolders.find(f => String(f.id) === String(fid));
   if (!folder) return;
-  _favCurrent = fid;
+  cancelFavContent();
+  const generation = _favGeneration;
+  const controller = new AbortController();
+  _favController = controller;
+  _favCurrent = String(fid);
+  replaceItems([]);
+  state.checked.clear();
+  state.shown = 0;
   showList(folder.title);
   const d = libDom();
   d.meta.textContent = '';
   d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
   try {
-    const r = await getJSON(`/api/fav-content?media_id=${encodeURIComponent(String(fid))}`);
+    const r = await getJSON(`/api/fav-content?media_id=${encodeURIComponent(String(fid))}`, {
+      signal: controller.signal,
+    });
+    if (!favRequestIsCurrent(generation, controller, fid)) return;
     if (!r.ok) throw new Error(r.error || '加载失败');
-    state.items = r.items || [];
-    state.checked.clear();
-    state.shown = 0;
+    const items = Array.isArray(r.items) ? r.items : [];
+    if (!normalizedCover(folder.cover)) {
+      const latestCover = items.map(item => normalizedCover(item.thumbnail)).find(Boolean);
+      if (latestCover) _favLearnedCovers.set(String(fid), latestCover);
+    }
+    replaceItems(items);
     renderDefaultList(d);
     d.meta.textContent = `共 ${state.items.length} 条`;
-  } catch (e) {
-    d.list.innerHTML = `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="favEnter(this.dataset.id)" data-id="${escapeHtml(String(fid))}">${icon('refresh')} 重试</button></div>`;
+  } catch (error) {
+    if (isAbortError(error) || !favRequestIsCurrent(generation, controller, fid)) return;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(fid))}">${icon('refresh')} 重试</button></div>`;
   }
 }
 
-export function favBack() {
-  favLoadFolders();
-}
-
+export function favBack() { favLoadFolders(); }
 export function favRefresh() {
   if (_favCurrent) favEnter(_favCurrent);
   else favLoadFolders();
@@ -141,6 +184,12 @@ registerPage('fav', {
   render: (d) => { if (!_favCurrent) renderFolders(); else renderDefaultList(d); },
   infinite: () => _favCurrent ? 'items' : 'none',
   actionBarVisible: () => !!_favCurrent,
-  reset: () => { _favCurrent = null; showFolders(); },
-  emptyHint: (q) => q ? '没有匹配结果(试试其他关键词)' : '这里还没有收藏任何视频',
+  reset: () => {
+    cancelFavContent();
+    _favCurrent = null;
+    _favLearnedCovers.clear();
+    showFolders();
+  },
+  deactivate: cancelFavContent,
+  emptyHint: (q) => q ? '没有匹配结果（试试其他关键词）' : '这里还没有收藏任何视频',
 });

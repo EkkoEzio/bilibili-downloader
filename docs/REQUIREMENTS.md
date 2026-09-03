@@ -1,479 +1,318 @@
-# bilibili download — 完整需求文档
+# bilibili download — 当前需求与实现约束
 
-> 本文档描述项目当前**已实现的全部功能**，基于代码实际状态整理
->（v2.2.0，2026-08-31）。
-> 15 个 Python 模块（4178 行）+ 前端三分离（模板 388 行 / CSS 533 行 /
-> 17 个 ES modules 共 2323 行），39 个不同的 `@app.route` 路径
->（38 个 API + `/` 单页骨架；`/api/config` 的 GET/POST 使用两个装饰器）。
-> 现有测试 304 个全过。
+> 状态：**v2.3.0（2026-09-03）**。
 >
-> 改这份文档时请顺手核对数字:`wc -l *.py`、`pytest -q`、
-> `grep -o '@app.route("[^"]*"' app.py | sort -u | wc -l`。
+> 本文描述当前产品行为与安全边界，不记录易漂移的源码行数、路由总数或测试数量；发布历史见 `CHANGELOG.md`，历史产品批次见 `docs/BACKLOG.md`。
 
 ---
 
-## 一、项目定位
+## 1. 产品定位
 
-### R0 核心诉求
-- **用户**:B 站大会员,想把视频高画质地留存到本地
-- **形态**:本地网页应用(Python Flask 后端 + 单页 HTML 前端),浏览器访问 `localhost:5050`
-- **启动方式**:双击 `启动.command`(Mac),首次自动建虚拟环境+装依赖,
-  **启动前自动 kill 占着 5050 端口的旧实例**(避免「改了不生效」)
-- **隐私**:所有数据存本地 `data/`,不上传任何服务器
+### R1 本地网页应用
 
-### R1 技术栈
-- 后端:Python 3 + Flask + yt-dlp(下载引擎)+ ffmpeg(音视频合并)+ requests
-- 前端:原生 ES modules 单页(无框架、无构建工具)+ EventSource(SSE 进度);
-  结构 / 样式 / 脚本三分离,页控制器注册到 `lib.js` 的公共框架
-- 本地运行,数据全部存在 `data/` 目录
+- 形态：Python Flask 后端 + 原生 ES modules 单页前端。
+- 默认地址：`http://localhost:5050`；可通过 `BD_PORT` 选择 1–65535 的其他端口。
+- 数据：配置、认证凭据、任务史、UP 清单与页面缓存持久化在本机 `data/`。
+- 网络：登录、内容读取、解析和下载会访问 B 站及媒体地址；项目不提供自己的远端账号或遥测服务。
+- 边界：不实现账号密码/滑块自动化、DRM 或付费墙绕过，也不提供上传或二次分发入口。
 
----
+### R2 启动、ready 与单实例
 
-## 二、登录系统
-
-### R2 三种登录方式
-
-| 方式 | 说明 | 状态 |
-|---|---|---|
-| **扫码登录**(主) | 网页显示二维码(本地 qrcode 库生成),手机 B 站 App 扫码确认,长期有效 | ✅ |
-| **使用 Edge** | 读 Edge 浏览器已有的 B 站登录态(`--cookiesfrom-browser edge`) | ✅ |
-| **cookies.txt**(兜底) | 浏览器扩展导出后粘贴 | ✅ |
-
-用户明确**拒绝**账号密码+验证码(B 站极验滑块无法自动化)。
-
-### R3 登录态识别
-- 任意一种登录成功后,侧边栏「账号」文字立即显示用户名
-- `get_login_status()` 复用下载用的同一套 cookie 来源(扫码/Edge/cookies.txt 统一)
-- **退出登录**:清 cookiejar 缓存 + follow 缓存,确保退出立即生效
-
-### R4 登录区 UX
-- 「账号」抽屉**上半部分**是登录区(三个 tab:扫码 / Edge / cookies.txt)
-- 登录成功后整个登录区不收起,直接展示其他 tab 内容(扫码 / Edge / cookies)
-- 扫码成功 → 二维码收起 + 显示「✓ 登录成功!」
-- 「账号」抽屉**下半部分**是全部设置(改动即生效,见 R18)
+- 工作区级 OS 文件锁必须在读取或迁移运行态数据之前取得；同一工作区一次只允许一个实例，异常退出后由内核释放锁。
+- `启动.command` 必须遵循 `BD_PORT`。检测到本项目已运行或目标端口被未知进程占用时，只报告并退出，不得 TERM、`kill -9` 或以其他方式终止未知进程。
+- 启动器只在独立 readiness helper 确认本应用 ready 后打开浏览器；helper 必须使用 `time.monotonic()` 建立严格 60 秒墙钟 deadline，网络 timeout、重试 sleep 和打开等待都不得超过剩余时间。helper 只做 HTTP 探测与 `open`，不得保存服务进程标识或终止任何进程。
+- 主 launcher 必须以 `exec "$PYTHON" app.py` 原位进入服务，不创建 pidfile、不使用 `$!`、不通过数值 PID 探测/清理进程；终端信号和退出码直接由 Python 承接。
+- 60 秒内未 ready 时 helper 只给出明确提示并自行退出，不得声称或尝试自动停止仍在启动中的服务。
+- 下载与自动追更由后端进程执行。浏览器 tab 不是运行前提，关闭后可重新打开；服务进程必须继续运行。
 
 ---
 
-## 三、内容浏览(「我的B站」区,6 个一级页)
+## 2. 认证与账号隔离
 
-> 用户原话:"不用去复制链接过来解析,而是直接在这看到一些视频,多选下载"
+### R3 登录方式
 
-### 5.1 缓存优先 + 后台拉新(v2.0 新机制)
-- 所有数据源(关注动态 / 关注列表 / 收藏夹 / 追更合集 / 稍后再看)打开即显示
-  `data/cache/<key>.json` 的上次结果(秒开,不显示加载圈);
-- 同时后台请求真接口;
-- 拉到与展示的不同时,顶部提示「**获取到新内容 · 查看最新**」,用户主动点才替换;
-- 缓存键有白名单（`pagecache.py` 的 `KEYS`），防任意文件读写；
-- 应用启动时删除超过 30 天未更新的缓存文件，避免缓存目录长期积累；
-- 冷启动(无缓存)才显示加载态;
-- 观看历史因单页 ~1s 不参与,保持原有分页。
+支持三种显式来源：
 
-### 5.2 侧边栏顺序(用户指定)
-下载记录 → 观看历史 → 关注动态 → 追更合集 → 我的收藏 → 稍后再看;
-左下角:**账号**(内含登录 + 全部设置)。
+1. B 站官方二维码扫码；
+2. Edge 浏览器 Cookie；
+3. 用户导入的 `cookies.txt`。
 
-### R5 观看历史(history)
-- 自动加载(首次需登录),含观看进度百分比
-- 滚动到底自动逐页加载更早的历史(B 站接口分页)
-- 多选 → 选清晰度 → 批量下载
+二维码和登录 Cookie 都可能过期。二维码是否有效以 B 站轮询状态为准，本项目不承诺固定时长或“长期有效”。只有后端轮询到成功并持久化凭据后，扫码页面才能安全关闭。
 
-### R6 关注动态(feed)
-页头分段切三个视图:
+### R4 认证上下文
 
-| 视图 | 数据源 | 说明 |
-|---|---|---|
-| **关注动态**(bili) | `/api/follow-updates` | B 站关注 UP 的最近投稿,串行+1.5 秒间隔防账号级 412 |
-| **关注列表**(all) | `/api/followings` | 站点关注的全部 UP,可一键加入本地清单 |
-| **自动下载**(mine) | `/api/up-list` | 页面内直接管理 UP 清单(粘贴添加 / 清晰度下拉 / 移除 / 立即检查) |
+认证上下文至少包含：
 
-### R7 追更合集(seasons,v2.0 新独立页)
-- `/api/fav-seasons` 拉取(`/x/v3/fav/folder/collected/list`,必须带 `platform=web`
-  否则永远返回空列表,实测踩到的坑)
-- 卡片 / 列表两种视图,按合集名搜索
-- 点进合集看内容(`/api/season-content`)
+- `source`：当前凭据来源；
+- `fingerprint`：由已识别账号 ID 派生的非敏感指纹；尚未识别账号时使用来源级指纹；
+- `incarnation`：随机 32 位十六进制生命期标识；状态缺失、损坏、不可恢复或从 v1 迁移时开启新生命期；
+- `generation`：仅在同一 incarnation 内单调推进的代际，不是跨生命期全局 high-water；
+- `authenticated`：是否已经识别为账号级上下文。
 
-### R8 我的收藏(fav)
-- 列表(卡片 / 列表两种视图,按收藏夹名搜索)
-- 点进看内容(收藏夹卡片可按 UP 主链接打开主页)
-- /api/fav-folders 拉列表; /api/fav-content 拉内容(B 站原生,失败标「已失效视频」)
+要求：
 
-### R10 稍后再看(later)
-- 加载「稍后再看」列表
-- 多选 → 批量下载
+- API 请求取得属于同一完整上下文的 `(context, cookiejar)` 快照，不得拼接旧 Cookie 与新 context。
+- 慢请求提交结果前必须 CAS 校验包含 incarnation 与 generation 的完整认证上下文；变化时返回 HTTP 409 `auth_context_changed`。
+- Cookiejar 的短时内存复用必须绑定完整认证上下文，不能只按“当前来源”复用。
+- 首次从 Cookie 或导航接口识别账号后，应升级为账号 fingerprint，并在当前 incarnation 内推进 generation。
+- 来源或身份切换沿用当前 incarnation 并推进 generation；切换或退出登录要串行化凭据文件、认证上下文和内存缓存提交，失败不得宣称成功。
+- 合法 v1 状态迁移到 v2 时保留 source、fingerprint、generation 与 authenticated，分配新 incarnation 并写回；不得据此认领旧缓存。
+- 状态缺失、损坏或凭据不可恢复时必须开启新 incarnation，generation 从新生命期重新开始；不得从旧 generation 推断全局 high-water。
+- 登录状态接口只公开非敏感元数据，包括 `auth_incarnation` / `auth_generation`，不返回 `SESSDATA`、`bili_jct` 或 Cookie 内容。
 
-### R11 通用体验
-- 列表搜索过滤:搜索框实时按标题 / UP 主过滤,勾选保留
-- **页头工具栏统一**:搜索 / 刷新 / 切换列表网格 / 视图(刷新不阻塞)
-- 网格首屏不可滚动修复（首屏多渲染一行 + 自动补块）
-- 所有来自上游/任务记录的动态 HTML 均转义；外部链接只允许 HTTP(S)，UP mid、页码、
-  媒体计数等只接受规范数字，避免错误消息、缩略图和 URL 注入
+### R5 内存与磁盘缓存
+
+- 关注列表、关注动态、WBI 等内存缓存按完整认证上下文隔离；旧生命期或旧代请求不得覆盖当前缓存。
+- 生产页面缓存路径为：
+
+  `data/cache/accounts/<fingerprint>/i-<incarnation>/g-<generation>/<key>.json`
+
+- 生产读取只接受 exact fingerprint + incarnation + generation，不回退到旧顶层缓存、其他生命期或其他代际。
+- 磁盘缓存先写候选文件，再在认证 CAS 临界区原子发布；认证变化时删除候选并返回冲突；metadata 必须记录同一完整上下文。
+- 同一 incarnation 内切回同一账号仍产生新 generation；新 incarnation 永不复用旧生命期缓存。旧缓存由 30 天清理策略回收。
+- 观看历史保持服务端分页；其他列表页可采用“当前完整认证上下文缓存先显 + 后台拉新”。慢源提示查看最新，快源在没有活动选择时可直接替换。
 
 ---
 
-## 四、下载能力
+## 3. 内容浏览
 
-### R12 基础下载
-- 输入 URL → 解析 → 列出清晰度(带预估文件大小)→ 选 → 下载
-- **大会员高画质**:2160P(4K)/ 1080P / 720P / 480P / 360P(需带登录态 cookie)
-- **DASH 音视频合并**:高画质自动用 ffmpeg 合并成单 mp4
-- 文件名:`{视频标题}.mp4`(清洗非法字符),分P视频带 P 序号
+### R6 一级页面
 
-### R13 进度条 / 队列合并(v2.0)
-- 实时显示:**进度条 + 百分比 + 速度 + 剩余时间**
-- SSE(Server-Sent Events)就地更新下载记录页的卡片,DOM 不刷新不打断
-- **下载队列已并入下载记录页**:进行中任务排在最前(进度条/速度/取消),失败
-  任务显示原因,完成记录在后
+侧边栏顺序固定为：
 
-### R14 多 P 分集视频
-- 自动识别 → 返回分 P 列表(标题 + 时长)
-- 选具体 P → 拉该 P 的清晰度 → 下载
+**下载记录 → 观看历史 → 关注动态 → 追更合集 → 我的收藏 → 稍后再看**。
 
-### R15 批量下载
-- **多链接一次下**:多行输入框,每行一个 URL
-- **分 P 选集下**:勾选要下的 P
-- **收藏夹 / 合集 / UP 清单**:解析整列后勾选
-- 全局并发默认 2、可配 1–4；固定 worker 池与运行时 gate 由单视频、批量和自动追更
-  共同使用，不会因同时启动多个批次而突破全局上限
+### R7 通用列表行为
+
+- 搜索按标题、UP 或页面业务字段过滤；选择状态使用稳定业务 ID，不得使用过滤后数组下标作为身份。
+- 刷新、排序、搜索、虚拟窗口和异步响应不得把选择或删除操作转移到其他条目。
+- 列表/网格视图、分页或无限滚动需保留一致的选择语义。
+- 来自上游或任务史的动态文本必须转义；外部链接只允许 HTTP(S)，数字和布尔字段必须规范化。
+- 关注动态页提供关注投稿、关注列表、自动下载三个视图；关注列表可加入本地 UP 清单。
+
+### R8 页面差异
+
+- 观看历史：显示观看进度，服务端逐页加载更早记录。
+- 追更合集、收藏夹、稍后再看：可进入内容并批量下载。
+- 下载记录：进行中任务置顶；显示进度、速度、ETA、取消、失败原因、持久化健康、定位与清理动作。
 
 ---
 
-## 五、下载管理(并入下载记录页)
+## 4. 下载与任务模型
 
-### R16 取消 + 重试
-- **取消**:进行中点「取消」按钮,立即结束
-- **失败自动重试**:最多 3 次,递增退避(2/4/6 秒)
-- 用户取消不重试;重试中显示「重试中」橙色 spinner
+### R9 下载能力
 
-### R17 删除(按模式切换)
-- **下载记录页**勾选任意条目 → 底部操作条出现「删除记录 / 删除记录 + 文件」
-  (`delSelected`,按按钮语义直接删,不再弹二次选择弹窗)
-- **页头两个常驻按钮**:「清除全部记录」(只删记录,不动文件)/
-  「清除失败/失效记录」(失败任务 + 文件已不在本地的完成任务)
-- 「删除记录 + 文件」删的是任务的**整族**文件(主文件 + 封面/字幕/弹幕),
-  且只删匹配到自己期望名的文件,不会波及标题相近的邻居视频
-- 勾选期间列表重排会移位索引 → `_dirty` 标记延迟到清空勾选后再刷新
-  (`onChecksEmpty` 回调)
+- 单视频：解析标题、封面、UP、时长和可用格式，选择清晰度后下载。
+- 多 P：识别分集并使用 `(BV, page)` 粒度去重；任务侧 page 以持久字段为准，查询条目可从 URL 解析。
+- 批量：多链接、播放列表、收藏夹、合集等入口最终进入同一批量下载接口。
+- DASH：调用 ffmpeg 合并音视频；仅音频不强制视频容器。
+- 清晰度：2160P / 1080P / 720P / 480P / 360P / 音频；缺档时选择不超过目标的最高可用档。
+- 可选副件：字幕、封面、弹幕；可按 UP 建子目录。
+- 所有单任务、批量和自动追更共享一个后端任务表、队列、固定 worker 池和运行时并发 gate。
 
-### R18 文件定位
-- 完成卡片右下角**播放按钮** → `/api/task/<id>/reveal` → 在系统文件管理器中
-  定位该视频文件;按 UP 归档(子目录)也能找到
-- 跨平台:macOS `open -R` / Windows `explorer /select,` / Linux 退化为
-  打开所在目录(`files.reveal_path`);命令缺失时静默失败,不影响其他功能
-- 找不到文件时退回打开下载目录,接口如实返回 `found: false`
-- 定位用的是任务的权威落盘路径(`actual_filename`),连同封面/字幕/弹幕
-  等副文件算作同一族(删除、体积统计口径一致)
+### R10 稳定身份与产物 manifest
 
-### R19 统计面板
-- 顶部:`总下载数 / 总大小 / 本月 / 今日`
-- 下载完成时自动刷新
-- 任务记录含 `downloaded_bytes` + `finished_at`
+- `task_id` 是任务记录身份；`artifact_set_id` 是该任务媒体与副件集合的稳定身份，两者不得混用。
+- 新任务从创建起包含 schema 版本、固定 `artifact_root` 和空 manifest。
+- manifest 中每个条目记录角色（`media` / `sidecar`）、规范的下载根相对路径、大小及派生 artifact ID；不信任客户端提供的 artifact ID。
+- 主媒体对齐和副件写入后必须在同一任务的 artifact lifecycle 锁内刷新 manifest。
+- 新任务的 reveal、统计、失效判断和破坏性删除以 manifest 为文件事实源；`actual_filename` 只作展示和兼容。
+- 历史无 manifest 任务保留保守兼容：路径必须在下载根内，主候选不唯一时拒绝破坏性删除。
+- manifest 绑定创建时下载根。用户切换下载目录后，不得把旧任务静默重绑定到新目录中的同名文件。
+- 若下载命令成功但不能确认唯一、安全、存在的主媒体，任务必须失败，不能无条件标记完成。
 
----
+### R11 创建的应用层 durable-first
 
-## 六、UP 清单:加入即自动下载(v2.0 简化)
+- 活跃任务去重、pending/总量容量检查和整批快照生成在同一持久化临界区完成。
+- 新任务完整快照先以临时文件 + 原子替换写入 `tasks.json`；成功后才加入内存任务表，最后注册 runtime 并入队。
+- 写盘失败时返回明确错误，下载不得入队，也不得产生“有下载无记录”的幽灵任务。
+- 入队阶段若失败，已经持久化的任务转为 `failed` 并保留可观察记录。
+- durable-first 指应用层发布顺序，不表示文件系统断电级 `fsync` 保证。
+- 后续运行状态持久化失败必须通过 `durable` / `persistence_pending` / `persistence_error` 暴露，不得静默宣称已落盘。
 
-> v1 是「勾选自动追更 + 待确认横幅 + 用户点全部下载才入队」的繁琐流程。
-> v2 简化:加入即自动下载,新投稿直接进下载队列(单并发串行)。
+### R12 取消与安全删除
 
-### R20 清单管理
-- 「关注动态 → 自动下载」视图直接管理:粘贴主页链接或 mid 添加;
-  关注列表视图也可一键「加入清单」
-- **添加时以当前最新投稿为基线**(`mark_seen`),只下加入之后的新投稿,
-  不会翻旧账批量补档
-- 每个 UP 可单独配默认清晰度(最高画质自动 / 1080P / 720P / 480P / 360P / 仅音频)
-- 移除:确认后清除清单与已见标记
+- 取消采用 durable-before-publish：在固定 `_persist_lock → _tasks_lock` 锁序下生成候选完整快照，慢 IO 不持任务表锁；只有原子写成功后，才在原任务字典上发布 `status="cancelling"` 与 `cancel=True`。
+- 取消候选写盘失败时必须更新持久化健康并抛出明确错误；API 不得返回虚假成功，worker 也不得观察到取消标志。
+- 写盘期间任务可继续推进。若目标在 IO 期间已终结、被移除或替换，必须在释放持久化锁前以当前完整任务表校正磁盘并返回未取消，不得把旧任务复活为 `cancelling`。
+- 取消不得整体替换任务表或目标任务字典，既有对象身份和公开 bool/异常契约必须保持。
+- 删除活动任务时：
+  1. 持久化取消意图；
+  2. 在不持有任务表锁的情况下等待关联 runtime 静默；
+  3. 超时、缺少可证明静默的 runtime 或任务仍为活动态时，保留记录和文件。
+- 对可删除任务，在 artifact lifecycle 锁内读取最新记录与 manifest；先持久化“移除这些记录后”的完整任务表，再移除内存记录，最后删除文件。
+- 任务记录写盘失败时不得 unlink 文件。
+- unlink 失败时记录已删除，不得伪造回滚；API 返回 `partial`、retained、deleted、skipped、failed 等明细。
+- manifest 任务只删除 manifest 当前明确列出的安全路径；legacy 任务只有在主媒体候选唯一时才允许删除文件。
+- 每次实际删除前重新验证下载根边界；下载根本身、根外路径和根内 symlink 指向根外均不得删除。
 
-### R21 自动下载轮询
-- 后台按设置间隔（默认 30 分钟，可配 10–360 分钟）串行检查
-- 单 UP 拉取间隔 ≥5 秒；所有 `arc/search` 还受统一 `sensitive` 1.5 秒 + 抖动约束
-- 自适应页大小：24 小时内刚拉过使用 5 条小页，否则 15 条；单轮每个 UP 最多
-  3 页只是请求预算，不是历史范围上限
-- 达到页预算但尚未严格跨过旧游标时不推进 committed cursor，而是持久化 scan
-  continuation；后续轮次先重取首页检测 offset 漂移，再按 BVID 去重续扫
-- 游标使用 `ts + same_ts_bvids`，同一秒发布多条投稿也不会因排序假设而遗漏
-- 明确限流时不推进“已见”标记；自动任务失败或进程中断后从持久任务史按
-  10 分钟起步、24 小时封顶指数退避重试
-- 可手动触发 `/api/up-list/check`；已有一轮运行时直接跳过、不排队、不发上游请求，
-  响应通过 `started` 如实说明是否启动新一轮
+### R13 进度与终态
 
-### R22 数据持久化
-- `data/up_list.json`：`ups`（清单）+ `last_seen`（`ts`、`same_ts_bvids`、
-  `fetched_at` 与可选 `scan` continuation）
-- 追更游标没有固定过期时间，保留到用户移除 UP 或手动重置；任务历史也不按时间
-  自动删除，仅由“清除全部记录”或“清除失败/失效记录”显式清理
-- JSON 写入采用 tmp + rename；关键状态只有在写盘成功后才提交到内存。任务创建则
-  锁内原子查重并按“先持久化、后内存可见、最后入队”的顺序执行
-- 兼容老数据：`auto` 字段读取时丢弃，缺少 `quality`、复合游标或续扫字段时使用默认值
+- 活跃态和终态由 `taskstore` 单一来源定义；取消、重启中断和重试不得散落硬编码状态副本。
+- 下载重试使用递增退避；用户取消或账号冷却不得继续制造重试请求。
+- 完成终态必须与最终 manifest、`downloaded_bytes` 和 `finished_at` 一并提交。
+- 进程重启时历史活动任务转为 `interrupted`，不会自动伪装成仍运行。
 
 ---
 
-## 七、设置(账号抽屉下半部分,改动即生效)
+## 5. 自动下载
 
-> v2.0 把设置从独立抽屉并入账号抽屉,UI 按"下载 / 自动下载 / 保存内容 / 外观"
-> 四组重排;每项控件 `onchange` 直接 POST `/api/config`,无需点保存,
-> 标题旁闪「**已自动保存**」轻提示。
+### R14 UP 清单
 
-### R23 下载设置
-- **下载目录**:界面可改(自动展开 ~、创建目录、持久化)
-- **同时下载数**:1-4 可选(默认 2)
-- **单任务限速**:不限 / 1/2/5/10/20 MB/s(yt-dlp ratelimit)
+- 添加 UP 主页或 mid；添加时以当前最新投稿建立基线，不补下载加入前的历史。
+- 每个 UP 可配置默认清晰度；移除时同时移除其游标与续扫状态。
+- 清单数据和游标写入失败必须明确报错，不得先改内存再宣称成功。
 
-### R24 自动下载
-- **检查间隔**:10/30/60/120/360 分钟(下限 10 分钟,合规护栏)
+### R15 扫描、游标与恢复
 
-### R25 保存内容
-- **弹幕 / 字幕 / 封面**:任务完成后另存 .xml / srt / 封面图
-- **按 UP 建子目录**:归档到「下载目录/UP 名/」下
-- **完成通知**:macOS 系统通知
-
-### R26 外观
-- **主题**:浅色 / 深色 / 跟随系统
-- CSS 变量重构(`--bg-page`/`--text-main` 等),`body.dark` 覆盖
+- 后台轮询间隔可配置但下限为 10 分钟；UP 之间请求间隔至少 5 秒。
+- 手动与定时触发共享同一个非阻塞原子 reservation；忙时直接跳过，不排队补跑，且不得改写上一轮 `last_*` 状态。
+- `/api/up-list/check` 必须先成功预约业务锁，再登记并启动 worker、返回 `started=true`；线程启动失败必须释放预约。仅检查线程登记或先调用 `is_running()` 不构成原子启动保证。
+- 状态包装器继续调用模块级零参数 `refresh_once()`，保留 monkeypatch / scheduler 契约；直接调用 `refresh_once()` 仍保持非阻塞锁语义。
+- reservation 必须持续到成功或错误终态的状态字段写完后才释放，避免相邻轮次的生命周期状态交错。
+- 游标由 `ts + same_ts_bvids` 组成，覆盖同一秒多投稿。
+- 单轮每 UP 最多扫描 3 页；达到预算且未跨过旧游标时保存 continuation。每轮重取首页；首页锚点变化时把变化前的 deep 前沿冻结为 `head_repair_until_pn`，从第 2 页连续修复低页，同时继续推进 deep。
+- deep 前沿遇到短页或跨过旧游标时只持久化 `terminal_pn`；只有 head 已连续闭合冻结接缝且终止证据仍属于稳定首页锚点时才可提交 committed cursor。旧 schema 缺少接缝证明时必须从第 2 页保守重证。
+- continuation 累计项目达到容量边界时明确失败，不得裁旧项并推进 committed cursor。
+- 自动任务失败或进程中断后，从持久任务史按指数退避恢复；重试不通过高频重扫 UP 接口实现。
 
 ---
 
-## 八、技术约束与已知限制
+## 6. API、安全与实时事件
 
-### R27 端口与本机安全边界
-- 默认 `5050`（避开 macOS ControlCenter 占用的 5000 端口）
-- 所有请求的 `Host` 必须是 `localhost`、`127.0.0.1` 或 `[::1]`；LAN 地址、机器名、
-  反向代理 Host 和伪装成 `localhost.evil` 的域名均拒绝
-- 浏览器提供 `Origin`、`Referer`、`Sec-Fetch-Site` 时必须严格同源；来源头全部缺失
-  仍允许 Flask test client、curl 和本机脚本
+### R16 严格 API 输入与错误
 
-### R28 B 站限流（关键合规边界）
-- 所有显式 requests 调用和 yt-dlp 启动链路统一接入 `RequestGovernor`；单进程、单账号
-  最多 2 个上游请求同时在途
-- `sensitive` 至少 1.5 秒 + 0–0.35 秒抖动；`bulk` 0.25 秒 + 0–0.08 秒；
-  `media` 0.5 秒 + 0–0.15 秒；`auth/default` 仍受全局在途上限和账号冷却约束
-- HTTP 或 JSON 明确返回 412 时默认冷却 10 分钟，429 默认冷却 2 分钟；合法
-  `Retry-After` 优先，重复限流事件只延长、不缩短冷却
-- 冷却期内快速抛 `UpstreamRateLimitError`，路由统一返回 HTTP 429 + `Retry-After`；
-  不再把限流伪装成空列表或普通 500，也不会继续轰炸上游
-- `/api/governor/status` 只读暴露冷却剩余、在途数和计数指标，不返回上游 URL 或凭据
-- `collected/list` 必须带 `platform=web`，否则返回空列表
+- JSON 写接口必须收到 JSON object；空 body、无效 JSON、数组根节点不得静默当作空对象。
+- 字符串、整数、有限数值、布尔和列表均按字段做类型、长度、范围与数量校验。
+- 非 2xx API 错误使用稳定 envelope：
 
-### R29 自动任务合规
-- 自动检查属 B 站「自动程序」条款场景,间隔刻意保守(≥5 秒/UP),
-  UP 间隔 ≥5 秒,轮询间隔下限 10 分钟
-- 详见 `docs/COMPLIANCE.md`
+  ```json
+  {"ok": false, "error": "面向用户的消息", "code": "stable_code"}
+  ```
 
-### R30 未做项
-- **后台托盘/窗口置顶**:经评估不做(需打包成 Tauri/Electron 桌面应用,
-  改变项目形态,投入产出比低)
+- 字段错误可附 `field`；容量错误附 `capacity/limit/current/requested`；重复任务附现有 `task_id`。
+- 未知异常记录到日志，HTTP 响应只返回通用 `internal_error`，不泄露堆栈、上游 URL 或凭据。
+- API 响应统一 `no-store`；路由级 400/404/405/413 也转换为稳定 JSON code。
+- 个别成功协议内状态（例如缓存 miss 或批量中某项解析失败）可以是 2xx，但必须结构明确，不得与 transport error 混淆。
 
----
+### R17 本机同源边界
 
-## 九、API 接口清单（38 个 API 路径 / 39 个 API route 装饰器）
+- Host 只允许 `localhost`、`127.0.0.1`、`[::1]` 及合法端口。
+- 浏览器发送 Origin、Referer 或 Sec-Fetch-Site 时必须严格同源；三者都缺失时允许本机脚本和测试客户端。
+- Cookie 导入体及全局请求体受大小限制；二维码图片只允许 B 站护照 HTTPS 域名。
 
-> `/api/config` 一个路径分别声明 GET/POST，故装饰器数比 API 路径数多 1；
-> 另有 `/` 返回单页骨架。下表把动态 `/api/cache/<key>` 的 5 个合法 key 展开列出。
+### R18 聚合 SSE 与兼容入口
 
-### 登录(7)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/login/status` | 当前登录状态 |
-| GET | `/api/login/qrcode` | 生成二维码(url + qrcode_key) |
-| GET | `/api/login/qrcode-image` | 本地生成二维码 PNG |
-| GET | `/api/login/qrcode/poll?key=` | 轮询扫码状态 |
-| POST | `/api/login/use-browser` | 切换到 Edge cookie 模式 |
-| POST | `/api/login/cookie-txt` | 导入 cookies.txt |
-| POST | `/api/login/logout` | 退出登录 |
-
-### 请求治理（1）
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/governor/status` | 只读查看账号级冷却、在途请求和限流计数；禁止缓存 |
-
-### 解析/下载（7）
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| POST | `/api/parse` | 解析视频(返回标题/清晰度/预估大小/是否多P) |
-| POST | `/api/parse-part` | 解析指定分 P 的清晰度 |
-| POST | `/api/download` | 启动单视频下载(带 uploader_mid) |
-| POST | `/api/cancel/<task_id>` | 取消下载 |
-| GET | `/api/progress/<task_id>` | SSE 推送下载进度(任务进终态后收流) |
-| POST | `/api/task/<task_id>/reveal` | 在文件管理器中定位该任务的文件 |
-| POST | `/api/task/<task_id>/resolve-conflict` | 处理落盘名冲突(加 (1) 改名 / 打开现有 / 忽略) |
-
-### 批量(2)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| POST | `/api/batch/parse` | 批量解析(多链接/收藏夹/合集) |
-| POST | `/api/batch/download` | 批量启动下载 |
-
-### 队列管理(5)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/tasks` | 所有任务列表 |
-| POST | `/api/task/delete` | 删除任务(可选删文件) |
-| POST | `/api/tasks/clear` | 清除所有已完成记录 |
-| POST | `/api/tasks/clean-invalid` | 清除下载失败 + 文件失效的记录 |
-| GET | `/api/stats` | 统计面板 |
-
-### 内容浏览(8)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/history?page=&size=` | 观看历史(带观看进度) |
-| GET | `/api/follow-updates?force=` | 关注 UP 投稿(写缓存) |
-| GET | `/api/followings` | 我关注的全部 UP(写缓存) |
-| GET | `/api/fav-folders` | 收藏夹列表(写缓存) |
-| GET | `/api/fav-content?media_id=` | 收藏夹内容 |
-| GET | `/api/fav-seasons` | 我追的合集(写缓存) |
-| GET | `/api/season-content?season_id=` | 合集内容 |
-| GET | `/api/watchlater` | 稍后再看(写缓存) |
-
-### 缓存(5,与上一节 5 个写缓存的端点一一对应)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/cache/follow_updates` | 读关注 UP 投稿的上次结果 |
-| GET | `/api/cache/followings` | 读关注列表的上次结果 |
-| GET | `/api/cache/fav_folders` | 读收藏夹列表的上次结果 |
-| GET | `/api/cache/fav_seasons` | 读合集列表的上次结果 |
-| GET | `/api/cache/watchlater` | 读稍后再看的上次结果 |
-
-### UP 清单(6)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/up-list` | UP 清单列表(含 fetched_at / quality) |
-| POST | `/api/up-list/add` | 添加 UP(主页 URL 或 mid,打基线) |
-| POST | `/api/up-list/remove` | 移除 UP |
-| POST | `/api/up-list/set-quality` | 设置某 UP 自动下载的清晰度 |
-| POST | `/api/up-list/reset-seen` | 重置某 UP 的已见标记(下次检查视其全部投稿为新增) |
-| POST | `/api/up-list/check` | 手动触发一轮检查(后台线程)。响应 `started`:`true` = 本次启动了新一轮;`false` = 已有一轮在进行中,本次直接跳过(不排队、不发 B 站请求),`message` 给出对应文案。两种情况 `ok` 均为 `true`——「进行中」不是错误,是如实告知 |
-
-### 配置(2)
-| 方法 | 路径 | 功能 |
-|---|---|---|
-| GET | `/api/config` | 当前配置 |
-| POST | `/api/config` | 更新配置(部分更新,持久化) |
+- 前端下载页只创建一个 `/api/tasks/events` 聚合 EventSource。
+- 聚合流首包为 `snapshot`，之后按 `task_id` 发送带连续 revision 的 `patch`，空闲时发送 heartbeat；客户端发现 revision 断层时必须重建快照。
+- EventSource 断开后按退避重连，并可降级为轮询；不得为每个任务建立一条长期 SSE。
+- `/api/progress/<task_id>` 暂保留一个兼容周期，仅发送单任务完整快照并在终态结束。
+- 聚合流和兼容流共享单进程 SSE 容量；槽满时返回 503 `sse_capacity_exceeded`。
 
 ---
 
-## 十、文件结构
+## 7. 容量与资源边界
 
+| 资源 | 当前上限 | 需求语义 |
+|---|---:|---|
+| 单次批量 URL / 单次批量下载项 / 播放列表展开 | 100 | 输入与累计输出都检查；超限要求分批 |
+| UP 清单 | 100 | 已有文件超限或新增越界均明确失败 |
+| 单 UP continuation 累计项目 | 500 | 读取、合并和写入都检查；不得静默裁剪 |
+| queued（pending）任务 | 500 | 整批容量检查，超限不做部分接收 |
+| 全部任务历史 | 10,000 | 创建与启动加载都检查；超限保留原文件 |
+| `tasks.json` 启动读取 | 64 MiB | 读取时的安全上限；不是每次写入前的序列化大小预检 |
+| SSE 连接 | 16 | 聚合与兼容流共享；单进程额度，不是跨进程全局额度 |
+
+补充要求：
+
+- 播放列表解析可多取 1 项只用于判断“实际超过 100”，不得把第 101 项提交给用户或任务队列。
+- 任务史和 `tasks.json` 超限不是“文件损坏”；启动应明确失败并保留原文件，供用户备份后人工清理。
+- 页面请求体上限、Cookie 导入上限和字段长度限制属于独立 API 防护，不替代上述业务容量。
+
+---
+
+## 8. 请求治理的准确边界
+
+### R19 项目直接 HTTP 调用
+
+- 本项目直接通过 `requests` 发出的 B 站 API 调用统一进入单进程 governor。
+- 直接 HTTP 调用最多 2 个同时在途；分类间隔为 sensitive、bulk、media、auth/default 等。
+- HTTP 或 JSON 明确 412/429 时进入共享冷却；合法 `Retry-After` 优先，重复事件只延长冷却。
+- 冷却期内快速返回本地 HTTP 429 + `Retry-After`，不让 Flask 请求线程睡完整冷却期。
+- 登录切换可以清分类 spacing，但不得清账号冷却以绕过风控。
+
+### R20 yt-dlp 边界
+
+- 解析/下载每次 attempt 开始前调用 governor 的 `wait("media")`，遵守当前冷却与启动间隔。
+- yt-dlp 内部自行发出的 HTTP 请求 **不占 governor 的两个直接 HTTP 槽**，也不保证每个响应都被 governor 识别 412/429 或计入 governor metrics。
+- 因此不得在文档或 UI 中声称“所有网络请求都受两槽 governor”；yt-dlp 下载并发由独立的全局 worker gate 控制。
+
+---
+
+## 9. 前端异步与无障碍
+
+### R21 异步生命周期
+
+- 页面缓存加载、下载任务加载、扫码轮询、新建下载解析和登录状态刷新使用 AbortController 与 generation/sequence 守卫；旧响应、旧 catch、旧 finally 均不得覆盖新页面状态。
+- `refreshLogin()` 使用独立 status sequence/controller，且只由当前 status owner 写 `_loggedIn`、登录 DOM、`auth:changed` 或清 controller。退出、浏览器来源切换、Cookie 导入及每次可能保存会话的扫码 poll 在请求前取得共享的单调 mutation owner，并使旧 status owner 失效；每个 mutation 在响应后、调用 `refreshLogin()` 前、刷新返回后以及提示或二维码清理前都必须确认仍为当前 owner，迟到操作静默退出。二维码生成/轮询继续使用独立 controller。
+- 认证变化判断必须使用 `auth_incarnation + auth_generation` 组合版本；任一变化都清账号绑定视图和 pending 选择，再按新上下文重新加载。兼容事件字段继续保留 `previousGeneration` / `generation`。
+- 所有按钮的 pending 状态在 `finally` 中恢复；错误应经统一网络层解析稳定 `code` 和 `Retry-After`。
+- 列表更新按稳定业务 ID merge，不以数组位置作为任务身份。
+
+### R22 无障碍
+
+- 页面包含 skip link、语义 `nav/main`、当前页面 `aria-current` 和 live region。
+- 抽屉使用 dialog 语义，打开时隔离背景、圈定焦点、支持 Escape 关闭并恢复触发点焦点。
+- 登录 tabs 支持方向键、Home/End；确认操作使用原生 `<dialog>`，不依赖 `prompt()`。
+- icon-only 按钮必须有可访问名称；进度条、选择框和状态提示提供对应 ARIA。
+- 粗指针环境交互目标至少 44px；焦点可见；支持 safe-area 与 `prefers-reduced-motion`。
+
+---
+
+## 10. 配置、日志与持久化
+
+### R23 配置
+
+- 下载目录、全局并发（1–4）、限速、自动检查间隔、副件、按 UP 归档、通知和主题均支持部分更新。
+- 配置先原子写盘，成功后才更新运行时值；失败返回 `config_persist_failed`。
+- `BD_PORT` 从环境变量解析，非法或越界值回退默认端口并记录 warning。
+
+### R24 JSON 与日志
+
+- JSON 使用同目录临时文件 + `os.replace` 原子替换；语法损坏文件备份为 `.corrupt-*`。
+- 任务史的语义损坏（非列表、非对象项、空或重复 task ID）同样备份，不静默当作空历史。
+- `data/app.log` 使用约 5 MiB 大小轮转，保留 3 个备份，并同时输出控制台；不允许日志无限增长。
+- 日志不得记录 Cookie、二维码凭据或完整敏感响应。
+
+---
+
+## 11. 当前边界与非目标
+
+- 单实例锁是同一工作区边界；复制仓库可形成不同锁域。
+- SSE 16 是单进程容量；当前部署模型不承诺跨进程共享额度。
+- durable-first 是应用发布顺序，不是数据库事务、目录 fsync 或掉电必达保证。
+- manifest 记录路径、角色与大小，不包含内容 hash；对外部恶意进程在路径校验与 unlink 之间替换文件的通用文件系统竞态不作绝对保证。
+- 自动追更从投稿搜索结果工作；同 BV 后续新增分 P 需要额外枚举接口，当前不承诺完整发现。
+- 不打包桌面常驻应用；关闭服务进程会中止运行任务，关闭浏览器不会。
+- 法律与平台条款边界见 `docs/COMPLIANCE.md`，它不是法律意见。
+
+---
+
+## 12. 主要模块
+
+```text
+instance_lock.py    工作区单实例锁
+app.py              Flask 路由、严格输入/错误、本机同源、聚合 SSE、日志
+bilibili_auth.py    凭据来源、认证快照、fingerprint/incarnation/generation、CAS
+bilibili_api.py     账号 API 与完整认证上下文内存缓存
+pagecache.py        fingerprint/incarnation/generation 磁盘缓存
+request_governor.py 项目直接 HTTP 调用的并发、间隔和冷却
+parsing.py          yt-dlp 解析与播放列表边界
+downloader.py       worker/gate、运行时句柄、durable-before-publish 取消、完成与删除编排
+taskstore.py        稳定身份、manifest、容量、任务持久化和安全文件操作
+files.py            落盘定位、改名对齐与冲突处理
+up_list.py          UP 清单、复合游标和 continuation
+auto_refresh.py     原子预约、自动扫描、同轮互斥和失败退避
+storage.py          JSON 原子替换、受限读取与损坏备份
+static/js/          原生模块、聚合任务流、异步守卫和无障碍交互
 ```
-bilibili-downloader/
-├── app.py              (686 行) Flask 路由、本机同源守卫、限流 429 映射
-├── auto_refresh.py     (349 行) 自动追更（串行、复合游标、续扫、失败退避）
-├── bilibili_api.py     (460 行) B 站读接口客户端（历史/收藏/合集/关注/UP 投稿）
-├── bilibili_auth.py    (232 行) 登录与会话（扫码/Edge/cookies.txt + cookiejar 缓存）
-├── config.py           (182 行) 运行时配置（_FIELDS 字段表驱动）
-├── downloader.py       (535 行) 全局下载 worker/gate、重试、进度、取消、通知
-├── extras.py           (268 行) 文件名清洗/组装 + bvid 提取 + 弹幕（protobuf）
-├── files.py            (273 行) 落盘名对齐/冲突处理/跨平台文件管理器唤起
-├── pagecache.py        (58 行) 页面数据缓存（打开秒显、30 天未更新清理）
-├── parsing.py          (159 行) yt-dlp 解析（单视频/多 P/播放列表）
-├── quality.py          (126 行) 清晰度标注与 format 归一化（纯函数）
-├── request_governor.py (221 行) 上游并发、分类间隔、账号冷却和状态快照
-├── storage.py          (54 行) JSON 原子写、损坏备份与 bool 成功语义
-├── taskstore.py        (364 行) 任务表、durable-first CRUD、文件定位与统计
-├── up_list.py          (211 行) UP 清单、复合游标与续扫状态
-├── templates/index.html(388 行) 单页骨架(纯结构)
-├── static/
-│   ├── css/main.css    (533 行) 全部样式(含主题变量)
-│   └── js/             17 个 ES modules，共 2323 行
-│       ├── app.js      入口 + window 桥(内联 onclick 兼容层)
-│       ├── lib.js      页控制器框架(共享状态/无限滚/操作条/缓存优先)
-│       ├── pages/*.js  六页各一控制器
-│       └── *.js        util/icons/net/theme/quality/login/settings/drawer/newdl
-├── tests/              304 个单元测试(conftest.py 把运行时数据隔离到临时目录)
-│   ├── test_app.py                 (67) 路由 / 缓存层 / 前端结构 / window 桥
-│   ├── test_auth.py                (22) 登录、B 站接口、风控参数
-│   ├── test_auto_refresh.py        (29) 自动下载轮询 / 合规限频与文档一致
-│   ├── test_config.py              (5)  字段表驱动配置
-│   ├── test_docs.py                (4)  CHANGELOG 结构 / README 版本横幅一致
-│   ├── test_downloader.py          (82) 重试/取消/状态集合/统计
-│   ├── test_extras.py              (10) 弹幕解析 / 文件名清洗
-│   ├── test_filename_alignment.py  (55) 落盘名对齐 / 冲突 / 文件定位
-│   ├── test_quality.py             (12) 清晰度归一化与降档
-│   ├── test_storage.py             (10) 原子写 / 损坏备份 / 运行时数据隔离自检
-│   └── test_up_list.py             (8)  清单数据层 / 清晰度单一来源
-├── data/               运行时(gitignore)
-│   ├── config.json     用户设置
-│   ├── tasks.json      下载任务历史
-│   ├── up_list.json    UP 清单 + last_seen
-│   ├── cache/          各数据源上次结果(秒显用)
-│   ├── sess.json       扫码登录缓存
-│   └── cookies.txt     cookies.txt 导入
-├── 启动.command         Mac 双击启动(首次装依赖,启动前自动 kill 旧实例)
-├── CHANGELOG.md        ← 版本变更日志
-├── docs/
-│   ├── REQUIREMENTS.md  ← 本文档
-│   ├── BACKLOG.md       ← 产品待办 + 历史批次记录
-│   ├── COMPLIANCE.md    ← 法律风险边界与合规护栏
-│   └── superpowers/     设计文档 + 实现计划
-└── requirements.txt
-```
-
-### 模块依赖方向(单向,不成环)
-
-```
-storage / extras / quality / request_governor   纯工具与上游治理层
-        ↑
-config / bilibili_auth / taskstore              配置、身份、任务持久化
-        ↑
-files / up_list / pagecache                     文件、UP 清单、页面缓存
-        ↑
-parsing / bilibili_api                          解析与 B 站读接口
-        ↑
-downloader / auto_refresh                       全局下载调度与自动追更
-        ↑
-app                                             路由、本机安全边界与异常映射
-```
-
-`build_filename` 住在 `extras.py` 而不是 `files.py`:`taskstore` 定位文件也要用它,
-而 `files` 依赖 `taskstore`——纯命名逻辑必须待在依赖链底部,否则成环。
-
----
-
-## 十一、数据隐私
-
-- 所有数据(登录态/任务/UP清单/设置/缓存)全部存在本地 `data/` 目录
-- 扫码二维码走 B 站官方接口
-- Edge 模式只读本机浏览器 cookie
-- **不上传任何服务器**,不收集任何数据
-- 本工具仅供个人留存已授权内容使用
-
----
-
-## 十二、关键 bug 修复记录
-
-| 版本 | 问题 | 根因 | 修复 |
-|---|---|---|---|
-| v1.x | 扫码登录后状态不更新 | SESSDATA 从 Set-Cookie 提取不可靠 | 改从 `data.url` query 参数提取 |
-| v1.x | 登录态永远显示未登录 | `get_login_status` 只认扫码 session | 复用下载用的同一套 cookie 来源 |
-| v1.x | 进度条不显示 | hook 没把 status 从 queued 改成 downloading | hook downloading 分支设 status |
-| v1.x | 关注更新触发 B 站风控 | 6 并发 × 30 UP = 30 个 arc/search 必然触发 412 | 改串行 + 1.5 秒间隔 |
-| v1.x | 取消下载未立即生效 | progress hook 没抛 DownloadCancelled | hook 检查 cancel 抛异常 |
-| v1.x | 收藏夹接口静默失败 | 模块未 import yt_dlp 抛 NameError 被裸 except 吞 | 顶层 import + 只捕获 DownloadError |
-| v1.x | 关注列表切回关注动态卡死 | 整函数级 in-flight 锁挡切回 | cachedLoad 拆分缓存渲染与后台请求 |
-| v2.0 | 网格首屏无法滚动 | 视口算行数恰铺满一屏,滚动条不出现 | 首屏多渲染一行 + maybeFillScreen() |
-| v2.0 | `collected/list` 永远空 | 没带 `platform=web` 参数 | 接口必带 platform=web |
-| v2.0 | 改了代码不生效 | 旧进程占着 5050 端口 | 启动器启动前自动 kill 旧实例 |
-| v2.1 | 扫码确认了仍显示「未扫码」 | 二维码图接口自行 generate,产生了与轮询 key 不同的新 key | 图接口改用前端传入的配对 url 画码 + passport 域名白名单 |
-| v2.1 | 任务史可能被清零 | `_persist` 非原子写,崩溃留半截 JSON 且解析失败静默当空 | tmp+rename 原子写 + 独立写锁;损坏备份 `.corrupt-<ts>` |
-| v2.1 | 登出后旧身份最长残留 5 分钟 | 登出发生在 Edge cookie 提取期间,提取结果又写回缓存 | 会话域/数据域各自加锁且不嵌套,严格排序 |
-| v2.1 | 下载记录标题与磁盘文件名对不上 | yt-dlp `%(title).200B` 按字节截断,CJK 下边界错位 | 命名权收归 Python(build_filename)+ 落盘后强制对齐 |
-| v2.1 | 「批量下载」按钮点了没反应 | 模块化重构后 `batchDownload` 漏写 `export`,window 桥上是 undefined | 补 export;加桥↔export 双向一致性测试 |
-| v2.1 | 重试窗口内重复下载拦截失效、「清除全部记录」会删掉在跑任务 | 后端三份手写的活跃状态元组都漏了 `retrying` | 收敛为 `taskstore.ACTIVE/TERMINAL` 唯一来源 + 前后端一致性测试 |
-| v2.1 | 「删除记录 + 文件」可能删掉邻居视频的文件 | `_task_files` 用**未清洗**的 `title[:30]` 做前缀匹配 | 改用完整期望名 + 分隔符边界(`_stem_belongs`) |
-| v2.1 | 标题含 `/ : ?` 的任务永远定位不到文件 | 同上:拿原始 title 去匹配已被换成 `_` 的磁盘名 | 匹配前先过 `sanitize_filename` |
-| v2.1 | 删除后残留孤儿 .xml/.srt/.jpg,体积统计少算 | 有 `actual_filename` 时只返回主文件 | `_file_family` 把副文件纳入同一族 |
-| v2.1 | 非 macOS 上「定位文件」接口 500 | 硬编码 `open -R`;`check=False` 挡不住命令不存在 | `files.reveal_path/open_dir` 按平台分发并吞 OSError |
-| v2.1 | 取消/中断的任务 SSE 不收流 | 服务端只判 `done/failed`,靠前端主动 close 才停 | 收流条件改用 `taskstore.TERMINAL` |
-| v2.1 | 开了「按 UP 建子目录」后磁盘用量显示 0 | `disk_bytes` 只 `iterdir()` 扫顶层 | 改 `rglob("*")` 递归统计 |
-| v2.2 | 搜索过滤后勾选,删除 / 下载打到另一条记录(含 `unlink` 磁盘文件,不可恢复) | `renderDefaultList` 对过滤后的数组 `forEach`,发出的是「第几个命中」而非 `state.items` 的原始下标 | 下标唯一来源收口为 `visiblePairs(q)`,遍历 `state.items` 本身 |
-| v2.2 | 下载后改名可能把另一个视频的文件(连带其副文件)改成本任务的期望名 | `_find_actual_file` 兜底用 `expected_stem[:10]` 前缀匹配,短名时退化为无边界整名前缀 | 兜底分支改引用 `taskstore.stem_belongs`(精确 / 分隔符后缀),不留第三份匹配规则 |
-| v2.2 | 合集下完一个分 P 后,其余分 P 全被当已下载而跳过 | 「已下载」判定只看 BV 号,前后端两份实现都丢了分 P 维度 | 粒度改为 (BV 号, 分 P);键规则收口为 `extras.dl_key` / `page_from_url` + 前端 `util.js` 同名对应物,分隔符常量测试绑定 |
-| v2.2 | 连点「立即检查新视频」会连续串行打 B 站接口(触碰账号级风控) | `refresh_once` 用阻塞 `with _lock:`,后来者排队补跑而非跳过;路由无条件回 `ok` | 改非阻塞 `_lock.acquire(blocking=False)` + `try/finally`;新增 `is_running()`,路由如实回报 `started`,删掉前端 30 秒假禁用窗口 |
-| v2.2 | 取消 `interrupted` 任务 → 永久僵尸态,卡住重复下载拦截与「清除全部记录」 | `downloader` 两处硬编码终态元组 `("done","failed","cancelled")` 漏了 `interrupted` | 两处改引用 `taskstore.TERMINAL` |
-| v2.2 | 统计「今日」按滚动 24 小时,昨晚完成的任务今早仍计入 | `compute_stats` 的 `day_start = now - 86400`,与同函数 `month_start`(自然月)口径不一 | `day_start` 改 `int(time.mktime(today.timetuple()))`,与 `month_start` 同一套写法 |
-| v2.2 | 双语言字幕改名后丢掉语言标签,第二种语言变永久孤儿文件(「删除记录 + 文件」清不掉、体积统计少算) | `_rename_with_sidecars` 用 `side.suffix` 算副文件新名,而 `.suffix` 只取**最后一段**扩展名,`<stem>.zh-Hans.srt` 的 `.zh-Hans` 被算进 stem;两种语言于是撞成同一个目标名,后到的那个被 `exists()` 静默跳过、留在旧 stem 下,而 `_file_family` 按**新** stem 找族 | 副文件改取 `source.stem` 之后的整条扩展名链 `side.name[len(source.stem):]`;主文件仍用 `.suffix`(要把 `视频.f137.mp4` 改出干净的 `新名.mp4`)是刻意的不对称,依赖 glob 模式保证切片成立 |
-| v2.2 | 在下载记录页重新下载一条分 P 记录,下回来的是 P1(全程不报错) | 六页共用的提交口 `libDownload()` 写死 `page: 1`;且 `loadDownloads()` 的字段白名单漏了 `page`,`it.page` 恒 `undefined`——两处缺失互相掩盖 | 白名单补 `page: t.page \|\| 1`,提交体改 `page: it.page \|\| pageFromUrl(it.url)`;沿用「任务侧读存储字段 / 查询侧解析 URL」的不对称原则 |
-| v2.2 | 多链接粘贴下载时,带 `&p=` 的分享链接下成 P1;`?p=abc` 提交出 `null` | `newdl.batchDownload` 里第三份手写解析(`includes('?p=')` + `parseInt`)与唯一来源 `util.pageFromUrl`(正则 `[?&]p=(\d+)`)结论不同,而 B 站地址栏 / 分享链接普遍把 `p` 排在 `spm_id_from` / `vd_source` 之后 | 改调 `pageFromUrl`;加守卫测试:除 `util.js` 外整个 `static/js/` 禁止出现 `'?p='` 字面量(按整行扫、不排除注释) |
-| v2.2 | B 站接口在局部模块各自 sleep/retry，触发风控后其他链路仍继续请求 | 没有账号级共享并发、分类间隔和冷却状态 | 新增 `RequestGovernor`：全局在途上限、分类抖动、412/429 冷却、统一 429 与状态快照 |
-| v2.2 | 写盘失败后接口仍可能宣称成功，或出现有下载无线索的幽灵任务 | 内存可见/线程启动早于 durable snapshot，写入无成功返回值 | 关键状态只在 `write_json=True` 后提交；任务按“原子查重 → 持久化 → 内存可见 → 入队”创建 |
-| v2.2 | 自动追更同秒投稿或第 4 页以后内容可能永久漏掉 | 单 BVID 游标且把单轮 3 页预算误当完整扫描 | `ts + same_ts_bvids` 复合游标、持久 continuation、首页漂移检测与 durable retry |
-| v2.2 | 下载页旧请求/SSE 在切页后覆盖其他页面状态 | 只看当前 mode，无法识别 downloads → other → downloads 的 ABA 响应 | `_loadSeq` 请求代次 + mode 双守卫；非下载页只更新快照和角标 |
-| v2.2 | 本机 Flask 接口可能被 DNS rebinding 或跨站页面调用 | 只依赖绑定地址，没有验证 Host 与浏览器来源 | 全方法 loopback Host 守卫 + Origin/Referer/Sec-Fetch-Site 严格同源校验 |

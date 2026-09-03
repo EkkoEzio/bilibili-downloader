@@ -51,14 +51,80 @@ def test_parse_success_extracts_sessdata_from_setcookie_fallback():
 
 
 def test_save_load_clear_session(tmp_path, monkeypatch):
+    """会话保存、v1→v2 迁移及状态丢失/损坏时的 incarnation 旋转。"""
     import bilibili_auth
+    import bilibili_api
+    import pagecache
+
     monkeypatch.setattr(bilibili_auth, "SESSION_COOKIE_FILE", tmp_path / "sess.json")
-    save_session("SDATA", "123", "jct")
-    loaded = load_session()
+    monkeypatch.setattr(bilibili_auth, "COOKIE_FILE", tmp_path / "cookies.txt")
+
+    def reset_context_cache():
+        with bilibili_auth._session_lock:
+            bilibili_auth._auth_state_cache.update(path=None, context=None)
+            bilibili_auth._cj_cache = {"cj": None, "ts": 0.0, "context": None}
+
+    reset_context_cache()
+    assert bilibili_auth.save_session("SDATA", "123", "jct") is True
+    loaded = bilibili_auth.load_session()
     assert loaded["SESSDATA"] == "SDATA"
     assert loaded["DedeUserID"] == "123"
-    clear_session()
-    assert load_session() is None
+
+    context = bilibili_auth.get_auth_context()
+    assert context["version"] == 2
+    assert len(context["incarnation"]) == 32
+    public = bilibili_auth._public_context_fields(context)
+    assert public["auth_incarnation"] == context["incarnation"]
+    cache_path = pagecache._cache_path("fav_folders", context)
+    assert f"i-{context['incarnation']}" in str(cache_path)
+    assert pagecache.save("fav_folders", {"ok": True}, context=context)
+    assert pagecache.load("fav_folders", context=context)["data"] == {"ok": True}
+
+    # 合法 v1 保留身份与 generation，但获得新 incarnation 并原子升级到 v2；
+    # 因此旧的 fingerprint/generation 缓存目录不会被重新认领。
+    state_file = bilibili_auth._auth_state_file()
+    legacy = {
+        "version": 1,
+        "source": context["source"],
+        "fingerprint": context["fingerprint"],
+        "generation": 7,
+        "authenticated": True,
+    }
+    state_file.write_text(json.dumps(legacy), encoding="utf-8")
+    reset_context_cache()
+    migrated = bilibili_auth.get_auth_context()
+    assert migrated["source"] == legacy["source"]
+    assert migrated["fingerprint"] == legacy["fingerprint"]
+    assert migrated["generation"] == legacy["generation"]
+    assert migrated["authenticated"] is True
+    assert migrated["incarnation"] != context["incarnation"]
+    assert json.loads(state_file.read_text(encoding="utf-8"))["version"] == 2
+    assert pagecache.load("fav_folders", context=migrated) is None
+
+    # generation 只在 incarnation 内有意义；状态缺失或不可恢复时从新生命期开始。
+    state_file.unlink()
+    reset_context_cache()
+    after_missing = bilibili_auth.get_auth_context()
+    assert after_missing["incarnation"] != migrated["incarnation"]
+    assert after_missing["generation"] == 1
+
+    state_file.write_text("{broken", encoding="utf-8")
+    reset_context_cache()
+    after_corrupt = bilibili_auth.get_auth_context()
+    assert after_corrupt["incarnation"] != after_missing["incarnation"]
+    assert after_corrupt["generation"] == 1
+
+    other_incarnation = ("0" * 32 if after_corrupt["incarnation"] != "0" * 32
+                         else "1" * 32)
+    same_generation_other_life = dict(
+        after_corrupt, incarnation=other_incarnation)
+    assert not bilibili_auth._same_context(
+        after_corrupt, same_generation_other_life)
+    assert (bilibili_api._context_key(after_corrupt)
+            != bilibili_api._context_key(same_generation_other_life))
+
+    bilibili_auth.clear_session()
+    assert bilibili_auth.load_session() is None
 
 
 # ---------- 收藏夹内容(原生 /x/v3/fav/resource/list 接口) ----------

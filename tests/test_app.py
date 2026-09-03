@@ -188,23 +188,14 @@ def test_up_list_check_reports_already_running(client, monkeypatch):
     Property 4: Bug Condition —— 后来者跳过而非排队。
 
     与上一条的分工:上一条用**真实锁**跑通「路由 + auto_refresh」整链;这一条把
-    auto_refresh 换成谓词桩,单独锁住**路由自己的分支** —— 它必须先问过
-    is_running() 再决定要不要起线程,而不是无条件 start() 之后靠 refresh_once
-    里那次非阻塞 acquire 兜底。差别是真实的:无条件起线程 = 每次点击都白起一个
-    线程,响应还乐观地报 started=True。
-
-    `is_running` 由任务 12.1 引入,现在还不存在,所以 setattr 用 raising=False:
-    默认的 raising=True 会让 monkeypatch 自己抛 AttributeError,失败点变成
-    「打桩失败」;而本条要暴露的是「路由的响应里没有 started」。用 raising=False
-    打进去(未修复的路由压根不读它),失败就落在下面那条 started 断言上,
-    反例一眼可读。
+    原子预约换成失败桩,单独锁住**路由自己的分支** —— 它必须先成功预约
+    才能起线程，不能用 is_running() 的“先检查、后启动”制造 TOCTOU 窗口。
 
     Validates: Requirements 2.10
     """
     import app as app_module
     calls = []
-    monkeypatch.setattr(app_module.auto_refresh, "is_running", lambda: True,
-                        raising=False)
+    monkeypatch.setattr(app_module.auto_refresh, "try_reserve_refresh", lambda: None)
     monkeypatch.setattr(app_module.auto_refresh, "refresh_once",
                         lambda: calls.append(1) or 0)
 
@@ -218,7 +209,7 @@ def test_up_list_check_reports_already_running(client, monkeypatch):
     assert "已有检查在进行中" in (body.get("message") or ""), (
         f"响应要如实说明本次未启动新一轮,实际 message={body.get('message')!r}")
     assert calls == [], (
-        "is_running() 为真时路由不该起后台线程、更不该调 refresh_once;"
+        "预约失败时路由不该起后台线程、更不该调 refresh_once;"
         f"实际调用 {len(calls)} 次")
 
 
@@ -335,8 +326,10 @@ def test_up_list_check_returns_without_waiting_for_refresh(client, monkeypatch):
     import app as app_module
     entered, release, returned = (threading.Event(), threading.Event(),
                                   threading.Event())
+    calls = []
 
     def blocking_refresh():
+        calls.append(threading.current_thread().name)
         entered.set()
         release.wait(5)      # 有上限:同步化时本条秒级变红,而不是挂住
         returned.set()
@@ -350,6 +343,12 @@ def test_up_list_check_returns_without_waiting_for_refresh(client, monkeypatch):
 
         assert body["ok"] is True
         assert entered.wait(2), "refresh_once 应当被后台线程调起"
+        assert app_module.auto_refresh.is_running() is True, (
+            "路由返回 started=True 时预约必须仍覆盖整个 worker 生命周期")
+        assert app_module.auto_refresh.run_refresh_with_status("scheduled") == 0, (
+            "手动 worker 已预约时，定时触发必须立即跳过而不是抢跑")
+        assert calls == ["bd-manual-check"], (
+            "并发定时包装器不得再次调用 monkeypatch 的零参数 refresh_once")
         assert not returned.is_set(), (
             "响应必须在这一轮还没跑完时就返回 —— 路由同步执行 refresh_once 会把"
             "前端挂住整轮(30 个 UP 约数分钟)")
@@ -468,9 +467,96 @@ def test_qrcode_image_uses_passed_url_not_new_key(client, monkeypatch):
 
 
 def test_frontend_qrcode_img_passes_url():
-    """前端二维码图应把 /api/login/qrcode 返回的 url 传给图片接口。"""
+    """二维码 URL 正确，登录状态与认证 mutation 也必须有请求所有权守卫。"""
     html = _tpl()
     assert "/api/login/qrcode-image?url=${encodeURIComponent(r.url)}" in html
+
+    login_js = (_js_dir() / "login.js").read_text(encoding="utf-8")
+    refresh = _js_func_body(login_js, "refreshLogin")
+    begin = _js_func_body(login_js, "beginLoginStatusRequest")
+    current = _js_func_body(login_js, "loginStatusIsCurrent")
+
+    assert "invalidateLoginStatus()" in begin
+    assert "new AbortController()" in begin
+    assert "sequence === _statusSequence" in current
+    assert "controller === _statusController" in current
+    assert "getJSON('/api/login/status', { signal: controller.signal })" in refresh
+    owner_guard = (
+        "if (!loginStatusIsCurrent(sequence, controller)) "
+        "return STATUS_SUPERSEDED;"
+    )
+    assert owner_guard in refresh
+    assert refresh.index(owner_guard) < refresh.index("renderLoginStatus(status)")
+    assert refresh.index("renderLoginStatus(status)") < refresh.index("emitAuthChange(status)")
+    assert "isAbortError(error) || !loginStatusIsCurrent(sequence, controller)" in refresh
+    assert "if (loginStatusIsCurrent(sequence, controller)) _statusController = null" in refresh
+    assert "_loggedIn = false" not in refresh, \
+        "旧请求的 catch 不得绕过 owner guard 直接覆盖登录状态"
+
+    begin_mutation = _js_func_body(login_js, "beginAuthMutation")
+    mutation_current = _js_func_body(login_js, "authMutationIsCurrent")
+    assert "MUTATION_SUPERSEDED = Symbol('auth-mutation-superseded')" in login_js
+    assert "_mutationSequence++" in begin_mutation
+    assert "invalidateLoginStatus()" in begin_mutation
+    assert "sequence === _mutationSequence" in mutation_current
+
+    mutation_requests = {
+        "logout": "postEmpty('/api/login/logout')",
+        "pollLogin": "getJSON('/api/login/qrcode/poll?key='",
+        "useBrowser": "postEmpty('/api/login/use-browser')",
+        "uploadCookieTxt": "postText('/api/login/cookie-txt', text)",
+    }
+    mutation_bodies = {}
+    for function_name, request_marker in mutation_requests.items():
+        body = _js_func_body(login_js, function_name)
+        mutation_bodies[function_name] = body
+        claim = "const mutationSequence = beginAuthMutation();"
+        assert body.index(claim) < body.index(request_marker), \
+            f"{function_name} 必须在认证请求前取得共享 mutation owner"
+        first_owner_check = body.index("authMutationIsCurrent(mutationSequence)")
+        assert body.index(request_marker) < first_owner_check < body.index("refreshLogin()"), \
+            f"{function_name} 必须在响应后、刷新 status 前淘汰迟到 mutation"
+        assert body.count("authMutationIsCurrent(mutationSequence)") >= 3, \
+            f"{function_name} 必须在响应、刷新后和副作用前重复校验 owner"
+        assert "MUTATION_SUPERSEDED" in body, \
+            f"{function_name} 的迟到流程必须静默返回 superseded sentinel"
+        first_announce = body.index("announce(")
+        assert body.rfind(
+            "authMutationIsCurrent(mutationSequence)", 0, first_announce
+        ) != -1, f"{function_name} 在 announce 前必须再次校验 owner"
+
+    # Edge 与 cookies.txt 共用同一个单调序列；后开始者取得新 owner 后，
+    # 两种逆序完成中的旧流程都会在响应后检查处被淘汰，而不能另起 status。
+    browser = mutation_bodies["useBrowser"]
+    cookie = mutation_bodies["uploadCookieTxt"]
+    for older, newer in ((browser, cookie), (cookie, browser)):
+        assert "const mutationSequence = beginAuthMutation();" in older
+        assert "const mutationSequence = beginAuthMutation();" in newer
+        assert older.index("authMutationIsCurrent(mutationSequence)") \
+            < older.index("refreshLogin()")
+
+    logout = mutation_bodies["logout"]
+    assert logout.index("if (status === STATUS_SUPERSEDED) return") \
+        < logout.index("document.getElementById('qrcode-img').innerHTML = ''")
+    assert logout.rfind(
+        "authMutationIsCurrent(mutationSequence)",
+        0,
+        logout.index("document.getElementById('qrcode-img').innerHTML = ''"),
+    ) != -1
+    poll = mutation_bodies["pollLogin"]
+    assert poll.index("if (status === STATUS_SUPERSEDED) return") \
+        < poll.index("imgBox.innerHTML = ''")
+    assert poll.rfind(
+        "authMutationIsCurrent(mutationSequence)",
+        0,
+        poll.index("imgBox.innerHTML = ''"),
+    ) != -1
+    show_qr = _js_func_body(login_js, "showQrcode")
+    assert "_qrController = controller" in show_qr
+    assert "beginAuthMutation()" not in show_qr, \
+        "二维码生成不改变认证上下文；只有可能保存会话的 poll 才取得 mutation owner"
+    assert "invalidateLoginStatus()" not in show_qr, \
+        "二维码生成控制器与登录 status 控制器必须保持独立"
 
 
 # ---------- 页面缓存:缓存优先 + 后台拉新(2026-08-18(e)) ----------
@@ -812,11 +898,13 @@ def test_frontend_grid_initial_scroll():
 
 
 def test_frontend_modal_uses_theme_vars():
-    """删除确认弹窗背景走主题变量,深色模式下文字才可读。"""
+    """共享原生确认框使用主题背景，深色模式下内容保持可读。"""
     html = _tpl()
-    css_start = html.find(".modal {")
+    assert '<dialog class="confirm-dialog" id="confirm-dialog"' in html
+    css_start = html.find(".confirm-dialog {")
     assert css_start > 0
-    assert "var(--bg-card)" in html[css_start:css_start + 200], "弹窗应使用 var(--bg-card)"
+    assert "var(--bg-card)" in html[css_start:css_start + 300], \
+        "确认框应使用 var(--bg-card)"
 
 
 def test_frontend_audio_and_quality_config():
@@ -916,13 +1004,15 @@ def test_frontend_fav_seasons_and_grid():
 
 
 def test_frontend_clean_invalid_option():
-    """「清除失败/失效记录」独立常驻页头,直接清理;删除/清除不再弹二次选择弹窗。"""
+    """两类清理入口常驻页头，并统一使用共享原生确认框。"""
     html = _tpl()
-    assert "清除全部记录" in html
+    assert "清除已结束记录" in html
     assert "清除失败/失效记录" in html
     assert "clearInvalidRecords" in html
     assert "/api/tasks/clean-invalid" in html
-    assert "del-modal" not in html, "删除选择弹窗应移除(选中后直接按按钮删除)"
+    assert '<dialog class="confirm-dialog" id="confirm-dialog"' in html
+    assert "confirmAction" in html
+    assert "del-modal" not in html, "旧删除选择弹窗不应恢复"
 
 
 def test_frontend_cache_first_loading():
@@ -977,13 +1067,31 @@ def test_frontend_unified_toolbar_everywhere():
     assert "搜索收藏夹 / 标题 / UP 主" in html
 
 
-def test_launcher_kills_old_instance():
-    """启动.command 启动前先关闭旧实例(否则端口被占,新代码不生效)。"""
+def test_launcher_reports_port_conflict_and_only_cleans_own_child():
+    """启动器只报告端口冲突；ready helper 受单调 deadline 且无 PID 能力。"""
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "启动.command").read_text(encoding="utf-8")
-    assert "lsof -ti tcp:5050" in src
-    assert "kill $OLD_PID" in src
-    assert "kill -9" in src, "杀不掉时要强制结束"
+    assert 'PORT="${BD_PORT:-5050}"' in src
+    assert 'lsof -nP -iTCP:"$PORT" -sTCP:LISTEN' in src
+    assert "kill -9" not in src, "不得强制终止未知端口占用者"
+    assert "CHILD_PID" not in src and "PID_FILE" not in src and "$!" not in src
+    assert "pidfile" not in src.lower()
+    assert "wait_for_owned_child" not in src and "trap cleanup" not in src
+    assert "kill " not in src, "launcher/readiness helper 都不得向数值 PID 发信号"
+    assert 'exec "$PYTHON" app.py' in src, \
+        "launcher 必须由 app.py 原位替换，让终端信号和退出码直接属于 Python"
+    assert '"$PYTHON" app.py &' not in src, "服务本身不得作为裸 PID 后台 child 启动"
+    assert "for _ in $(seq 1 60)" not in src, "固定次数不能证明 60 秒墙钟上限"
+    assert "deadline = time.monotonic() + 60.0" in src
+    assert src.count("remaining = deadline - time.monotonic()") >= 3
+    assert "timeout=min(1.0, remaining)" in src
+    assert "time.sleep(min(1.0, remaining))" in src
+    assert '["open", base_url]' in src and "timeout=remaining" in src
+    assert "辅助进程不会停止服务" in src
+    assert src.index('status_url = base_url + "/api/config"') \
+        < src.index('["open", base_url]') < src.index('exec "$PYTHON" app.py')
+    assert src.rstrip().endswith('exec "$PYTHON" app.py')
+    assert 'PYTHON="$SCRIPT_DIR/.venv/bin/python"' in src
 
 
 def test_frontend_queue_merged_into_downloads():
@@ -1014,7 +1122,19 @@ def _js_func_body(src: str, name: str) -> str:
     目标函数体内的模板串只含配平的 `${...}`,计数法足够。"""
     i = src.find(f"function {name}(")
     assert i >= 0, f"lib.js 里找不到函数 {name}"
-    start = src.index("{", i)
+    params_start = src.index("(", i)
+    paren_depth = 0
+    signature_end = -1
+    for j in range(params_start, len(src)):
+        if src[j] == "(":
+            paren_depth += 1
+        elif src[j] == ")":
+            paren_depth -= 1
+            if paren_depth == 0:
+                signature_end = j + 1
+                break
+    assert signature_end > params_start, f"函数 {name} 参数括号不配平"
+    start = src.index("{", signature_end)
     depth = 0
     for j in range(start, len(src)):
         if src[j] == "{":
@@ -1026,73 +1146,33 @@ def _js_func_body(src: str, name: str) -> str:
     raise AssertionError(f"函数 {name} 花括号不配平")
 
 
-def test_frontend_default_list_uses_original_index():
-    """标准列表渲染发出的 data-libidx 必须是条目在 state.items 里的原始下标。
+def test_frontend_default_list_uses_stable_business_id():
+    """标准列表的渲染身份必须来自业务内容，不能来自数组位置。
 
-    Property 1: Bug Condition —— 勾选下标必须能定位回它所代表的条目。
-    对应 isBugCondition_B1:搜索词非空且过滤确实改变了列表。
-
-    静态推演(前端无 JS 运行时,行为侧证据靠读码给出;
-    读 static/js/lib.js 的 renderDefaultList() 与
-    static/js/pages/downloads.js 的 delSelected()):
-
-    设下载记录页 state.items = [A, B, C, D],搜索词只命中 C、D。
-      1. 输入搜索词 → applyLibFilter() → renderPage() → renderDefaultList()。
-      2. renderDefaultList() 里 filtered = [C, D],source = filtered,
-         `source.forEach((it, idx) => pairs.push({ it, idx }))`
-         → pairs = [{it: C, idx: 0}, {it: D, idx: 1}]。
-         forEach 的第二个参数是「第几个命中」,与 state.items 的下标无关。
-      3. renderLibList() 把该 idx 当 origIdx 用,给 C 渲染出
-         `data-libidx="0"` 和 `onchange="toggleLibCheck(0, this.checked)"`
-         —— C 在 state.items 里其实是第 2 个(下标 2)。
-      4. 勾选 C → toggleLibCheck(0, true) → state.checked.add(0)。
-      5. 点「删除记录 + 文件」→ downloads.delSelected(true) 从 DOM 读
-         `input[data-libidx]:checked`,再取
-         `state.items[parseInt(cb.dataset.libidx)]` → 拿到 state.items[0] = A。
-      6. POST /api/task/delete {ids: [A.task_id], delete_file: true}
-         → taskstore.delete_tasks() 删掉 A 的记录,并对 _task_files(A) 整族
-         unlink(视频 + 封面 + 字幕 + 弹幕)。C 完好无损,A 的文件不可恢复。
-
-    同一条错位在其它页表现为:勾选第 2 个命中项 → libDownload() 提交
-    state.items[1](另一个视频);先勾选 A(checked={0})再搜索命中 [C, D]
-    → C 拿到 origIdx=0 → `state.checked.has(0)` 为真 → C 被高亮成「已勾选」,
-    而真实选择是 A。
-
-    无搜索词时 source 是 state.items.slice(0, shown),从 0 起的前缀切片,
-    位置恰好等于原始下标 —— 巧合正确,这正是缺陷躲过既有用例的原因。
-
-    修复方向:pairs 构造收口成 visiblePairs(),遍历 state.items 本身,
-    idx 天然是原始下标(见 design.md「Fix Implementation → B1 携带原始下标」)。
+    搜索、分页、刷新和 SSE 重排都可能改变 ``state.items`` 的位置。可见条目
+    因此必须携带 ``itemBusinessId(it)``，后续选择与批量操作只消费该稳定 ID。
 
     Validates: Requirements 2.1, 2.2, 2.3
     """
-    html = _tpl()
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     rdl = _js_func_body(lib_js, "renderDefaultList")
-    live = [ln.strip() for ln in rdl.splitlines() if ".forEach((it, idx)" in ln]
-
-    # 1) pairs 构造必须收口成唯一来源 visiblePairs()
-    assert "visiblePairs" in html, (
-        "缺少 pairs 构造的唯一来源 visiblePairs();renderDefaultList 当前是:"
-        + (live[0] if live else "(未找到 pairs 构造行)")
-        + " —— 搜索态下发出的是命中序号,删除/下载会打到 state.items 里同下标的另一条")
-
-    # 2) 唯一来源必须遍历 state.items 本身,idx 才是原始下标
     vp = _js_func_body(lib_js, "visiblePairs")
-    assert "state.items.forEach((it, idx)" in vp, (
-        "visiblePairs 必须遍历 state.items 本身;对过滤/切片后的数组取遍历位置"
-        "得到的是「第几个命中」,不是原始下标")
 
-    # 3) 对「过滤后 / 切片后的数组」取遍历位置当原始下标的写法必须绝迹
-    assert "source.forEach((it, idx)" not in html, (
-        "仍在对 `q ? filtered : slice(...)` 的结果取遍历位置当原始下标(缺陷 B1 现场)")
-    assert "filtered.forEach" not in html, (
-        "不得对过滤后的数组取遍历位置当原始下标")
+    # pairs 只有一个构造入口，且保持 state.items 的展示顺序。
+    assert "visiblePairs(q)" in rdl
+    assert "state.items.forEach((it, index)" in vp
+    assert "pairs.push({ it, id: itemBusinessId(it) })" in vp, \
+        "可见条目必须携带稳定业务 ID，而不是过滤结果或数组位置"
 
-    # 4) 两个渲染入口都走同一份 pairs 构造,不留第二份规则
+    # 任何以 idx/index 作为条目身份的旧实现都不得复活。
+    assert "pairs.push({ it, idx" not in vp
+    assert "pairs.push({ it, index" not in vp
+    assert "data-libidx" not in lib_js
+
+    # 初次渲染与无限滚推进复用同一套身份规则。
     for fn in ("renderDefaultList", "advanceDefaultChunk"):
         assert "visiblePairs(" in _js_func_body(lib_js, fn), \
-            f"{fn} 应复用 visiblePairs(),不自建 pairs"
+            f"{fn} 应复用 visiblePairs()，不得自建位置身份"
 
 # ---------- 勾选与批量操作:B1 修复必须逐位保持的既有正确行为 ----------
 # 下面这批断言锁的是**当前已经正确**的部分,不是待修的缺陷:
@@ -1115,27 +1195,11 @@ def _js_listener_body(src: str, marker: str) -> str:
     return src[i:end]
 
 
-def test_frontend_check_index_consumers_read_original_index():
-    """勾选下标的消费方一直按「原始下标索引 state.items」工作,B1 修复不得改动。
+def test_frontend_check_consumers_resolve_stable_ids():
+    """复选框只发出稳定 ID，批量操作经唯一 Map 反查当前条目。
 
-    Property 7: Preservation —— 无搜索词时的勾选与批量操作。
-
-    这几条是 B1 修复的**前提条件**而非修复内容:pairs 里的 idx 之所以必须是
-    原始下标,正是因为下游一路都拿它当 state.items 的下标用。观察未修复代码
-    (static/js/lib.js 的 renderLibList、static/js/pages/downloads.js 的
-    delSelected / libDownload)确认这条链现状:
-
-      renderLibList 把 pairs 的 idx 命名为 origIdx,写进 data-libidx、
-      写进 onchange="toggleLibCheck(origIdx, ...)"、并用 state.checked.has(origIdx)
-      决定高亮 → delSelected / libDownload 从 DOM 读回 :checked 复选框,
-      再 state.items[parseInt(cb.dataset.libidx)] 取回条目。
-
-    两个批量操作都从 **DOM** 读 :checked(而不是遍历 state.checked),
-    因此「先勾选 A、再搜索只命中 C/D」时 A 不在 DOM 里、不会被误删/误提交 ——
-    这正是 2.1 / 2.2 要求的「只作用于可见且勾选的条目」,修复前后一致。
-
-    锁住:3.1(无搜索词时精确删除所勾选条目的记录与文件)
-          3.2(无搜索词时批量下载提交所勾选的视频)
+    DOM 仍限定“当前可见且已勾选”的操作范围；搜索隐藏的选择不会被提交。
+    刷新或排序只会替换 Map 中同一业务 ID 的值，不会把操作转移给其他条目。
 
     Validates: Requirements 3.1, 3.2
     """
@@ -1143,92 +1207,71 @@ def test_frontend_check_index_consumers_read_original_index():
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
 
-    # 1) renderLibList 是 data-libidx 的唯一发出点,且发的是 pairs 的 origIdx
+    # renderLibList 是 data-libid 的唯一发出点，并以同一 ID 恢复选择状态。
     rll = _js_func_body(lib_js, "renderLibList")
-    assert 'data-libidx="${origIdx}"' in rll, "复选框的 data-libidx 应写入 pairs 的原始下标"
-    assert "onchange=\"toggleLibCheck(${origIdx}, this.checked)\"" in rll, \
-        "onchange 应把原始下标交给 toggleLibCheck"
-    assert "state.checked.has(origIdx)" in rll, \
-        "高亮判定应按原始下标查 state.checked(选择状态才不会转移到别的条目)"
+    assert 'data-libid="${escapeAttr(libId)}"' in rll
+    assert "toggleLibCheck(this.dataset.libid, this.checked)" in rll
+    assert "state.checked.has(libId)" in rll
     emitters = {p.relative_to(_js_dir()).as_posix()
                 for p in sorted(_js_dir().rglob("*.js"))
-                if 'data-libidx="' in p.read_text(encoding="utf-8")}
+                if 'data-libid="' in p.read_text(encoding="utf-8")}
     assert emitters == {"lib.js"}, \
-        f"data-libidx 应只由 lib.js 的 renderLibList 发出,现在还有:{emitters}"
+        f"data-libid 应只由 lib.js 的 renderLibList 发出，现在还有：{emitters}"
 
-    # 2) 「删除记录 + 文件」:从 DOM 读 :checked → 按原始下标取 state.items
+    # 唯一选择解析器从可见 DOM 取 ID，再经 itemById 反查；绝不索引数组。
+    selected = _js_func_body(lib_js, "selectedVisibleItems")
+    assert "input[data-libid]:checked" in selected
+    assert "state.itemById.get(String(input.dataset.libid || ''))" in selected
+    assert ".filter(Boolean)" in selected
+    assert "state.items[" not in selected
+
+    # 删除和批量下载共享上述解析器，且删除完成后才清空选择集。
     ds = _js_func_body(dl_js, "delSelected")
-    assert "input[data-libidx]:checked" in ds, "应从 DOM 读勾选(而非遍历 state.checked)"
-    assert "state.items[parseInt(cb.dataset.libidx)]" in ds, \
-        "应按 data-libidx 当原始下标索引 state.items"
-    assert ".task_id" in ds and "/api/task/delete" in ds, \
-        "删除的目标是所勾选条目自己的 task_id"
-    assert re.findall(r"state\.checked\.(\w+)", ds) == ["clear"], \
-        "delSelected 只在删完后清空 state.checked,不得改成从 state.checked 取待删条目"
+    assert "selectedVisibleItems()" in ds
+    assert ".map(item => item.task_id)" in ds
+    assert "/api/task/delete" in ds
+    assert re.findall(r"state\.checked\.(\w+)", ds) == ["clear"]
 
-    # 3) 批量下载:同一取法
     ld = _js_func_body(dl_js, "libDownload")
-    assert "input[data-libidx]:checked" in ld, "应从 DOM 读勾选"
-    assert "state.items[parseInt(cb.dataset.libidx)]" in ld, \
-        "应按 data-libidx 当原始下标索引 state.items"
+    assert "selectedVisibleItems()" in ld
     assert "state.checked" not in ld, \
-        "批量下载不读 state.checked(它含被搜索隐藏的勾选,会提交不可见条目)"
+        "批量下载只能处理可见 DOM 解析出的条目，不能遍历含隐藏选择的 Set"
 
 
 def test_frontend_check_toggles_stay_dom_scoped():
-    """勾选切换与「全选」一直只作用于当前可见条目、按原始下标写 state.checked。
-
-    Property 7: Preservation —— 无搜索词时的勾选与批量操作。
-
-    观察未修复代码(static/js/lib.js):
-      - toggleLibCheck(origIdx, checked) 直接 state.checked.add/delete(origIdx),
-        再按 data-libidx 反查该复选框所在卡片切 .checked 类,最后 updateLibCount()。
-      - libToggleAll 遍历的是 `.page.active .video-item`(DOM),不是 state.items ——
-        被搜索词过滤掉的条目压根不在 DOM 里,所以「全选」天然只覆盖可见条目。
-        它从 cb.dataset.libidx 取原始下标写 state.checked。
-      - 封面点选:委托到 document 的处理器先翻 cb.checked(让计数看到新状态),
-        再 toggleLibCheck(parseInt(cb.dataset.libidx), cb.checked)。
-      - updateLibCount 的计数来自 DOM `input[data-libidx]:checked`,不是
-        state.checked.size —— 底部操作条显示的是「可见且勾选」的条数。
-
-    B1 只改 pairs 构造,这四处一字不动。
-
-    锁住:3.3(「全选」只作用于当前可见条目)
-          3.4(点击封面图切换勾选并同步底部操作条计数)
+    """单选、全选、封面点选和计数都使用稳定 ID，并只作用于可见 DOM。
 
     Validates: Requirements 3.3, 3.4
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
 
-    # 1) 单条切换:按原始下标进出 state.checked,并同步计数
+    # 单条切换只接受当前 Map 中存在的 ID，陈旧 DOM ID 会被取消。
     tlc = _js_func_body(lib_js, "toggleLibCheck")
-    assert "state.checked.add(origIdx)" in tlc and "state.checked.delete(origIdx)" in tlc, \
-        "勾选集应按原始下标增删"
-    assert 'input[data-libidx="${origIdx}"]' in tlc, "应按原始下标反查该条目的复选框"
-    assert "updateLibCount()" in tlc, "切换后应同步底部操作条计数"
+    assert "state.itemById.has(id)" in tlc
+    assert "state.checked.add(id)" in tlc and "state.checked.delete(id)" in tlc
+    assert "findVisibleCheckbox(id)" in tlc
+    assert "cb.checked = next" in tlc
+    assert "updateLibCount()" in tlc
 
-    # 2) 「全选」:遍历 DOM 可见卡片,不遍历 state.items
+    # “全选”遍历当前可见卡片，将 data-libid 写入唯一选择集。
     lta = _js_func_body(lib_js, "libToggleAll")
-    assert ".page.active .video-item" in lta, "「全选」应遍历 DOM 里的可见卡片"
+    assert ".page.active .video-item" in lta
     assert "state.items" not in lta, \
-        "「全选」不得遍历 state.items(那会把被搜索词过滤掉的条目也选上,破坏 3.3)"
-    assert "parseInt(cb.dataset.libidx)" in lta, "应从 data-libidx 取原始下标"
-    assert "state.checked.add(idx)" in lta and "state.checked.delete(idx)" in lta
+        "全选不得遍历被搜索隐藏的条目"
+    assert "cb.dataset.libid" in lta
+    assert "state.checked.add(id)" in lta and "state.checked.delete(id)" in lta
     assert "updateLibCount()" in lta
 
-    # 3) 封面点选:翻 DOM 再按原始下标切换
+    # 封面点击先翻转 DOM，再将同一稳定 ID 交给统一切换函数。
     thumb = _js_listener_body(lib_js, ".video-item .thumb-wrap")
-    assert "input.vi-check" in thumb, "应定位卡片内的勾选框"
-    assert "cb.checked = !cb.checked" in thumb, \
-        "应先翻 DOM 再调 toggleLibCheck,否则 updateLibCount 从 DOM 数到的是旧状态"
-    assert "toggleLibCheck(parseInt(cb.dataset.libidx), cb.checked)" in thumb, \
-        "封面点选应把原始下标交给 toggleLibCheck"
+    assert "input.vi-check" in thumb
+    assert "cb.checked = !cb.checked" in thumb
+    assert "toggleLibCheck(cb.dataset.libid, cb.checked)" in thumb
 
-    # 4) 计数口径:DOM 里「可见且勾选」的条数
+    # 操作条计数口径仍是当前可见且勾选的 DOM，而不是全部历史选择。
     ulc = _js_func_body(lib_js, "updateLibCount")
-    assert "input[data-libidx]:checked" in ulc, "计数应数 DOM 里的可见勾选"
-    assert "state.checked" not in ulc, \
-        "计数不得用 state.checked.size(它含被搜索隐藏的勾选,与操作条实际会处理的条数不符)"
+    assert "input[data-libid]:checked" in ulc
+    assert "state.checked" not in ulc
     assert ".lib-count" in ulc and "updateActionBar()" in ulc
 
 
@@ -1261,142 +1304,95 @@ def test_frontend_fast_apply_guard_lives_in_cached_load():
         "守卫不成立时应退回 showFreshHint(「查看最新」提示条),而不是照样重渲染"
 
 
-def test_frontend_downloads_defers_reload_while_checked():
-    """下载记录页在有勾选期间推迟整体重拉、清零后补上,B1 修复不得动这套机制。
+def test_frontend_downloads_uses_single_aggregate_stream_and_deferred_render():
+    """下载状态只有一个聚合 SSE；健康时停轮询，有选择时延后整体重绘。
 
-    Property 7: Preservation —— 无搜索词时的勾选与批量操作。
-
-    观察未修复代码(static/js/pages/downloads.js):
-      - maybeReload():DOM 里还有 `input[data-libidx]:checked` 时只置
-        `_dirty = true` 并 return,不调 loadDownloads() —— 重拉会重排 state.items,
-        已发出的原始下标全部失效。SSE 进度到达终态与任务卡不在页面上时都走这里。
-      - pollTasks()(30 秒兜底轮询):同一个 DOM 勾选判断,有勾选就不刷列表,
-        只更新侧边栏角标。
-      - setItemExtras 注入的 onChecksEmpty:_dirty 为真时补上 loadDownloads()。
-      - lib.updateLibCount() 在计数归零时回调 onChecksEmpty —— 这是「补上」的触发点。
-
-    锁住:3.6(有勾选期间收到 SSE 进度或轮询结果 → 推迟整体重拉,清零后补上)
+    稳定 ID 使任务 Map 可以持续接收事件，而 DOM 正在选择时只推迟重绘。
+    清空选择后从最新 Map 快照补绘，不再维护“每任务 SSE + 固定轮询”双轨。
 
     Validates: Requirements 3.6
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
 
-    # 1) SSE 触发的重拉:有勾选就只打脏标记
-    mr = _js_func_body(dl_js, "maybeReload")
-    assert "input[data-libidx]:checked" in mr, "重拉前应检查 DOM 里是否还有勾选"
-    assert "_dirty = true" in mr, "有勾选时应只打脏标记"
-    dirty_at, load_at = mr.index("_dirty = true"), mr.index("loadDownloads(")
-    assert dirty_at < load_at, "脏标记分支必须在 loadDownloads() 之前 return,否则照样重排"
-    assert "return;" in mr[dirty_at:load_at], "打完脏标记必须 return,不能穿到重拉"
+    # 可见选择守卫与延迟重绘都使用稳定 ID DOM。
+    visible = _js_func_body(dl_js, "hasVisibleChecks")
+    assert "input[data-libid]:checked" in visible
+    commit = _js_func_body(dl_js, "commitTaskCollection")
+    assert "forceRender && hasVisibleChecks()" in commit
+    assert "_dirty = true" in commit
 
-    # 2) 30 秒兜底轮询:同一个勾选判断
-    pt = _js_func_body(dl_js, "pollTasks")
-    assert "!document.querySelectorAll('.page.active input[data-libidx]:checked').length" in pt, \
-        "轮询刷新列表前应检查无勾选"
-    assert "updateBadge(tasks)" in pt, "有勾选时仍应更新侧边栏角标(只是不刷列表)"
+    # 全应用只有一个聚合 EventSource；兼容入口不会创建每任务连接。
+    ensure = _js_func_body(dl_js, "ensureTaskStream")
+    assert "new EventSource('/api/tasks/events')" in ensure
+    assert dl_js.count("new EventSource(") == 1
+    assert "_activeSSE" not in dl_js
+    assert "/api/progress/" not in dl_js
+    subscribe = _js_func_body(dl_js, "subscribeProgress")
+    assert "ensureTaskStream()" in subscribe and "EventSource" not in subscribe
 
-    # 3) 勾选清零 → 补上被推迟的重拉
+    # snapshot 建立 revision，patch 只接受严格连续版本并支持增删。
+    snapshot = _js_func_body(dl_js, "handleTaskSnapshot")
+    assert "_taskRevision = revision" in snapshot
+    assert "replaceTaskMap(payload.tasks)" in snapshot
+    patch = _js_func_body(dl_js, "handleTaskPatch")
+    assert "revision !== _taskRevision + 1" in patch
+    assert "_taskById.set(taskId, task)" in patch
+    assert "_taskById.delete(String(rawId))" in patch
+    assert "_taskRevision = revision" in patch
+
+    # 健康流期间轮询直接返回；仅断线/超时才请求全量快照。
+    poll = _js_func_body(dl_js, "pollTasks")
+    assert "if (!force && streamIsRecent()) return;" in poll
+    assert "getJSON('/api/tasks'" in poll
+
+    # 选择清零后从最新任务 Map 补上被推迟的重绘。
     hook_at = dl_js.index("onChecksEmpty:")
     hook = dl_js[hook_at:dl_js.index("},", hook_at)]
-    assert "_dirty" in hook and "loadDownloads()" in hook, \
-        "onChecksEmpty 应在脏标记为真时补上被推迟的重拉"
-    assert "_dirty = false" in hook, "补拉后应清掉脏标记"
+    assert "_dirty" in hook and "_dirty = false" in hook
+    assert "commitTaskCollection(taskSnapshot(), { forceRender: true })" in hook
     ulc = _js_func_body(lib_js, "updateLibCount")
-    assert "n === 0 && _itemExtras.onChecksEmpty" in ulc, \
-        "updateLibCount 应在计数归零时回调 onChecksEmpty(这是补拉的唯一触发点)"
+    assert "n === 0 && _itemExtras.onChecksEmpty" in ulc
 
 
 def test_frontend_default_list_inits_shown_before_window():
-    """非搜索态的可见窗口一直是 state.items 的 state.shown 前缀,且 shown 先于取窗初始化。
-
-    Property 7: Preservation —— 无搜索词时的勾选与批量操作。
-
-    观察未修复代码(static/js/lib.js 的 renderDefaultList):
-        if (!state.shown) state.shown = curChunk();
-        const source = q ? filtered : state.items.slice(0, state.shown);
-        source.forEach((it, idx) => pairs.push({ it, idx }));
-    非搜索态取的是从 0 起的前缀切片,遍历位置恰好等于原始下标 —— 巧合正确,
-    这正是缺陷 B1 躲过既有 183 个用例的原因。这条前缀语义(以及它依赖的
-    「state.shown 已初始化」)是修复后必须逐位不变的基线。
-
-    本断言故意写成不认实现形态:前缀截断写成 slice(0, state.shown) 还是
-    `idx < state.shown` 都接受,只要求
-      (a) 存在按 state.shown 的前缀截断 —— 否则非搜索态会渲染全量或渲染为空;
-      (b) state.shown 的初始化早于**读取它取窗**的那一步 —— design.md 与任务 3.2
-          都点名了这个坑:改用 visiblePairs() 后若 shown 初始化仍留在取窗之后,
-          首次渲染 state.shown 为 0、`idx < 0` 恒假,列表会空。
-          注意基准点必须是「读 state.shown 取窗」而不是「forEach 建对」:
-          未修复形态里取窗在 `const source = ...` 那行、建对在下一行,
-          拿建对当基准会让「init 挪到取窗之后」这类回归漏过去。
-
-    修好原始下标后的「visiblePairs('') 与前缀切片逐位等价」由
-    test_frontend_visible_pairs_equals_prefix_slice 承接(函数存在后才可检查)。
+    """非搜索态始终渲染 state.items 的 shown 前缀，且先初始化窗口。
 
     Validates: Requirements 3.1, 3.2, 3.3
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     rdl = _js_func_body(lib_js, "renderDefaultList")
-    window_path = rdl
-    if "function visiblePairs(" in lib_js:
-        window_path += _js_func_body(lib_js, "visiblePairs")
+    vp = _js_func_body(lib_js, "visiblePairs")
 
-    # (a) 非搜索态仍按 state.shown 截前缀
-    bounds = [form for form in ("state.items.slice(0, state.shown)", "idx < state.shown")
-              if form in window_path]
-    assert bounds, ("非搜索态的可见窗口必须仍是 state.items 的 state.shown 前缀"
-                    "(slice(0, state.shown) 或 idx < state.shown);"
-                    "丢了这层截断,首屏会渲染全量或渲染为空")
-
-    # (b) state.shown 初始化必须早于取窗
+    assert "index < state.shown" in vp, \
+        "非搜索态必须按原顺序限制在 state.shown 前缀"
     shown_at = rdl.find("state.shown = curChunk()")
-    assert shown_at >= 0, "renderDefaultList 应负责 state.shown 的首屏初始化"
-    window_marks = [i for i in (rdl.find("visiblePairs("),
-                                rdl.find("state.items.slice(0, state.shown)")) if i >= 0]
-    assert window_marks, "renderDefaultList 里找不到取窗那一步(visiblePairs / 前缀切片)"
-    assert shown_at < min(window_marks), \
-        ("`if (!state.shown) state.shown = curChunk();` 必须在读 state.shown 取窗之前;"
-         "留在之后则非搜索态首次渲染 state.shown 为 0,列表会空")
+    window_at = rdl.find("visiblePairs(q)")
+    assert shown_at >= 0, "renderDefaultList 应负责首屏窗口初始化"
+    assert window_at >= 0, "renderDefaultList 应通过 visiblePairs(q) 取窗"
+    assert shown_at < window_at, \
+        "state.shown 必须在 visiblePairs(q) 读取窗口之前初始化"
 
 
 def test_frontend_visible_pairs_equals_prefix_slice():
-    """visiblePairs('') 必须与 state.items.slice(0, state.shown) 的建对逐位等价。
+    """visiblePairs('') 保序选取 shown 前缀，并为每项计算稳定业务 ID。
 
-    Property 7: Preservation —— 无搜索词时的勾选与批量操作。
-
-    这是 B1 的结构性不变量:非搜索态下修复前后产出的 pairs 必须逐位相同
-    (修复前是 `state.items.slice(0, state.shown).forEach((it, idx) => ...)`)。
-    等价的充要条件是三点同时成立 ——
-      1. 按原顺序遍历 state.items 本身(不排序、不反转、不先过滤再取位置);
-      2. 非搜索态的入选条件是原始下标的前缀谓词 `idx < state.shown`;
-      3. 入选时带的下标就是 forEach 给的那个 idx(不另起计数器)。
-    三点齐备时,选中的恰是原始下标 0..state.shown-1 且顺序不变,
-    与前缀切片的建对结果逐位相同。
-
-    visiblePairs() 由任务 3.1 引入;函数还不存在时本条跳过(任务 2 的基线里
-    只锁「当前已正确的行为」,不产出第二条预期失败的测试),任务 3.5
-    重跑这一批时它会自动生效。
+    数组下标只用于窗口边界，绝不进入 pair、DOM 或选择状态。
 
     Validates: Requirements 3.1, 3.2, 3.3
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
-    if "function visiblePairs(" not in lib_js:
-        pytest.skip("visiblePairs() 尚未引入(任务 3.1),该结构性不变量由任务 3.5 验证")
     vp = _js_func_body(lib_js, "visiblePairs")
 
-    # 1) 按原顺序遍历 state.items 本身
-    assert "state.items.forEach((it, idx)" in vp, \
-        "必须遍历 state.items 本身,idx 才是原始下标"
+    assert "state.items.forEach((it, index)" in vp
     for bad in (".sort(", ".reverse(", ".filter(", ".slice("):
-        assert bad not in vp, f"visiblePairs 内不得 {bad} 重排/重新索引 state.items"
+        assert bad not in vp, f"visiblePairs 内不得 {bad} 重排 state.items"
 
-    # 2) 非搜索态的入选条件是原始下标的前缀谓词
-    assert "idx < state.shown" in vp, \
-        "非搜索态应按原始下标截前缀(idx < state.shown),这才等价于 slice(0, shown)"
-
-    # 3) 带的下标就是 forEach 给的 idx
-    assert "pairs.push({ it, idx })" in vp, "入选时应原样带上 forEach 的 idx"
-    assert "pairs.length" not in vp, "不得用 pairs.length 之类的另起计数器当下标"
+    assert "index < state.shown" in vp
+    assert "pairs.push({ it, id: itemBusinessId(it) })" in vp
+    assert "pairs.push({ it, index" not in vp
+    assert "pairs.length" not in vp, \
+        "不得用命中计数器构造身份"
 
 # ---------- 已下载判定的键规则:前后端必须是同一条(缺陷 B3) ----------
 
@@ -1664,64 +1660,28 @@ def test_frontend_downloaded_consumers_preserved():
 # ---------- 提交下载时的 page 维度:两个批量入口都不许丢(缺陷 C2 / C3) ----------
 
 def test_frontend_lib_download_carries_page():
-    """libDownload 提交体里的 page 必须是条目真实分 P,不许硬编码 1(缺陷 C2)。
+    """任务条目保留持久化 page，公共批量提交继续携带真实分 P。
 
-    Property 3 的延伸 —— 已下载判定加了 (bvid, page) 粒度,**提交**却仍丢 page。
-
-    缺陷表现:在「下载记录」页勾一条 P3 的记录重新下载,实际下回来的是 P1。
-    根因是两处配套的缺失,单看任一处都像没问题:
-
-      1. downloads.js 的 loadDownloads() 用**字段白名单**构造 state.items,
-         `page` 不在白名单里 → 任务记录的 `it.page` 是 undefined,权威值在
-         /api/tasks 的响应里躺着却没被带出来;
-      2. libDownload() 的提交体写死 `page: 1`。
-
-      于是后端 build_filename(title, page) 按 P1 拼文件名、
-      find_active_by_url(url, label, page) 也按错的 page 判去重 —— 全程不报错,
-      用户只会发现「下载下来的不是我点的那一集」。
-
-    libDownload 是六个内容页共用的批量提交口,修法必须同时照顾两类条目
-    (断言 3 锁的就是这个 `||` 兜底):
-
-      - **任务记录**(下载记录页):走 `it.page`。不能解析 `it.url` ——
-        任务表里的 url 是用户粘贴的原始链接,常不带 `?p=`,解析它会把所有
-        任务都算成 P1,与硬编码 1 等价,缺陷原地复发。
-      - **接口条目**(收藏夹 / 稍后再看 / 观看历史 / 关注动态 / 追更合集):
-        没有 page 字段 → 退到 `pageFromUrl(it.url)`。这五页的条目 url 由
-        bilibili_api.py 拼成 `https://www.bilibili.com/video/{bvid}`,从不带
-        `?p=` → 得 1,与修复前逐位相同,不引入回归。
-
-    取 page 的方式沿用 B3 定下的不对称原则(任务侧读存储字段 / 查询侧解析 URL),
-    键规则唯一来源仍是 util.js,这里只 import 不复制。
+    下载任务不能从原始 URL 猜 page（URL 可能不含 ``?p=``）；其他内容页没有
+    持久化 page 时才使用 ``pageFromUrl``。任务映射与提交两层必须同时保留。
 
     Validates: Requirements 2.6, 2.7, 3.13
     """
     dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
 
-    # 1) 白名单必须把 page 带出来 —— 少了这行,it.page 永远 undefined
-    load_body = _js_func_body(dl_js, "loadDownloads")
-    assert "page:" in load_body, (
-        "loadDownloads 的字段白名单缺 page:任务记录的权威分 P 值(/api/tasks 已返回)"
-        "没被带进 state.items,libDownload 拿到的 it.page 是 undefined")
-    assert "page: t.page || 1," in load_body, (
-        "白名单里的 page 应读 t.page(缺失兜底 1),这是 B3 定下的「任务侧读存储字段」原则;"
-        "从 t.url 解析会把所有任务算成 P1")
+    task_item = _js_func_body(dl_js, "taskToItem")
+    assert "page: task.page || 1," in task_item, \
+        "任务投影必须保留 /api/tasks 返回的权威 page"
+    assert "pageFromUrl(task.url)" not in task_item, \
+        "任务 URL 可能不带分 P 参数，不能据此覆盖持久化 page"
 
-    # 2) 提交体不许再硬编码 page: 1
     lib_body = _js_func_body(dl_js, "libDownload")
-    assert "page: 1" not in lib_body, (
-        "libDownload 仍硬编码 page: 1(缺陷 C2 现场):下载记录页重下一条 P3 记录时,"
-        "后端会按 P1 拼文件名并按错的 page 判去重,实际下载的是 P1")
+    assert "page: 1" not in lib_body
+    assert "page: it.page || pageFromUrl(it.url)," in lib_body, \
+        "任务记录应走 it.page，其他内容条目才回退到 URL 分 P"
 
-    # 3) 一个 || 兜底同时服务任务记录与接口条目
-    assert "page: it.page || pageFromUrl(it.url)," in lib_body, (
-        "libDownload 的 page 应取 `it.page || pageFromUrl(it.url)`:"
-        "任务记录走 it.page(不能解析 it.url——它是用户粘贴的原始链接),"
-        "其余五个内容页的接口条目无该字段、退到 pageFromUrl(其 url 不带 ?p= → 得 1,无回归)")
-
-    # 4) 键规则仍只有一份:pageFromUrl 从 util.js 引入,不得在本文件复制
     assert "function pageFromUrl" not in dl_js, \
-        "downloads.js 不得自建第二份 pageFromUrl,必须从 ../util.js 引入"
+        "downloads.js 不得复制 pageFromUrl，必须从 ../util.js 引入"
 
 
 def test_frontend_batch_download_uses_page_from_url():

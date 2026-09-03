@@ -1,273 +1,405 @@
-"""下载落盘文件管理:期望文件名组装、下载后文件名对齐、改名冲突处理、文件定位。
-
-命名权在 Python 侧(设计 A.2/A.3):outtmpl 组装与下载后改名共用 build_filename,
-保证两端算出的期望名恒一致;落盘后再把磁盘文件强制对齐任务权威 title。
-"""
+"""下载落盘文件管理：安全定位、文件名对齐、manifest 与冲突处理。"""
+import copy
 import logging
 import subprocess
 import sys
-from pathlib import Path
 from glob import escape as glob_escape
+from pathlib import Path
 
 import config
-# build_filename 住在 extras(纯命名逻辑,依赖链底部;taskstore 定位文件也要用),
-# 这里再导出,保持 files.build_filename / downloader.build_filename 调用方不变。
+import taskstore
 from extras import sanitize_filename, build_filename
-# stem_belongs 是「磁盘文件是否属于某个期望名」的全项目唯一来源(住在 taskstore,
-# 与 _task_files 的定位/删除共用)。这里 import 而不是在本文件里再写一份判据——
-# 曾各写一份,files 侧那份更宽松,酿成邻居视频文件被误改名的不可逆损坏。
 from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
-                       stem_belongs)
+                       _final_paths_lock, stem_belongs,
+                       resolve_download_path, UnsafeDownloadPathError,
+                       task_download_root, is_owned_sidecar,
+                       artifact_lifecycle, refresh_task_manifest,
+                       manifest_media_path, mark_persistence_pending,
+                       mark_persistence_success, mark_persistence_failure)
 
 log = logging.getLogger("bd.files")
 
-
-# 主文件扩展名(用于从候选中挑出视频/音频本体,排除封面/字幕等副文件)
 _MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
                ".m4a", ".mp3", ".aac", ".opus", ".ogg"}
 
 
 def tmpl_literal(s: str) -> str:
-    """把 Python 侧清洗好的字面段安全嵌入 yt-dlp outtmpl:% 是模板元字符,须转义成 %%。"""
+    """把 Python 侧字面段安全嵌入 yt-dlp outtmpl。"""
     return s.replace("%", "%%")
 
 
 def _same_file(a: Path, b: Path) -> bool:
-    """两个路径是否同一文件(大小写不敏感盘上仅大小写不同的名字也算)。"""
     try:
         return a.stat().st_ino == b.stat().st_ino
     except OSError:
         return False
 
 
-def _find_actual_file(task_id: str, expected_stem: str):
-    """找 yt-dlp 实际落盘的主文件。
-
-    优先 postprocessor 钩子捕获的最终路径(权威);没捕获到(旧流程/异常)
-    再扫下载目录:stem 精确匹配 → stem 归属规则(stem_belongs)。返回 Path 或 None。
-    """
-    captured = _final_paths.get(task_id)
-    if captured and Path(captured).is_file():
-        return Path(captured)
+def _safe_media(path, *, root=None) -> Path | None:
     try:
-        dirs = [config.DOWNLOAD_DIR] + [d for d in config.DOWNLOAD_DIR.iterdir() if d.is_dir()]
-    except OSError:
+        candidate = resolve_download_path(path, root=root)
+    except UnsafeDownloadPathError:
         return None
-    for d in dirs:
-        try:
-            files = [f for f in d.iterdir() if f.is_file()]
-        except OSError:
-            continue
-        media = [f for f in files if f.suffix.lower() in _MEDIA_EXTS]
-        # 精确同名单独一级,不与下面的 belongs 合并:belongs 的结果集本就包含
-        # 精确同名者,合并后 max(size) 可能挑中体积更大的带后缀文件(如另一个
-        # 分 P 的 `期望名 - P3.mp4`)而不是精确同名的那个。
-        exact = [f for f in media if f.stem == expected_stem]
-        if exact:
-            return max(exact, key=lambda f: f.stat().st_size)
-        # 兜底:yt-dlp 对字面段做了意外变换时,按 stem 归属规则找(期望名后只允许
-        # 紧跟 ` ` / `.` / `-` / `_` / `(` / `[` 这类分隔符)。规则只有一份,在
-        # taskstore,与 _task_files 的定位/删除共用。
-        #
-        # 旧写法是拿期望名的前 10 个字符做无边界前缀匹配(注释还写着「截短些避免
-        # 长标题误配」,方向恰好相反:截短只会放宽匹配)。失败模式:与期望名共享前
-        # 10 个字的**邻居视频**文件被认作本任务的落盘文件,align_task_file 随即把
-        # 它连同同 stem 的封面/字幕/弹幕副文件一起改名成本任务的期望名——改名不是
-        # 复制,邻居的原文件名永久丢失,两条记录指向同一个文件。期望名不足 10 字时
-        # 切片等于整名,退化成整名前缀匹配(期望名「测试」命中「测试2」)。
-        #
-        # 代价(已知并接受):落盘名被截断、或第 11 字之后被替换这两类异常形态从
-        # 「误改邻居文件」变成不命中 → 返回 None → align_task_file 写 rename_error。
-        # 可见、可恢复、不影响任务的 done 状态,换掉不可逆的数据损坏。
-        belongs = [f for f in media if stem_belongs(f.stem, expected_stem)]
-        if belongs:
-            return max(belongs, key=lambda f: f.stat().st_size)
+    if candidate.is_file() and candidate.suffix.lower() in _MEDIA_EXTS:
+        return candidate
     return None
 
 
-def _rename_with_sidecars(source: Path, new_stem: str) -> Path:
-    """把 source 改名为 new_stem(保留各自扩展名),同 stem 的封面/字幕等
-    副文件一并改名。返回主文件新路径;目标被占等异常向上抛。
+def _legacy_dirs() -> list[Path]:
+    root = Path(config.DOWNLOAD_DIR).expanduser().resolve(strict=False)
+    dirs = [root]
+    try:
+        for child in root.iterdir():
+            if not child.is_dir():
+                continue
+            try:
+                safe = resolve_download_path(child)
+            except UnsafeDownloadPathError:
+                continue
+            if safe.is_dir():
+                dirs.append(safe)
+    except OSError:
+        pass
+    return dirs
 
-    主文件与副文件**刻意**用不同的取法,不要「统一」掉:
 
-    - 主文件用 `.suffix`(只取最后一段)。落盘名若是 `视频.f137.mp4` 这类
-      yt-dlp 中间产物形态,我们希望改名后得到干净的 `新名.mp4`,而不是
-      `新名.f137.mp4`。
-    - 副文件用「source.stem 之后的整条扩展名链」。字幕由 yt-dlp 按
-      subtitleslangs 落盘,名字是 `<stem>.zh-Hans.srt` 这种**两段**扩展名;
-      对 Path("视频.zh-Hans.srt"),.suffix 只得 `.srt`,`.zh-Hans` 被算进了
-      stem。用 .suffix 有两个后果:(a) 语言标签丢失(`旧名.zh-Hans.srt` →
-      `新名.srt`);(b) 两种语言都在时,两个副文件算出**同一个**目标名,第一个
-      改名成功、第二个撞上下面的 exists() 守卫被跳过,永久留在旧 stem 下变成
-      孤儿 —— 而 taskstore._file_family 按**新** stem glob 找整族,再也匹配不
-      到它,「删除记录 + 文件」清不掉(磁盘永久残留),体积统计也少算。
-    """
-    target = source.with_name(new_stem + source.suffix)
-    # 切片 side.name[len(source.stem):] 的正确性依赖下面这个 glob 模式:
-    # 模式是 glob_escape(source.stem) + ".*",所以每个 side.name 必然以
-    # source.stem 开头、且紧跟一个 ".",切片结果就是完整的 `.xxx[.yyy]` 链。
-    # 改这行时必须连 glob 模式一起看,两者是一对。
-    for side in source.parent.glob(glob_escape(source.stem) + ".*"):
-        if side in (source, target) or not side.is_file():
+def _find_actual_file(task_id: str, expected_stem: str):
+    """找 yt-dlp 实际落盘主媒体；新任务始终使用创建时固定的根。"""
+    with _tasks_lock:
+        task = copy.deepcopy(_tasks.get(task_id))
+    try:
+        root = task_download_root(task or {})
+    except UnsafeDownloadPathError:
+        return None
+
+    with _final_paths_lock:
+        captured = _final_paths.get(task_id)
+    if captured:
+        media = _safe_media(captured, root=root)
+        if media:
+            return media
+        with _final_paths_lock:
+            if _final_paths.get(task_id) == captured:
+                _final_paths.pop(task_id, None)
+
+    if task and "manifest" in task:
+        return manifest_media_path(task)
+
+    exact: list[Path] = []
+    belongs: list[Path] = []
+    for directory in _legacy_dirs():
+        try:
+            children = list(directory.iterdir())
+        except OSError:
             continue
-        side_target = side.with_name(new_stem + side.name[len(source.stem):])
-        # 守卫保留作防御:取整条扩展名链后,正常路径上两个副文件不再撞同一个
-        # 目标名,这里不该再触发。
-        if not side_target.exists():
-            side.rename(side_target)
-    source.rename(target)
+        for child in children:
+            media = _safe_media(child, root=root)
+            if not media:
+                continue
+            if media.stem == expected_stem:
+                exact.append(media)
+            elif stem_belongs(media.stem, expected_stem):
+                belongs.append(media)
+    candidates = exact if exact else belongs
+    if not candidates:
+        return None
+    try:
+        return max(candidates, key=lambda path: path.stat().st_size)
+    except OSError:
+        return None
+
+
+def _rename_with_sidecars(source: Path, new_stem: str, *, root=None) -> Path:
+    """安全、尽量事务化地改名主媒体及白名单封面/字幕/弹幕副件。"""
+    source = resolve_download_path(source, must_exist=True, root=root)
+    if not source.is_file() or source.suffix.lower() not in _MEDIA_EXTS:
+        raise FileNotFoundError(source)
+    target = resolve_download_path(source.with_name(new_stem + source.suffix), root=root)
+
+    plan: list[tuple[Path, Path]] = []
+    try:
+        sidecars = sorted(source.parent.glob(glob_escape(source.stem) + ".*"))
+    except OSError:
+        sidecars = []
+    for side in sidecars:
+        try:
+            safe_side = resolve_download_path(side, must_exist=True, root=root)
+        except (UnsafeDownloadPathError, FileNotFoundError):
+            continue
+        if (not safe_side.is_file()
+                or not is_owned_sidecar(source, safe_side)):
+            continue
+        suffix_chain = safe_side.name[len(source.stem):]
+        side_target = resolve_download_path(
+            safe_side.with_name(new_stem + suffix_chain), root=root)
+        plan.append((safe_side, side_target))
+    plan.append((source, target))  # 主文件最后改，减少失败时的可见窗口。
+
+    for old, new in plan:
+        if new.exists() and not _same_file(old, new):
+            raise FileExistsError(new)
+
+    moved: list[tuple[Path, Path]] = []
+    try:
+        for old, new in plan:
+            if old == new or _same_file(old, new):
+                continue
+            old.rename(new)
+            moved.append((old, new))
+    except OSError:
+        for old, new in reversed(moved):
+            try:
+                if new.exists() and not old.exists():
+                    new.rename(old)
+            except OSError:
+                log.exception("回滚改名失败 %s -> %s", new, old)
+        raise
     return target
 
 
-def align_task_file(task_id: str) -> None:
-    """下载成功后把磁盘文件名强制对齐任务 title(设计 A.3/A.4)。
+def _persist_file_state(task_id: str, context: str) -> bool:
+    token = mark_persistence_pending([task_id])
+    result = _persist()
+    # 测试桩沿用旧约定常返回 None，仅显式 False 表示真实写盘失败。
+    if result is False:
+        message = f"{context}未能写入 tasks.json"
+        mark_persistence_failure(token, message)
+        log.error("%s task_id=%s", message, task_id)
+        return False
+    mark_persistence_success(token)
+    return True
 
-    尽力而为:任何失败只写 rename_error/rename_conflict 等展示字段,
-    绝不影响任务的「完成」状态。副文件(封面/字幕)随主文件一起改。
-    """
-    try:
-        with _tasks_lock:
-            t0 = _tasks.get(task_id)
-            title = (t0.get("title") or "").strip() if t0 else ""
-            page = int(t0.get("page") or 1) if t0 else 1
-        if not title or title == "(解析中)":
-            return
-        expected_stem = build_filename(title, page)
-        actual = _find_actual_file(task_id, expected_stem)
-        if actual is None:
+
+def _record_rename_error(task_id: str, message: str) -> None:
+    with _tasks_lock:
+        task = _tasks.get(task_id)
+        if task:
+            task["rename_error"] = str(message)
+    _persist_file_state(task_id, "改名状态")
+
+
+def align_task_file(task_id: str) -> Path | None:
+    """下载成功后对齐文件名并刷新 manifest；失败只写展示状态。"""
+    with artifact_lifecycle(task_id):
+        try:
             with _tasks_lock:
-                t = _tasks.get(task_id)
-                if t:
-                    t["rename_error"] = "下载完成但没找到落盘文件"
-            _persist()
-            return
-        if actual.stem == expected_stem:
+                task = copy.deepcopy(_tasks.get(task_id))
+                title = (task.get("title") or "").strip() if task else ""
+                page = int(task.get("page") or 1) if task else 1
+            root = task_download_root(task or {})
+            if not title or title == "(解析中)":
+                return None
+
+            expected_stem = build_filename(title, page)
+            actual = _find_actual_file(task_id, expected_stem)
+            if actual is None:
+                _record_rename_error(task_id, "下载完成但没找到落盘文件")
+                return None
+
+            if actual.stem == expected_stem:
+                refresh_task_manifest(task_id, actual)
+                with _tasks_lock:
+                    current = _tasks.get(task_id)
+                    if current:
+                        current.pop("rename_error", None)
+                        current.pop("rename_conflict", None)
+                        current.pop("rename_skipped", None)
+                _persist_file_state(task_id, "文件清单")
+                return actual
+
+            target = resolve_download_path(
+                actual.with_name(expected_stem + actual.suffix), root=root)
+            if target.exists() and not _same_file(actual, target):
+                same_size = actual.stat().st_size == target.stat().st_size
+                refresh_task_manifest(task_id, actual)
+                with _tasks_lock:
+                    current = _tasks.get(task_id)
+                    if current:
+                        current.pop("rename_error", None)
+                        if same_size:
+                            current["rename_skipped"] = "duplicate"
+                            current.pop("rename_conflict", None)
+                        else:
+                            current.pop("rename_skipped", None)
+                            current["rename_conflict"] = {
+                                "source": str(actual),
+                                "expected": str(target),
+                                "existing": str(target),
+                            }
+                _persist_file_state(task_id, "文件名冲突状态")
+                return actual
+
+            new_path = _rename_with_sidecars(actual, expected_stem, root=root)
+            refresh_task_manifest(task_id, new_path)
             with _tasks_lock:
-                t = _tasks.get(task_id)
-                if t:
-                    t["actual_filename"] = str(actual)
-            _persist()
-            return
-        target = actual.with_name(expected_stem + actual.suffix)
-        if target.exists() and not _same_file(actual, target):
-            # A.4:拒绝覆盖,由用户在 UI 上选(加后缀/打开现有/忽略)
-            same_size = actual.stat().st_size == target.stat().st_size
-            with _tasks_lock:
-                t = _tasks.get(task_id)
-                if t:
-                    t["actual_filename"] = str(actual)
-                    if same_size:
-                        t["rename_skipped"] = "duplicate"
-                    else:
-                        t["rename_conflict"] = {"source": str(actual),
-                                                "expected": str(target),
-                                                "existing": str(target)}
-            _persist()
-            return
-        new_path = _rename_with_sidecars(actual, expected_stem)
-        with _tasks_lock:
-            t = _tasks.get(task_id)
-            if t:
-                t["actual_filename"] = str(new_path)
-        _persist()
-    except OSError as e:
-        with _tasks_lock:
-            t = _tasks.get(task_id)
-            if t:
-                t["rename_error"] = str(e)
-        _persist()
-    finally:
-        _final_paths.pop(task_id, None)
+                current = _tasks.get(task_id)
+                if current:
+                    current.pop("rename_error", None)
+                    current.pop("rename_conflict", None)
+                    current.pop("rename_skipped", None)
+            _persist_file_state(task_id, "文件改名与清单")
+            return new_path
+        except (OSError, UnsafeDownloadPathError) as exc:
+            _record_rename_error(task_id, str(exc))
+            return None
+        finally:
+            with _final_paths_lock:
+                _final_paths.pop(task_id, None)
 
 
 def resolve_rename_conflict(task_id: str, action: str) -> dict:
-    """用户处理改名冲突(设计 A.4)。action:
-    - rename_with_index: 期望名 stem 后加 ` (1)`(递增到 (9) 封顶)改名
-    - cancel: 放弃处理,清掉冲突标记
-    - open_existing: 返回现有文件路径,由路由层在 Finder 定位
-    """
-    with _tasks_lock:
-        t = _tasks.get(task_id)
-        conflict = dict(t.get("rename_conflict") or {}) if t else {}
-    if not conflict:
-        return {"ok": False, "error": "该任务没有待处理的名称冲突"}
-
-    if action == "cancel":
+    """处理改名冲突；所有冲突路径在 reveal/rename 前重新做边界校验。"""
+    with artifact_lifecycle(task_id):
         with _tasks_lock:
-            t = _tasks.get(task_id)
-            if t:
-                t.pop("rename_conflict", None)
-        _persist()
-        return {"ok": True}
+            task = copy.deepcopy(_tasks.get(task_id))
+        conflict = dict(task.get("rename_conflict") or {}) if task else {}
+        if not conflict:
+            return {"ok": False, "error": "该任务没有待处理的名称冲突"}
 
-    if action == "open_existing":
-        return {"ok": True, "path": conflict.get("existing", "")}
-
-    if action == "rename_with_index":
-        source = Path(conflict.get("source") or "")
-        if not source.is_file():
-            return {"ok": False, "error": "下载的文件已不在磁盘上,无法改名"}
-        title = (t.get("title") or "").strip()
-        base = build_filename(title, int(t.get("page") or 1))
-        for i in range(1, 10):
-            cand = source.with_name(f"{base} ({i}){source.suffix}")
-            if cand.exists():
-                continue
-            try:
-                new_path = _rename_with_sidecars(source, f"{base} ({i})")
-            except OSError as e:
-                return {"ok": False, "error": f"改名失败:{e}"}
+        if action == "cancel":
             with _tasks_lock:
-                t2 = _tasks.get(task_id)
-                if t2:
-                    t2.pop("rename_conflict", None)
-                    t2["actual_filename"] = str(new_path)
-            _persist()
-            return {"ok": True, "actual_filename": str(new_path)}
-        return {"ok": False, "error": "后缀已试到 (9) 仍冲突,请手动改名"}
+                current = _tasks.get(task_id)
+                if current:
+                    current.pop("rename_conflict", None)
+            _persist_file_state(task_id, "冲突处理状态")
+            return {"ok": True}
 
-    return {"ok": False, "error": f"未知操作:{action}"}
+        if action == "open_existing":
+            # 保留 legacy API：这里返回记录中的现有文件路径；真正的系统 reveal
+            # 在 reveal_path 中识别任务来源并强制执行下载根边界。这样旧调用方仍
+            # 能取得 path，而越界/外链路径不会触发任何系统文件管理器操作。
+            existing_raw = conflict.get("existing")
+            try:
+                existing = Path(existing_raw).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                return {"ok": False, "error": "现有文件路径无效"}
+            if not existing.is_file():
+                return {"ok": False, "error": "现有文件已不存在"}
+            return {"ok": True, "path": str(existing)}
+
+        if action == "rename_with_index":
+            try:
+                root = task_download_root(task or {})
+                conflict_source = resolve_download_path(
+                    conflict.get("source"), must_exist=True, root=root)
+            except (UnsafeDownloadPathError, FileNotFoundError):
+                return {"ok": False, "error": "下载的文件已不在安全下载目录内"}
+
+            if task and "manifest" in task:
+                source = manifest_media_path(task)
+                if source is None or source != conflict_source:
+                    return {"ok": False, "error": "产物清单与冲突源不一致，拒绝改名"}
+            else:
+                source = conflict_source
+            if not source.is_file():
+                return {"ok": False, "error": "下载的文件已不在磁盘上,无法改名"}
+
+            title = (task.get("title") or "").strip()
+            base = build_filename(title, int(task.get("page") or 1))
+            for index in range(1, 10):
+                try:
+                    candidate = resolve_download_path(
+                        source.with_name(f"{base} ({index}){source.suffix}"),
+                        root=root)
+                except UnsafeDownloadPathError:
+                    return {"ok": False, "error": "改名目标越出下载目录"}
+                if candidate.exists():
+                    continue
+                try:
+                    new_path = _rename_with_sidecars(
+                        source, f"{base} ({index})", root=root)
+                except (OSError, UnsafeDownloadPathError) as exc:
+                    return {"ok": False, "error": f"改名失败:{exc}"}
+                refresh_task_manifest(task_id, new_path)
+                with _tasks_lock:
+                    current = _tasks.get(task_id)
+                    if current:
+                        current.pop("rename_conflict", None)
+                        current.pop("rename_error", None)
+                        current["actual_filename"] = str(new_path)
+                _persist_file_state(task_id, "冲突改名与清单")
+                return {"ok": True, "actual_filename": str(new_path)}
+            return {"ok": False, "error": "后缀已试到 (9) 仍冲突,请手动改名"}
+
+        return {"ok": False, "error": f"未知操作:{action}"}
 
 
 # ---------- 在系统文件管理器中打开/定位 ----------
-# 早先两处路由直接硬编码 macOS 的 `open -R`。subprocess 的 check=False 只忽略
-# 返回码,命令不存在照样抛 FileNotFoundError——非 macOS 上这两个接口会 500
-# (被 @api_errors 兜住,用户侧表现为"打开失败")。这里按平台选命令并吞掉
-# OSError:能定位就定位,不能也绝不影响主流程。
 
 def _run_quiet(argv: list[str]) -> bool:
-    """跑一条 GUI 唤起命令。成功发起返回 True;命令不存在/无权限返回 False。
-
-    不看返回码:Windows 的 explorer 即便成功也常返回非 0。
-    """
     try:
         subprocess.run(argv, check=False)
         return True
-    except OSError as e:
-        log.warning("唤起文件管理器失败(%s):%s", " ".join(argv[:1]), e)
+    except OSError as exc:
+        log.warning("唤起文件管理器失败(%s):%s", " ".join(argv[:1]), exc)
         return False
 
 
-def reveal_path(path) -> bool:
-    """在文件管理器中定位并选中 path。返回是否成功发起。
+def _managed_task_for_path(path: Path) -> dict | None:
+    """返回声明该路径的任务；匹配用固定根，实际 reveal 仍要求当前根一致。"""
+    with _tasks_lock:
+        tasks = copy.deepcopy(list(_tasks.values()))
+    for task in tasks:
+        try:
+            root = (Path(task["artifact_root"]).expanduser().resolve(strict=False)
+                    if task.get("artifact_root")
+                    else Path(config.DOWNLOAD_DIR).expanduser().resolve(strict=False))
+            wanted = path.expanduser()
+            wanted = (wanted if wanted.is_absolute() else root / wanted).resolve(
+                strict=False)
+        except (OSError, RuntimeError, ValueError):
+            return task  # 无法解析的任务输入按不安全处理。
 
-    Linux 没有通用的"选中某文件"协议,退化为打开其所在目录。
-    """
-    p = Path(path)
+        raw_paths = []
+        if task.get("actual_filename"):
+            raw_paths.append(task["actual_filename"])
+        conflict = task.get("rename_conflict")
+        if isinstance(conflict, dict):
+            raw_paths.extend(conflict.get(key) for key in ("source", "expected", "existing"))
+        manifest = task.get("manifest")
+        if isinstance(manifest, dict):
+            raw_paths.extend(item.get("relpath") for item in manifest.get("artifacts", [])
+                             if isinstance(item, dict))
+        for raw in raw_paths:
+            if not raw:
+                continue
+            try:
+                candidate = Path(raw).expanduser()
+                candidate = candidate if candidate.is_absolute() else root / candidate
+                if candidate.resolve(strict=False) == wanted:
+                    return task
+            except (OSError, RuntimeError, ValueError):
+                continue
+    return None
+
+
+def _is_task_managed_path(path: Path) -> bool:
+    """旧内部谓词保留；安全 reveal 需要上面的任务上下文。"""
+    return _managed_task_for_path(path) is not None
+
+
+def reveal_path(path) -> bool:
+    """在文件管理器定位路径；任务来源路径必须通过其固定根和当前根双重校验。"""
+    candidate = Path(path)
+    task = _managed_task_for_path(candidate)
+    if task is not None:
+        try:
+            root = task_download_root(task)
+            candidate = resolve_download_path(candidate, root=root)
+        except UnsafeDownloadPathError:
+            log.error("拒绝在文件管理器中显示越界或已重绑定的任务路径: %s", path)
+            return False
     if sys.platform == "darwin":
-        return _run_quiet(["open", "-R", str(p)])
+        return _run_quiet(["open", "-R", str(candidate)])
     if sys.platform == "win32":
-        # /select,<path> 必须是同一个 argv 元素
-        return _run_quiet(["explorer", f"/select,{p}"])
-    return open_dir(p.parent if p.is_file() else p)
+        return _run_quiet(["explorer", f"/select,{candidate}"])
+    return open_dir(candidate.parent if candidate.is_file() else candidate)
 
 
 def open_dir(path) -> bool:
-    """在文件管理器中打开目录。返回是否成功发起。"""
-    p = str(path)
+    candidate = str(path)
     if sys.platform == "darwin":
-        return _run_quiet(["open", p])
+        return _run_quiet(["open", candidate])
     if sys.platform == "win32":
-        return _run_quiet(["explorer", p])
-    return _run_quiet(["xdg-open", p])
+        return _run_quiet(["explorer", candidate])
+    return _run_quiet(["xdg-open", candidate])

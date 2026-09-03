@@ -4,6 +4,59 @@
 
 ## [未发布]
 
+## [v2.3.0] - 2026-09-03
+
+### ⚙️ 可靠性与规模控制
+
+- 为任务与下载产物分别引入稳定 `task_id`、`artifact_set_id` 和版本化 manifest；新任务固定创建时下载根，文件定位、统计及删除优先使用可验证的相对路径清单。
+- 任务创建改为应用层 durable-first：原子去重和容量检查后先写完整 `tasks.json`，成功才发布到内存与队列。取消同样采用 durable-before-publish，写成功后 worker 才能看到 `cancelling` / `cancel`；写失败不发布，写盘期间若任务已终结或替换则用当前全表校正磁盘。活动任务删除等待 runtime 静默后，先提交剩余记录、再删除已确认归属的文件，并返回部分失败明细。
+- 增加明确容量边界：批量/播放列表 100、UP 清单 100、单 UP 续扫 500、等待任务 500、任务历史 10,000、`tasks.json` 启动读取 64 MiB、SSE 连接 16；超限不静默裁剪或覆盖原文件。
+- 手动与定时追更共享非阻塞原子预约；只有预约成功才报告已启动，忙时不排队且不改写上一轮 `last_*` 状态。预约持续到成功或错误终态状态提交完成；continuation 在首页漂移时同时保存 deep 终止证据和低页修复接缝，只有连续闭合接缝才推进 committed cursor；scheduler 启动幂等，下载 worker 会回收死亡线程后补足固定池。
+- 增加工作区 OS 单实例锁并在状态模块导入前取得，防止第二实例在端口失败前迁移第一实例的任务史；日志按约 5 MiB 轮转并保留 3 个备份。
+
+### 🔐 认证、API 与前端状态
+
+- 认证上下文统一为显式来源、账号 fingerprint、随机 incarnation 与生命期内 generation；合法 v1 状态分配新 incarnation 后写回 v2，缺失、损坏或不可恢复状态开启新生命期。请求绑定一致 Cookie 快照，慢响应通过 CAS 拒绝跨账号/跨生命期/跨代提交，内存与磁盘缓存按 fingerprint + incarnation + generation 隔离。
+- API 输入改为严格 JSON/字段类型、长度、范围和有限数值校验；认证竞态、上游限流、重复任务及容量错误使用稳定 JSON code，未知异常不回显内部信息。
+- 下载进度改为唯一聚合 `/api/tasks/events`，按稳定任务 ID 推送 snapshot/patch/heartbeat；旧单任务流仅兼容保留，两者共享有界连接槽并在断连后幂等释放。
+- 前端列表以稳定业务 ID 管理选择，统一 AbortController + incarnation/generation/sequence 阻止旧响应回写；登录 status 使用独立 sequence/controller，退出、来源切换、Cookie 导入和扫码 poll 在 mutation 前废弃旧 owner，旧 200/409/catch/finally 不再覆盖新 UI；危险操作使用共享原生确认框并展示 pending/部分失败。
+- 完善键盘导航、焦点圈定与恢复、背景 inert、live region、移动端安全区、最小触控目标、对比度和 reduced-motion 支持。
+- 收藏夹与追更合集的空封面统一为本地 Bilibili 风格占位；B 站默认素材图和图片加载失败不再造成视觉不一致或卡片收缩，收藏夹在内容已加载后可复用最新视频封面且不新增请求。
+
+### 🧰 运维、依赖与文档
+
+- `启动.command` 统一读取并校验 `BD_PORT`，使用项目虚拟环境、按依赖文件哈希同步依赖、预检 ffmpeg/ffprobe，只报告未知端口占用。使用单调时钟 deadline 且最多运行 60 秒的 readiness helper 只探测 HTTP ready 并打开浏览器；主 launcher 通过 `exec` 原位进入 `app.py`，不保存服务 PID、不创建 pidfile、也不向任何进程发信号，ready 超时只提示且不自动停止服务。
+- 顶层直接依赖锁定到已验证版本，并显式声明直接导入的 Werkzeug；保留 macOS 条件通知依赖。
+- README、需求、合规与待办按当前实现同步，删除固定端口强杀、二维码长期有效、所有 yt-dlp 请求均经过 governor 及确定性法律结论等过度承诺。
+
+本轮是 v2.2.0 之后的稳定性与边界收口，不改变“本地网页应用”的产品形态。重点是让任务、产物和认证状态拥有可证明的身份与提交顺序，让失败可观察，并为本地长期运行补上容量、连接、日志和启动边界。
+
+### P0 — 数据完整性与身份隔离
+
+- **稳定任务与产物身份**：任务记录使用独立 `task_id`，媒体及副件集合使用 `artifact_set_id`；新任务固定创建时下载根并维护版本化 artifact manifest。产物条目只接受规范的根内相对路径和白名单角色，artifact ID 由集合、角色和路径派生；历史任务补稳定集合 ID，并保留保守 legacy 定位路径。
+- **完成态以 manifest 为文件事实源**：主媒体对齐、副件生成和 manifest 刷新由每任务 artifact lifecycle 锁串行化；`actual_filename` 降为展示兼容字段。下载命令即使返回成功，若不能确认唯一、安全且存在的主媒体，也会落为失败，避免“完成记录指向未知文件”。
+- **durable-first 创建、取消与安全删除**：创建任务在锁内完成去重和容量检查，先原子写 `tasks.json`，再发布到内存和运行队列；入队失败保留明确失败记录。取消在 `_persist_lock → _tasks_lock` 锁序下生成候选快照，慢 IO 不持任务锁；写成功后才原位发布取消标志，写失败不发布。若 IO 期间任务已终结或替换，以当前全表校正磁盘，不复活旧任务。删除活动任务等待 runtime 静默后锁定最新 manifest，先提交移除记录后的任务表、后 unlink 已确认文件；超时、歧义、越界和文件失败通过 retained/partial/skipped/failed 明细暴露，不扩大删除范围。
+- **持久化健康可观察**：运行状态提交带代次 token；写盘未决或失败通过 `durable`、`persistence_pending`、`persistence_error` 暴露，旧提交不能覆盖新状态。启动加载对语法/语义损坏做 `.corrupt-*` 备份，对合法但超容量的历史明确退出且保留原文件。
+- **认证快照、生命期与代际缓存**：认证状态 v2 新增随机 32 位 hex incarnation，generation 只在该生命期内单调推进。合法 v1 状态保留来源、指纹、generation 与认证标志后分配新 incarnation；缺失、损坏或凭据不可恢复状态开启新生命期，不能从旧 generation 推断全局 high-water。请求取得一致的 context + cookiejar 快照，慢请求提交通过 CAS 校验；内存 API 缓存和页面磁盘缓存均按 fingerprint + incarnation + generation 隔离，路径为 `accounts/<fingerprint>/i-<incarnation>/g-<generation>/...`，生产读取不回退旧生命期或旧代缓存。
+
+### P1 — API、实时流、前端与容量
+
+- **严格 API 输入与错误**：JSON 写接口不再把空 body、坏 JSON 或数组根当成空对象；字符串、整数、有限数值、布尔和列表统一做类型、范围、长度与数量校验。非 2xx API 错误统一为 `{ok:false,error,code}`，容量/字段/重复任务附结构化上下文，未知异常只回通用 `internal_error`；API 响应统一禁止缓存。
+- **唯一聚合任务 SSE**：新增 `/api/tasks/events`，首包发送带 revision 的 `snapshot`，后续按稳定任务 ID 发送 `patch` 和 heartbeat。前端只建立一个聚合 EventSource，校验 revision、退避重连并可降级轮询；`/api/progress/<task_id>` 保留一个兼容周期。两类流共享单进程 16 条连接容量，满载明确返回 503。
+- **前端异步一致性**：缓存加载、任务加载、扫码、登录状态和下载解析使用 AbortController + incarnation/generation/sequence 防止旧 response/catch/finally 回写；登录 status 使用独立 owner，退出、来源切换、Cookie 导入与可能保存会话的扫码 poll 则共享单调 mutation owner，在响应、status 刷新和提示/二维码清理边界淘汰迟到操作；列表选择、全选、删除和增量合并改用稳定业务 ID，不再依赖过滤或排序后的数组下标；确认操作改为 Promise 化原生 dialog，按钮 pending 状态统一在 `finally` 恢复。
+- **无障碍补齐**：增加 skip link、语义 nav/main、`aria-current`、live region、抽屉背景 inert、焦点圈定与恢复、Escape 关闭、键盘 tabs、可访问名称和 progressbar 状态；粗指针交互目标至少 44px，支持 safe-area 与 `prefers-reduced-motion`。
+- **容量控制**：单次批量输入、批量下载和播放列表展开上限 100；UP 清单上限 100；单 UP continuation 累计上限 500；queued 任务上限 500；任务历史上限 10,000；`tasks.json` 启动读取上限 64 MiB；SSE 连接上限 16。超限整批拒绝或明确停止，不静默裁历史、游标或任务。
+- **请求治理边界校正**：项目直接 `requests` / B 站 API 调用继续受两槽、分类间隔和 412/429 冷却治理；文档明确 yt-dlp 只在每次 attempt 启动前等待 governor，其内部 HTTP 不属于两槽逐请求保证。
+
+### P2 — 运行、交付与文档
+
+- **工作区单实例**：新增跨平台 OS 文件锁，并在任何运行态数据读取/迁移前取得；第二实例明确退出，避免把第一实例的活动任务误迁移为 `interrupted`。锁文件 PID 仅用于诊断，内核锁才是所有权依据。
+- **安全启动器、`BD_PORT` 与进程生命周期**：启动器遵循 `BD_PORT`，不再把任意端口占用者当作旧实例 TERM 或 `kill -9`；检测到本项目实例或未知占用时只报告并退出。readiness helper 使用单调时钟 deadline 且最多运行 60 秒且只负责在本应用 ready 后打开浏览器；主 launcher 用 `exec` 进入 Python，不维护数值 PID、pidfile 或 cleanup signal，终端信号和退出码直接属于服务，超时不自动终止服务。
+- **原子追更预约**：手动路由在报告 `started=true` 前先取得与 scheduler 共用的非阻塞业务预约；线程启动失败释放预约。状态包装器仍调用零参数模块符号 `refresh_once()`，忙时不污染上一轮状态，预约只在成功或错误终态写完后释放。
+- **有界日志**：`data/app.log` 改为约 5 MiB 大小轮转，保留 3 个备份并同时输出终端，避免无人值守运行时无限增长。
+- **精确平台依赖**：macOS 完成通知所需直接依赖使用条件化精确版本 `pync==2.0.3`，非 macOS 环境不安装；通知定位通过包元数据查找发行内的 `terminal-notifier`，不依赖虚拟环境目录名。
+- **文档校正**：README、当前需求、合规边界和 BACKLOG 顶部同步本轮实现；删除“扫码长期有效”“浏览器 tab 必须一直打开”“所有请求都受两槽 governor”“所有数据绝不与 B 站通信”及确定性法律结论，补齐认证命名空间缓存、容量、聚合/兼容 SSE、单实例与安全删除边界；已发布历史保持不变。
+
 ## [v2.2.0] - 2026-08-31
 
 本版围绕「少打上游、绝不悄悄丢任务、自动追更不漏稿、本机接口不被跨站调用」完成
@@ -506,6 +559,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.3.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.3.0
 [v2.2.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.2.0
 [v2.1.1]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.1.1
 [v2.1.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.1.0

@@ -1,52 +1,88 @@
-/* 观看历史:服务器分页(100/页)+ 本地无限滚;滚到底自动向服务器要更早的。 */
-import { registerPage, state, libDom, renderPage, getLibSearchQuery, curChunk } from '../lib.js';
-import { getJSON } from '../net.js';
+/* 观看历史：服务器分页（100/页）+ 本地无限滚；滚到底自动请求更早内容。 */
+import { registerPage, state, libDom, renderPage, getLibSearchQuery, curChunk,
+         replaceItems, appendItems } from '../lib.js';
+import { getJSON, isAbortError } from '../net.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
 
 let _histServerPage = 0;
 let _histHasMore = false;
 let _histLoading = false;
+let _histGeneration = 0;
+let _histController = null;
+
+function cancelHistoryLoad() {
+  _histGeneration++;
+  if (_histController) _histController.abort();
+  _histController = null;
+  _histLoading = false;
+}
+
+function historyRequestIsCurrent(generation, controller) {
+  return generation === _histGeneration
+    && controller === _histController
+    && !controller.signal.aborted
+    && state.mode === 'history';
+}
 
 export async function loadHistory() {
+  cancelHistoryLoad();
+  const generation = _histGeneration;
+  const controller = new AbortController();
+  _histController = controller;
+  _histLoading = true;
+
   const d = libDom();
   d.list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
   d.meta.textContent = '';
-  state.items = [];
+  replaceItems([]);
   state.shown = 0;
   _histServerPage = 0;
-  await fetchHistoryPage();
-}
-
-async function fetchHistoryPage() {
+  _histHasMore = false;
   try {
-    const r = await getJSON(`/api/history?page=${_histServerPage + 1}&size=100`);
-    if (!r.ok) throw new Error(r.error || '加载失败');
-    _histServerPage++;
-    const items = r.items || [];
-    _histHasMore = items.length === 100;
-    if (_histServerPage === 1) {
-      state.items = items;
-    } else {
-      const seen = new Set(state.items.map(it => it.bvid));
-      state.items = state.items.concat(items.filter(it => !seen.has(it.bvid)));
-    }
-    renderPage();
-  } catch (e) {
-    libDom().list.innerHTML =
-      `<div class="empty">${escapeHtml(e.message || '加载失败')}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
-    _histHasMore = false;
+    await fetchHistoryPage(generation, controller);
+  } finally {
+    if (historyRequestIsCurrent(generation, controller)) _histLoading = false;
   }
 }
 
-/* 滚到底自动加载更早历史;没有更多/正在加载/搜索中时不触发 */
+async function fetchHistoryPage(generation, controller) {
+  const nextPage = _histServerPage + 1;
+  try {
+    const r = await getJSON(`/api/history?page=${nextPage}&size=100`, {
+      signal: controller.signal,
+    });
+    if (!historyRequestIsCurrent(generation, controller)) return false;
+    if (!r.ok) throw new Error(r.error || '加载失败');
+
+    const items = Array.isArray(r.items) ? r.items : [];
+    _histServerPage = nextPage;
+    _histHasMore = items.length === 100;
+    if (nextPage === 1) replaceItems(items);
+    else appendItems(items);
+    renderPage();
+    return true;
+  } catch (error) {
+    if (isAbortError(error) || !historyRequestIsCurrent(generation, controller)) return false;
+    libDom().list.innerHTML =
+      `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
+    _histHasMore = false;
+    return false;
+  }
+}
+
 export async function maybeLoadMoreHistory() {
-  if (state.mode !== 'history' || !_histHasMore || _histLoading) return;
+  if (state.mode !== 'history' || !_histHasMore || _histLoading || !_histController) return;
   if (getLibSearchQuery()) return;
+  const generation = _histGeneration;
+  const controller = _histController;
   _histLoading = true;
   state.shown += curChunk();
-  await fetchHistoryPage();
-  _histLoading = false;
+  try {
+    await fetchHistoryPage(generation, controller);
+  } finally {
+    if (historyRequestIsCurrent(generation, controller)) _histLoading = false;
+  }
 }
 
 registerPage('history', {
@@ -54,4 +90,5 @@ registerPage('history', {
   retry: loadHistory,
   showCount: false,
   fetchMore: maybeLoadMoreHistory,
+  deactivate: cancelHistoryLoad,
 });

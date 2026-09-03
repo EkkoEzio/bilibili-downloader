@@ -13,6 +13,10 @@ import config
 
 log = logging.getLogger("bd.parsing")
 
+# 批量入口与 yt-dlp 提取阶段共享的硬边界。多取 1 项用于让路由区分“正好 100”
+# 与“实际还有更多”，避免先完整展开超大播放列表再拒绝。
+MAX_PLAYLIST_ITEMS = 100
+
 
 def _ydl_opts(extra: Optional[dict] = None) -> dict:
     """解析/下载共用的基础 opts:静默 + cookie + 限速(字节/秒,None 表示不限)。
@@ -31,26 +35,25 @@ def _ydl_opts(extra: Optional[dict] = None) -> dict:
 
 def _summarize(info: dict) -> dict:
     """从 yt-dlp 单视频 info 提取展示用字段 + 归一化清晰度 + 预估大小。"""
-    options = classify_formats(info.get("formats", []))
+    raw_formats = info.get("formats", [])
+    formats = raw_formats if isinstance(raw_formats, list) else []
+    options = classify_formats(formats)
     video_opts = [o for o in options if o["kind"] == "video"]
     av_opts = [o for o in options if o["kind"] == "av"]
     best = (video_opts[0]["label"] if video_opts
             else (av_opts[0]["label"] if av_opts else ""))
-    # 给每个清晰度选项补预估大小(MB)
-    fmt_map = {f.get("format_id"): f for f in info.get("formats", [])}
+    fmt_map = {f.get("format_id"): f for f in formats if isinstance(f, dict)}
     for o in options:
         fid = o["format_id"]
         f = fmt_map.get(fid, {})
         size = f.get("filesize") or f.get("filesize_approx") or 0
         if not size and f.get("tbr"):
-            # 用码率×时长估算(字节)
             dur = info.get("duration") or 0
             size = int(f["tbr"] * 1024 / 8 * dur)
         o["size_mb"] = round(size / 1024 / 1024, 1) if size else 0
     return {
         "title": info.get("title", ""),
         "uploader": info.get("uploader", ""),
-        # yt-dlp 对 B 站把 UP 的 mid 放在 uploader_id,下载记录页 UP 名跳转用
         "uploader_mid": info.get("uploader_id") or "",
         "duration": info.get("duration", 0),
         "thumbnail": info.get("thumbnail", ""),
@@ -64,40 +67,47 @@ def _extract_info(url: str, opts: dict, error_prefix: str) -> dict:
     governor.wait("media", endpoint=url)
     try:
         with yt_dlp.YoutubeDL(opts) as ydl:
-            return ydl.extract_info(url, download=False)
+            info = ydl.extract_info(url, download=False)
     except yt_dlp.utils.DownloadError as e:
         raise RuntimeError(f"{error_prefix}:{e}") from e
+    if not isinstance(info, dict):
+        raise RuntimeError(f"{error_prefix}:返回数据格式无效")
+    return info
 
 
 def parse_video(url: str) -> dict:
-    """解析视频。
-
-    支持分 P:若是多 P 视频(不带 ?p=),返回 parts 列表供前端选择,
-    并默认用第一 P 的清晰度信息。单 P 则 parts 为空。
-    """
+    """解析单视频或多 P；坏分 P 被隔离，保留有效条目的原始页码。"""
     opts = _ydl_opts({"skip_download": True})
     info = _extract_info(url, opts, "解析失败")
 
-    # 多 P:yt-dlp 返回 _type=playlist,entries 为各分 P
-    if info.get("_type") == "playlist" and info.get("entries"):
+    if info.get("_type") == "playlist":
+        raw_entries = info.get("entries")
+        entries = raw_entries if isinstance(raw_entries, list) else []
+        playlist_title = str(info.get("title") or "")
         parts = []
-        for idx, e in enumerate(info["entries"], 1):
-            # 真实标题优先;若无,fallback 用 playlist 标题 + 第N集,避免同名
-            et = (e.get("title") or "").strip()
-            if not et or et == info.get("title", ""):
-                et = f"{info.get('title','')} 第{idx}集"
+        fallback_thumbnail = ""
+        for idx, entry in enumerate(entries, 1):
+            if not isinstance(entry, dict):
+                continue
+            if not fallback_thumbnail and entry.get("thumbnail"):
+                fallback_thumbnail = str(entry.get("thumbnail") or "")
+            entry_title = str(entry.get("title") or "").strip()
+            if not entry_title or entry_title == playlist_title:
+                entry_title = f"{playlist_title} 第{idx}集"
             parts.append({
                 "page": idx,
-                "title": et,
-                "duration": e.get("duration", 0),
+                "title": entry_title,
+                "duration": entry.get("duration") or 0,
             })
+        if not parts:
+            raise RuntimeError("未找到可用分 P 条目")
         summary = {
-            "title": info.get("title", ""),
+            "title": playlist_title,
             "uploader": info.get("uploader", ""),
             "uploader_mid": info.get("uploader_id") or "",
-            "duration": parts[0]["duration"] if parts else 0,
-            "thumbnail": info.get("thumbnail", "") or (info["entries"][0].get("thumbnail", "") if info["entries"] else ""),
-            "formats": [],      # 多 P 时清晰度要选了 P 再查
+            "duration": parts[0]["duration"],
+            "thumbnail": str(info.get("thumbnail") or "") or fallback_thumbnail,
+            "formats": [],
             "best_label": "",
         }
         return {**summary, "is_multi_part": True, "parts": parts}
@@ -117,42 +127,45 @@ def parse_part(url: str, page: int) -> dict:
 
 
 def resolve_playlist(url: str) -> dict:
-    """解析收藏夹/合集/UP主页等多视频链接,返回待下载项列表。
-
-    用 yt-dlp flat 模式快速列出所有视频(不逐个拉清晰度),统一返回
-    {kind:'list', title, items:[{title,url,duration}]}。
-    单视频 URL 也能进,返回单项列表。
-    """
-    opts = _ydl_opts({"skip_download": True, "extract_flat": True})
+    """解析收藏夹/合集/UP主页；坏 entry 跳过，全部无效时明确失败。"""
+    opts = _ydl_opts({
+        "skip_download": True,
+        "extract_flat": True,
+        "playlistend": MAX_PLAYLIST_ITEMS + 1,
+    })
     info = _extract_info(url, opts, "解析失败")
 
     items = []
-    title = info.get("title", "")
-    if info.get("_type") == "playlist" and info.get("entries"):
-        for idx, e in enumerate(info["entries"], 1):
-            # flat 模式下 entry 的 url 才是可下载的完整链接
-            item_url = e.get("url") or e.get("id") or ""
-            # bilibili 的 entry.id 可能是裸 BV,补全
-            if item_url and not item_url.startswith("http"):
+    title = str(info.get("title") or "")
+    if info.get("_type") == "playlist":
+        raw_entries = info.get("entries")
+        entries = raw_entries if isinstance(raw_entries, list) else []
+        for idx, entry in enumerate(entries, 1):
+            if not isinstance(entry, dict):
+                continue
+            raw_url = entry.get("url") or entry.get("id")
+            item_url = str(raw_url or "").strip()
+            if not item_url:
+                continue
+            if not item_url.startswith(("http://", "https://")):
                 item_url = f"https://www.bilibili.com/video/{item_url}"
-            # flat 模式元数据稀疏:标题/时长大多拿不到,用兜底
-            item_title = e.get("title") or ""
+            item_title = str(entry.get("title") or "").strip()
             if not item_title:
-                # 分P链接 ?p=N 用 P 序号兜底
                 if "?p=" in item_url:
-                    pnum = item_url.split("?p=")[-1].split("&")[0]
+                    pnum = item_url.split("?p=", 1)[1].split("&", 1)[0]
                     item_title = f"第 {pnum} 集"
                 else:
                     item_title = f"第 {idx} 项"
             items.append({
                 "title": item_title,
                 "url": item_url,
-                "duration": e.get("duration") or 0,
+                "duration": entry.get("duration") or 0,
             })
+        if not items:
+            raise RuntimeError("未找到可用播放列表条目")
     else:
-        # 单视频
         items.append({
-            "title": info.get("title", "(无标题)"),
+            "title": str(info.get("title") or "(无标题)"),
             "url": url,
             "duration": info.get("duration") or 0,
         })

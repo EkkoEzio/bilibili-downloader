@@ -8,7 +8,12 @@
     "<mid>": {
       "bvid": ..., "ts": ..., "title": ..., "fetched_at": ...,
       "same_ts_bvids": [...],
-      "scan": {"ps": ..., "next_pn": ..., "items": [...]}
+      "scan": {
+        "ps": ..., "next_pn": ..., "deep_next_pn": ...,
+        "head_next_pn": ..., "head_repair_until_pn": ...,
+        "terminal_pn": ... | null, "head_bvid": ..., "head_ts": ...,
+        "items": [...]
+      }
     }
   },
       # (ts,bvid集合) 是已完整覆盖的复合游标；scan 是达到单轮页预算后的续扫点。
@@ -28,6 +33,27 @@ import storage
 from config import UP_LIST_FILE
 
 _lock = threading.Lock()
+
+# 个人本地清单的硬边界。达到上限时明确拒绝，绝不静默截断，否则用户会误以为
+# 被裁掉的 UP/续扫投稿仍在受管。
+MAX_UPS = 100
+MAX_SCAN_ITEMS = 500
+
+
+class UpListCapacityError(RuntimeError):
+    """UP 清单或单个续扫状态超过安全容量。"""
+
+    def __init__(self, capacity: str, limit: int, current: int,
+                 requested: int = 0) -> None:
+        self.capacity = str(capacity)
+        self.limit = int(limit)
+        self.current = int(current)
+        self.requested = int(requested)
+        if self.capacity == "ups":
+            detail = f"UP 清单容量不足（当前 {self.current}，上限 {self.limit}）"
+        else:
+            detail = f"续扫状态含 {self.current} 项，超过安全上限 {self.limit}"
+        super().__init__(f"{detail}；请先清理或重置后重试")
 
 
 class UpListWriteError(RuntimeError):
@@ -54,6 +80,8 @@ def _commit(data: dict) -> None:
 def list_ups() -> list[dict]:
     with _lock:
         ups = _read().get("ups", [])
+        if len(ups) > MAX_UPS:
+            raise UpListCapacityError("ups", MAX_UPS, len(ups))
     # 老数据带 auto 字段(开关已废除),读时丢弃;quality 统一补默认 ""
     for u in ups:
         u.pop("auto", None)
@@ -85,6 +113,8 @@ def add_up(mid: int, uname: str = "", face: str = "",
                 if changed:
                     _commit(data)
                 return u
+        if len(data["ups"]) >= MAX_UPS:
+            raise UpListCapacityError("ups", MAX_UPS, len(data["ups"]), 1)
         u = {"mid": int(mid), "uname": uname, "face": face,
              "added_at": int(time.time()), "quality": ""}
         data["ups"].append(u)
@@ -187,11 +217,18 @@ def mark_seen(mid: int, bvid: str, ts: int, title: str = "",
 
 def save_scan_state(mid: int, state: dict) -> None:
     """持久化未完成分页扫描的续点，但不推进已提交游标。"""
+    scan = dict(state)
+    items = scan.get("items", [])
+    if not isinstance(items, list):
+        raise ValueError("续扫状态 items 必须是 list")
+    if len(items) > MAX_SCAN_ITEMS:
+        raise UpListCapacityError(
+            "scan_items", MAX_SCAN_ITEMS, len(items))
     with _lock:
         data = _read()
         data.setdefault("last_seen", {})
         entry = dict(data["last_seen"].get(str(mid), {}) or {})
-        entry["scan"] = dict(state)
+        entry["scan"] = scan
         data["last_seen"][str(mid)] = entry
         _commit(data)
 
