@@ -52,10 +52,62 @@ done
 
 PORT_INFO="$(lsof -nP -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null || true)"
 if [[ -n "$PORT_INFO" ]]; then
-  echo "错误：127.0.0.1:${PORT} 所用端口已被占用。启动器不会终止任何现有进程。"
-  echo "请先确认下列进程归属并正常停止它，或使用其他 BD_PORT："
-  echo "$PORT_INFO"
-  exit 1
+  # 同源才接管：只有确认监听进程属于本项目（工作目录为本目录且在运行
+  # app.py）才向它发送信号；未知进程一律只报告，不做任何终止。
+  OWN_PIDS=()
+  HAS_FOREIGN=0
+  while IFS= read -r pid; do
+    [[ -n "$pid" ]] || continue
+    pid_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" || true
+    pid_cmd="$(ps -p "$pid" -o command= 2>/dev/null || true)"
+    if [[ "$pid_cwd" == "$SCRIPT_DIR" && "$pid_cmd" == *app.py* ]]; then
+      OWN_PIDS+=("$pid")
+    else
+      HAS_FOREIGN=1
+    fi
+  done < <(lsof -nP -t -iTCP:"$PORT" -sTCP:LISTEN 2>/dev/null | sort -u || true)
+
+  if ((HAS_FOREIGN)) || ((${#OWN_PIDS[@]} == 0)); then
+    echo "错误：127.0.0.1:${PORT} 被非本项目进程占用。启动器不会终止未知进程。"
+    echo "请先确认下列进程归属并正常停止它，或使用其他 BD_PORT："
+    echo "$PORT_INFO"
+    exit 1
+  fi
+
+  echo "检测到本项目旧实例（PID ${OWN_PIDS[*]}），正在优雅停止……"
+  # 先 SIGINT（等价于在服务终端按 Ctrl-C，让 Python 正常收尾），再
+  # SIGTERM；SIGKILL 只发给已再次确认工作目录归属、仍存活的进程。
+  kill -INT ${OWN_PIDS[@]+"${OWN_PIDS[@]}"} 2>/dev/null || true
+  waited=0
+  while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+      && ((waited < 20)); do
+    sleep 0.5
+    waited=$((waited + 1))
+  done
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    kill -TERM ${OWN_PIDS[@]+"${OWN_PIDS[@]}"} 2>/dev/null || true
+    waited=0
+    while lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1 \
+        && ((waited < 10)); do
+      sleep 0.5
+      waited=$((waited + 1))
+    done
+  fi
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    for pid in ${OWN_PIDS[@]+"${OWN_PIDS[@]}"}; do
+      pid_cwd="$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p')" || true
+      if [[ "$pid_cwd" == "$SCRIPT_DIR" ]] \
+          && ps -p "$pid" >/dev/null 2>&1; then
+        kill -KILL "$pid" 2>/dev/null || true
+      fi
+    done
+    sleep 1
+  fi
+  if lsof -nP -iTCP:"$PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+    echo "错误：旧实例未能停止，端口 ${PORT} 仍被占用，请手动处理后再运行。"
+    exit 1
+  fi
+  echo "旧实例已停止，继续启动。"
 fi
 
 URL="http://127.0.0.1:${PORT}"

@@ -1284,3 +1284,257 @@ def test_disk_bytes_survives_missing_dir(monkeypatch, tmp_path):
     """下载目录不存在时统计不炸,返回 0。"""
     monkeypatch.setattr(taskstore.config, "DOWNLOAD_DIR", tmp_path / "并不存在")
     assert taskstore.compute_stats()["disk_bytes"] == 0
+
+
+# ---------- DASH 多流进度聚合 / 排队任务删除 ----------
+
+def test_progress_hook_aggregates_dash_streams_monotonically(monkeypatch):
+    """DASH 组合轨两流依次下载:进度不得回跳,全部流完成前不得报 100%。
+
+    回归:旧实现直接取最近一次回调的流内百分比——视频流下完 100% 后,
+    音轨从 0% 重新爬,页面进度条回跳;且第一条流 finished 就把状态置成
+    merging,随后又被 downloading 覆盖,状态来回闪。
+
+    上一版只按字节总和聚合,但「视频流独自占满分母」仍会先到 100%,
+    第二条流一出现分母变大就掉回去,所以这里逐步骤断言单调性。
+    """
+    _mk_task("agg1")
+    persists = []
+    monkeypatch.setattr(downloader, "_persist", lambda: persists.append(1))
+    try:
+        hook = downloader._progress_hook("agg1", 2)
+        seen = []
+
+        def step(**payload):
+            hook(payload)
+            seen.append(downloader._tasks["agg1"]["progress"])
+
+        # 视频流: 0→100%(总量 800)
+        for dl in (0, 400, 800):
+            step(status="downloading", downloaded_bytes=dl, total_bytes=800,
+                 info_dict={"format_id": "303"})
+        assert downloader._tasks["agg1"]["status"] == "downloading"
+        assert seen[-1] < 100.0, f"两流只完成一条就报 100%: {seen}"
+        # 视频流 finished:仍是两流之一,不得进入 merging
+        hook({"status": "finished", "info_dict": {"format_id": "303"}})
+        assert downloader._tasks["agg1"]["status"] == "downloading", \
+            "第一条流完成就置 merging 会导致状态闪烁"
+        # 音轨开始并推进:进度只能前进,不得回跳
+        step(status="downloading", downloaded_bytes=0, total_bytes=200,
+             info_dict={"format_id": "302"})
+        step(status="downloading", downloaded_bytes=100, total_bytes=200,
+             info_dict={"format_id": "302"})
+        assert all(b >= a for a, b in zip(seen, seen[1:])), \
+            f"进度出现回跳: {seen}"
+        # 音轨 finished:两流全部完成,才进入 merging/100%
+        hook({"status": "finished", "info_dict": {"format_id": "302"}})
+        assert downloader._tasks["agg1"]["status"] == "merging"
+        assert downloader._tasks["agg1"]["progress"] == 100
+    finally:
+        downloader._tasks.pop("agg1", None)
+
+
+def test_progress_hook_single_stream_keeps_old_semantics(monkeypatch):
+    """单流下载(仅音频/单体格式)行为不变:finished 即 merging/100%。"""
+    _mk_task("s1")
+    try:
+        hook = downloader._progress_hook("s1", 1)
+        hook({"status": "downloading", "downloaded_bytes": 5,
+              "total_bytes": 10, "info_dict": {"format_id": "302"}})
+        assert downloader._tasks["s1"]["progress"] == 50.0
+        hook({"status": "finished", "info_dict": {"format_id": "302"}})
+        assert downloader._tasks["s1"]["status"] == "merging"
+        assert downloader._tasks["s1"]["progress"] == 100
+    finally:
+        downloader._tasks.pop("s1", None)
+
+
+def test_progress_hook_fallback_without_format_id(monkeypatch):
+    """回调缺 format_id 时退化为单桶记账,等价旧行为。"""
+    _mk_task("nf1")
+    try:
+        hook = downloader._progress_hook("nf1", 2)
+        hook({"status": "downloading", "downloaded_bytes": 8, "total_bytes": 10})
+        assert downloader._tasks["nf1"]["progress"] == 80.0
+        # 第一条流 finished(无 format_id,与 downloading 同桶)
+        hook({"status": "finished"})
+        # 第二条流 finished:达到 expected=2,进入 merging
+        hook({"status": "finished"})
+        assert downloader._tasks["nf1"]["status"] == "merging"
+    finally:
+        downloader._tasks.pop("nf1", None)
+
+
+def test_base_opts_passes_stream_count_to_progress_hook(monkeypatch, tmp_path):
+    """组合轨 format 的进度钩子要拿到正确的流数。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    _mk_task("bo1", title="标题", status="queued")
+    try:
+        opts = downloader._base_opts("303+302", 1, "bo1")
+        hooks = opts["progress_hooks"]
+        assert len(hooks) == 1
+        # 通过行为验证流数:两次 finished 才 merging
+        hooks[0]({"status": "finished", "info_dict": {"format_id": "303"}})
+        assert downloader._tasks["bo1"]["status"] != "merging"
+        hooks[0]({"status": "finished", "info_dict": {"format_id": "302"}})
+        assert downloader._tasks["bo1"]["status"] == "merging"
+    finally:
+        downloader._tasks.pop("bo1", None)
+
+
+def test_base_opts_treats_best_as_two_streams(monkeypatch, tmp_path):
+    """``format=best`` 必须按两流计:它可能解析成 bestvideo+bestaudio。
+
+    回归:流数原来只按 ``fmt_str.count("+") + 1`` 算,"best" 得到 1。而
+    ``_base_opts`` 对 "best" 恰恰设置了 ``merge_output_format``(说明它预期
+    可能是组合轨)。按单流记账时,第一条流 finished 就把状态置成
+    merging/100%,第二条流一开始又退回 downloading,进度卡在 100% 直到
+    音轨下完——正是多流聚合要消灭的回跳与状态闪烁。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    _mk_task("bo2", title="标题", status="queued")
+    try:
+        opts = downloader._base_opts("best", 1, "bo2")
+        hooks = opts["progress_hooks"]
+        assert len(hooks) == 1
+        # 第一条流下完:仍是两流之一,不得报 100%/merging
+        hooks[0]({"status": "finished", "info_dict": {"format_id": "bv"}})
+        assert downloader._tasks["bo2"]["status"] != "merging", \
+            '"best" 被当成单流:第一条流完成就误报合并中'
+        assert downloader._tasks["bo2"]["progress"] < 100
+        # 第二条流(音轨)下完才进入 merging
+        hooks[0]({"status": "finished", "info_dict": {"format_id": "ba"}})
+        assert downloader._tasks["bo2"]["status"] == "merging"
+        assert downloader._tasks["bo2"]["progress"] == 100
+    finally:
+        downloader._tasks.pop("bo2", None)
+
+
+def test_delete_queued_task_does_not_wait_for_busy_workers(monkeypatch, tmp_path):
+    """删除仍在队列、从未开始执行的任务:不等 worker 静默,立即删成功。
+
+    回归:旧实现把「排队中」任务也送进 10 秒 quiesce 等待——worker 全忙
+    时该作业迟迟轮不到执行,删除永远超时失败,任务卡在「取消中」。
+    """
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+
+    # 占住全部 worker 槽位的慢下载:确保目标任务一直轮不到执行。
+    import threading as _threading
+    release_slow = _threading.Event()
+
+    def _slow_run_download(*args, **kwargs):
+        release_slow.wait(timeout=30)
+
+    task = _mk_task("q1", status="queued", cancel=False)
+    task["artifact_root"] = str(tmp_path)
+    task["manifest"] = {"version": 1, "artifacts": []}
+    slow = downloader._RuntimeJob(("slow0", "u", "l", [], 1))
+    try:
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs["slow0"] = slow
+        # 目标任务:已注册 runtime 但从未 started。
+        job = downloader._RuntimeJob(("q1", "u", "l", [], 1))
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs["q1"] = job
+
+        result = downloader.delete_tasks_detailed(
+            ["q1"], delete_file=False, timeout=0.3)
+        assert result["count"] == 1, \
+            "排队中(未开始)任务的删除不应等待 worker 静默"
+        assert downloader._tasks.get("q1") is None or \
+            downloader._tasks["q1"].get("status") in taskstore.TERMINAL
+        # 取消意图已同步落成 cancelled 终态(若记录仍在)。
+        if "q1" in downloader._tasks:
+            assert downloader._tasks["q1"]["status"] == "cancelled"
+    finally:
+        release_slow.set()
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs.pop("q1", None)
+            downloader._runtime_jobs.pop("slow0", None)
+        downloader._tasks.pop("q1", None)
+        downloader._tasks.pop("slow0", None)
+
+
+def test_delete_running_task_still_waits_for_quiesce(monkeypatch, tmp_path):
+    """已开始执行的下载任务仍必须等待 worker 静默后才删除。"""
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    import threading as _threading
+    started = _threading.Event()
+    release = _threading.Event()
+
+    _mk_task("r1", status="downloading")
+    job = downloader._RuntimeJob(("r1", "u", "l", [], 1))
+    job.started.set()  # worker 已进入执行
+    try:
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs["r1"] = job
+
+        def _wait_in_other_thread():
+            result = downloader.delete_tasks_detailed(
+                ["r1"], delete_file=False, timeout=5)
+            return result
+
+        import concurrent.futures as _cf
+        with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(_wait_in_other_thread)
+            assert started.wait(2) is False, "未放行前不应有 started 事件可等"
+            # 删除应阻塞在 quiesce 等待,而不是立刻返回
+            done = _cf.wait([fut], timeout=0.4).done
+            assert not done or fut.result()["count"] == 0, \
+                "运行中的任务不允许在 worker 静默前删除成功"
+            # worker 收尾:落 cancelled 终态并静默
+            downloader._finalize_cancelled("r1")
+            job.quiesced.set()
+            result = fut.result(timeout=5)
+        assert result["count"] == 1
+    finally:
+        release.set()
+        job.quiesced.set()
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs.pop("r1", None)
+        downloader._tasks.pop("r1", None)
+
+
+def test_progress_hook_reset_discards_previous_attempt_state(monkeypatch):
+    """重试前必须清空上一次尝试的流记账,否则重试会瞬间跳到 100%。
+
+    回归:_base_opts 在重试循环之外构建,同一个 progress hook 闭包跨 attempt
+    复用。上一次尝试已经把「视频流」标成 finished,重试的音轨一下完就满足
+    「全部流完成」,进度直接 100% 并置 merging——而音轨其实还在下,用户看到
+    的是「重试中」几秒后满格卡住。
+    """
+    _mk_task("rs1", status="retrying", progress=0)
+    try:
+        hook = downloader._progress_hook("rs1", 2)
+        # 上一次尝试:视频流下完并 finished
+        hook({"status": "downloading", "downloaded_bytes": 800,
+              "total_bytes": 800, "info_dict": {"format_id": "303"}})
+        hook({"status": "finished", "info_dict": {"format_id": "303"}})
+        assert downloader._tasks["rs1"]["status"] == "downloading"
+
+        hook.reset()  # _run_download 在每次 attempt 开始前调用
+        # 重试的音轨刚下 10%:不得因为上一次的 finished 计数就报 100%/merging
+        hook({"status": "downloading", "downloaded_bytes": 20,
+              "total_bytes": 200, "info_dict": {"format_id": "302"}})
+        task = downloader._tasks["rs1"]
+        assert task["progress"] <= 20.0, \
+            f"重试沿用了上一次尝试的字节记账: {task['progress']}"
+        assert task["status"] == "downloading", "重试首个回调不得误报 merging"
+        # 这次两条流都真正完成,才允许 100%
+        hook({"status": "finished", "info_dict": {"format_id": "302"}})
+        hook({"status": "finished", "info_dict": {"format_id": "303"}})
+        assert task["status"] == "merging"
+        assert task["progress"] == 100
+    finally:
+        downloader._tasks.pop("rs1", None)
+
+
+def test_run_download_resets_progress_hooks_per_attempt():
+    """重试循环里必须对 progress hook 调 reset():光有 reset 方法不接线没用。"""
+    src = inspect.getsource(downloader._run_download)
+    assert 'getattr(hook, "reset", None)' in src, "重试前没有重置进度钩子"
+    loop_idx = src.find("for attempt in range(")
+    reset_idx = src.find('getattr(hook, "reset", None)')
+    assert 0 < loop_idx < reset_idx, "重置必须发生在重试循环内部"

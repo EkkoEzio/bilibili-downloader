@@ -87,6 +87,9 @@ class _RuntimeJob:
         self.args = args
         self.task_id = str(args[0])
         self.quiesced = threading.Event()
+        # worker 真正开始执行 _run_download 前置位。区分「还在队列里排队」与
+        # 「已进入执行」:前者从未碰过文件,删除记录无需等待 worker 静默。
+        self.started = threading.Event()
 
 
 # 单一全局队列 + 固定 worker 数。运行时并发值由 config.MAX_CONCURRENT 控制，
@@ -144,6 +147,7 @@ def _download_worker() -> None:
         try:
             _acquire_download_slot()
             acquired = True
+            runtime.started.set()
             # 运行时解析模块绑定，保留测试/调用方 monkeypatch _run_download 的能力。
             _run_download(*runtime.args)
         except Exception as exc:
@@ -244,10 +248,17 @@ def _base_opts(fmt_str: str, page: int, task_id: str) -> dict:
         name_tmpl = ("%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1
                      else "%(title).200B.%(ext)s")
         sub = "%(uploader)s/" if config.SORT_BY_UP else ""
+    # 流数决定进度聚合的分母与「全部完成」判据。组合轨 a+b → 2 流;
+    # "best" 必须按 2 流计:它可能被 yt-dlp 解析成 bestvideo+bestaudio(下面
+    # merge_output_format 正是为此而设),只数 "+" 会把它当单流——第一条流
+    # finished 就置 merging/100%,第二条流一开始状态又退回 downloading,
+    # 进度卡在 100% 直到音轨下完,正是本次聚合要消灭的回跳/闪烁。
+    stream_count = 2 if fmt_str == "best" else fmt_str.count("+") + 1
     opts = {
         "format": fmt_str,
         "outtmpl": str(download_root / (sub + name_tmpl)),
-        "progress_hooks": [_progress_hook(task_id)],
+        # DASH 组合轨会按流依次触发进度回调,聚合进度需要知道流数。
+        "progress_hooks": [_progress_hook(task_id, stream_count)],
         "postprocessor_hooks": [_pp_hook(task_id)],
     }
     if "+" in fmt_str or fmt_str == "best":
@@ -401,8 +412,45 @@ def _pp_hook(task_id: str):
     return hook
 
 
-def _progress_hook(task_id: str):
-    state = {"bucket": None}  # 上次落盘所在的 5% 进度桶
+def _progress_hook(task_id: str, expected_streams: int = 1):
+    """聚合多流进度:任务进度 = 各流已下载字节总和 / 各流总字节总和。
+
+    DASH 组合轨(如 1080P = 纯视频流 + 独立音轨)按流依次下载。旧实现直接
+    取「最近一次回调」的流内百分比:视频流下完 100% 后音轨从 0% 重新爬,
+    页面进度条 100%→0%→100% 回跳,状态还闪一次「合并中」再回「下载中」。
+    这里按 format_id 分别记账,完成的流按满额计入,进度全程单调。
+
+    ``expected_streams`` 是 format 串里的流数(``a+b`` → 2);全部流 finished
+    才进入 merging。回调缺 format_id 时退化为单桶记账(等价旧行为)。
+
+    两条硬约束(否则「单调」只是名义上的):
+    1. 全部流完成前进度封顶 99%。第一条流下完时它独自占满分母会先到
+       100%,第二条流一出现分母变大就掉回 80% 之类的值;
+    2. 进度取历史最大值。回调乱序、分母变化都不得让已显示的进度回退。
+    """
+    state = {"bucket": None, "streams": {}, "finished": 0}
+
+    def reset():
+        """丢弃上一次尝试的记账。
+
+        ``_base_opts`` 在重试循环之外构建,同一个 hook 闭包会跨 attempt 复用。
+        不重置的话,上一次尝试残留的 ``finished`` 计数会让重试的第一个 finished
+        回调立刻满足「全部流完成」——进度跳到 100%、状态误报 merging,而音轨
+        其实还没下;残留的流字节也会让重试首帧算出接近 100% 的进度。
+
+        任务上的 progress 一并清零:进度取历史最大值(只增不减),留着上一次
+        的 100 会把重试期间的任何真实进度都压成 99。
+        """
+        state["bucket"] = None
+        state["streams"].clear()
+        state["finished"] = 0
+        with _tasks_lock:
+            task = _tasks.get(task_id)
+            if task is not None:
+                task["progress"] = 0
+
+    def _stream_key(d: dict) -> str:
+        return str((d.get("info_dict") or {}).get("format_id") or "?")
 
     def hook(d):
         persist = False
@@ -412,32 +460,52 @@ def _progress_hook(task_id: str):
             # 否则下载会完整跑完才被标记(浪费带宽/磁盘)。
             if not t or t.get("cancel"):
                 raise yt_dlp.utils.DownloadCancelled("任务已取消")
-            if d["status"] == "downloading":
+            status = d.get("status")
+            if status == "downloading":
                 # 进入下载态(yt-dlp hook 第一次回调就把 queued→downloading)
                 t["status"] = "downloading"
                 # yt-dlp 这些字段可能为 None,统一兜底为 0
                 total = d.get("total_bytes") or d.get("total_bytes_estimate") or 0
                 downloaded = d.get("downloaded_bytes") or 0
+                streams = dict(state["streams"])
+                streams[_stream_key(d)] = (int(downloaded), int(total))
+                state["streams"] = streams
+                total_sum = sum(size for _dl, size in streams.values())
+                downloaded_sum = sum(dl for dl, _size in streams.values())
+                pct = (downloaded_sum / total_sum * 100) if total_sum else 0.0
+                expected = max(1, int(expected_streams or 1))
+                if state["finished"] < expected:
+                    # 还有流没完成:不许显示 100%,否则进度条会先满格再掉回
+                    pct = min(pct, 99.0)
+                pct = max(float(t.get("progress") or 0), pct)  # 只增不减
+                # downloading 是高频更新,节流:每进入一个新的 5% 桶才落一次盘
+                t["progress"] = round(pct, 1)
                 speed = d.get("speed") or 0
-                t["progress"] = round(downloaded / total * 100, 1) if total else 0
                 t["speed"] = round(speed / 1024, 1)  # KB/s
                 t["eta"] = d.get("eta") or 0
-                # downloading 是高频更新,节流:每进入一个新的 5% 桶才落一次盘
                 bucket = int(t["progress"]) // 5
                 if bucket != state["bucket"]:
                     state["bucket"] = bucket
                     persist = True
-            elif d["status"] == "finished":
-                t["progress"] = 100
-                t["status"] = "merging"  # yt-dlp 合并阶段
-                # 权威 title 缺失(批量未透传且预解析没拿到)时,
-                # 用 yt-dlp 最终解析结果兜底一次(A.1 例外分支)
-                if not t.get("title") or t["title"] == "(解析中)":
-                    ft = ((d.get("info_dict") or {}).get("title") or "").strip()
-                    if ft:
-                        t["title"] = ft
-                persist = True
-            elif d["status"] == "error":
+            elif status == "finished":
+                state["finished"] += 1
+                # 该流完成:按当前已知量满额计入聚合,其余流继续推进。
+                key = _stream_key(d)
+                last = state["streams"].get(key)
+                if last is not None:
+                    state["streams"][key] = (last[1] or last[0],) * 2
+                if state["finished"] >= max(1, int(expected_streams or 1)):
+                    t["progress"] = 100
+                    t["status"] = "merging"  # yt-dlp 合并阶段
+                    # 权威 title 缺失(批量未透传且预解析没拿到)时,
+                    # 用 yt-dlp 最终解析结果兜底一次(A.1 例外分支)
+                    if not t.get("title") or t["title"] == "(解析中)":
+                        ft = ((d.get("info_dict") or {}).get("title") or "").strip()
+                        if ft:
+                            t["title"] = ft
+                    persist = True
+                # 单条流完成不落 merging/100%:聚合进度仍由剩余流推进。
+            elif status == "error":
                 t["status"] = "failed"
                 t["error"] = "下载出错"
                 t["finished_at"] = int(time.time())
@@ -445,6 +513,7 @@ def _progress_hook(task_id: str):
         if persist:
             # 高频进度失败只标记健康，不把异常抛回 yt-dlp 下载线程。
             _persist_task_state([task_id], "下载进度")
+    hook.reset = reset
     return hook
 
 
@@ -544,6 +613,12 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
         # 每次重试都重建 YoutubeDL 实例(避免内部状态污染)，并统一经过媒体启动闸门。
         with _final_paths_lock:
             _final_paths.pop(task_id, None)  # 上一次尝试捕获的路径作废
+        # base_opts 在循环外构建,hook 闭包跨 attempt 复用:不清掉上一次尝试的
+        # 流字节与 finished 计数,重试会误判「全部流已完成」而直接报 100%。
+        for hook in base_opts.get("progress_hooks") or ():
+            reset_hook = getattr(hook, "reset", None)
+            if callable(reset_hook):
+                reset_hook()
         opts = _ydl_opts(base_opts)
         try:
             governor.wait("media", endpoint=url)
@@ -808,7 +883,21 @@ def _quiesce_task_ids(task_ids: list[str], *, cancel_active: bool,
             continue
 
         if runtime is not None:
-            waiting.append((task_id, runtime))
+            if runtime.started.is_set():
+                waiting.append((task_id, runtime))
+                continue
+            # 从未开始执行的排队作业：取消意图已持久化，同步落为 cancelled
+            # 终态后即可安全删除记录。worker 之后取到该作业时，_run_download
+            # 顶部的「任务缺失/已取消/已终结」检查会让它空跑返回，不碰任何
+            # 文件；不再为它等 10 秒 quiesce——worker 全忙时那是永远等不到的。
+            latest = get_task(task_id)
+            if latest and latest.get("status") in ACTIVE:
+                if not cancel_active:
+                    log.error("未启动任务无法安全取消，拒绝删除 task_id=%s",
+                              task_id)
+                    continue
+                _finalize_cancelled(task_id)
+            ready.append(task_id)
         elif active:
             # 兼容手工插入/异常遗留的活跃记录：取消意图已落盘，但没有可证明
             # quiesced 的句柄，因而完整保留记录与文件。

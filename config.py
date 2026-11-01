@@ -81,7 +81,11 @@ def _parse_value(spec: dict, raw):
     """按字段类型解析/校验 raw。非法抛 ValueError(文案由调用方组)。"""
     kind = spec["kind"]
     if kind == "dir":
-        p = Path(str(raw).strip()).expanduser()
+        text = str(raw).strip()
+        if not text:
+            # Path("") 会静默解析成当前目录,下载会全部落进应用源码树。
+            raise ValueError("目录不能为空")
+        p = Path(text).expanduser()
         p.mkdir(parents=True, exist_ok=True)
         return p
     if kind == "int":

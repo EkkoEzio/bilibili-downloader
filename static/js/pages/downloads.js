@@ -389,12 +389,17 @@ function updateTaskCard(task) {
     if (el && value != null) el.textContent = value;
   };
   set('.dp-pct', pct + '%');
+  // 断流/卡顿时 speed/eta 会归零:必须显式清写,否则卡片一直挂着
+  // 上一次的正值速度和「剩余 Ns」,看起来像还在下载。
   const speed = Number(task.speed);
   if (Number.isFinite(speed) && speed > 0) {
     set('.dp-spd', speed > 1024 ? (speed / 1024).toFixed(1) + ' MB/s' : speed.toFixed(0) + ' KB/s');
+  } else {
+    set('.dp-spd', '0 KB/s');
   }
   const eta = Number(task.eta);
   if (Number.isFinite(eta) && eta > 0) set('.dp-eta', '剩余 ' + Math.ceil(eta) + 's');
+  else set('.dp-eta', '');
   const status = normalizedStatus(task.status);
   const tag = card.querySelector('.status-tag');
   if (tag) {

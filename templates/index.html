@@ -6,7 +6,7 @@
 <!-- B站CDN反盗链:图片请求不带Referer,否则封面403 -->
 <meta name="referrer" content="no-referrer">
 <title>bilibili download</title>
-<link rel="stylesheet" href="/static/css/main.css?v=20260903a">
+<link rel="stylesheet" href="/static/css/main.css?v=20261031e">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -22,18 +22,17 @@
       <span>bilibili 下载</span>
     </div>
     <nav id="nav" aria-label="主导航">
-      <button type="button" class="nav-item active" data-page="downloads" aria-label="下载记录" aria-current="page" onclick="goPage('downloads')">
-        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        <span>下载记录</span>
-        <span class="nav-badge" id="dl-badge" style="display:none;"></span>
-      </button>
-      <button type="button" class="nav-item" data-page="history" aria-label="观看历史" onclick="goPage('history')">
-        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
-        <span>观看历史</span>
+      <button type="button" class="nav-item active" data-page="home" aria-label="首页推荐" aria-current="page" onclick="goPage('home')">
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+        <span>首页推荐</span>
       </button>
       <button type="button" class="nav-item" data-page="feed" aria-label="关注动态" onclick="goPage('feed')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
         <span>关注动态</span>
+      </button>
+      <button type="button" class="nav-item" data-page="subs" aria-label="关注 UP" onclick="goPage('subs')">
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span>关注 UP</span>
       </button>
       <button type="button" class="nav-item" data-page="seasons" aria-label="追更合集" onclick="goPage('seasons')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
@@ -46,6 +45,15 @@
       <button type="button" class="nav-item" data-page="later" aria-label="稍后再看" onclick="goPage('later')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
         <span>稍后再看</span>
+      </button>
+      <button type="button" class="nav-item" data-page="history" aria-label="观看历史" onclick="goPage('history')">
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
+        <span>观看历史</span>
+      </button>
+      <button type="button" class="nav-item" data-page="downloads" aria-label="下载记录" onclick="goPage('downloads')">
+        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
+        <span>下载记录</span>
+        <span class="nav-badge" id="dl-badge" style="display:none;"></span>
       </button>
     </nav>
     <div class="sidebar-foot">
@@ -61,8 +69,24 @@
   <main class="main" id="main-content" tabindex="-1">
     <div class="content">
 
+      <!-- ===== 页面:首页推荐(B 站首页个性化推荐流) ===== -->
+      <div class="page active" data-page="home">
+        <div class="page-head">
+          <h1>首页推荐</h1>
+          <div class="ph-right">
+            <button class="ghost icon-only" onclick="loadHomeFeed()" title="换一批">
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
+            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          </div>
+        </div>
+        <div class="sub-info" id="meta-home"></div>
+        <div id="list-home" class="lib-list"></div>
+      </div>
+
       <!-- ===== 页面:下载记录(已完成下载的视频网格) ===== -->
-      <div class="page active" data-page="downloads">
+      <div class="page" data-page="downloads">
         <div class="page-head">
           <h1>下载记录</h1>
           <div class="ph-right">
@@ -104,11 +128,6 @@
         <div class="page-head">
           <h1>关注动态</h1>
           <div class="ph-right">
-            <div class="seg" id="feed-seg" role="group" aria-label="关注动态来源">
-              <button data-src="bili" aria-pressed="false" onclick="setFeedSource('bili')">关注动态</button>
-              <button data-src="all" aria-pressed="false" onclick="setFeedSource('all')">关注列表</button>
-              <button data-src="mine" aria-pressed="false" onclick="setFeedSource('mine')">自动下载</button>
-            </div>
             <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
             <button class="ghost icon-only" onclick="refreshLib()" title="刷新">
               <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
@@ -117,16 +136,31 @@
           </div>
         </div>
         <div class="sub-info" id="meta-feed"></div>
-        <!-- 自动下载管理条(仅 mine 视图显示):添加 UP + 立即检查 -->
-        <div class="panel" id="feed-mine-tools" style="display:none;">
+        <div id="list-feed" class="lib-list"></div>
+      </div>
+
+      <!-- ===== 页面:关注 UP(自动下载订阅管理) ===== -->
+      <div class="page" data-page="subs">
+        <div class="page-head">
+          <h1>关注 UP</h1>
+          <div class="ph-right">
+            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索 UP 名称 / mid" oninput="applyLibFilter()">
+            <button class="ghost icon-only" onclick="refreshSubs()" title="刷新(绕过缓存)">
+              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+            </button>
+            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
+          </div>
+        </div>
+        <div class="sub-info" id="meta-subs"></div>
+        <div class="panel">
           <div class="panel-body" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:10px 12px;">
             <input type="text" id="up-add-input" aria-label="UP 主页链接或 mid" placeholder="粘贴 UP 主页链接或 mid;加入后新投稿自动进入下载队列" style="flex:1;min-width:220px;">
             <button class="primary sm" id="up-add-btn" onclick="upAdd()">添加</button>
             <button class="ghost sm" id="up-check-btn" onclick="upCheckNow(this)">立即检查新视频</button>
-            <span id="auto-refresh-feed-status" class="auto-refresh-status" role="status" aria-live="polite"></span>
+            <span id="auto-refresh-subs-status" class="auto-refresh-status" role="status" aria-live="polite"></span>
           </div>
         </div>
-        <div id="list-feed" class="lib-list"></div>
+        <div id="list-subs" class="lib-list"></div>
       </div>
 
       <!-- ===== 页面:追更合集 ===== -->
@@ -199,10 +233,11 @@
     <button class="ghost" onclick="libToggleAll(false)">取消</button>
     <select class="lib-quality" id="ab-quality" aria-label="所选视频清晰度" style="margin-left:auto;">
       <option value="">最高画质(自动)</option>
+      <option value="2160P">4K</option>
+      <option value="1080P60">1080P60帧</option>
       <option value="1080P">1080P</option>
+      <option value="720P60">720P60帧</option>
       <option value="720P">720P</option>
-      <option value="480P">480P</option>
-      <option value="360P">360P</option>
       <option value="音频">仅音频</option>
     </select>
     <button class="primary" id="ab-download-btn" onclick="libDownload()">下载选中</button>
@@ -401,6 +436,6 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/js/app.js?v=20260903a"></script>
+<script type="module" src="/static/js/app.js?v=20261031e"></script>
 </body>
 </html>

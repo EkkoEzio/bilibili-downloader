@@ -19,6 +19,7 @@ import bilibili_api as bapi
 import config
 import downloader
 import up_list
+from extras import page_from_url
 
 log = logging.getLogger("bd.auto_refresh")
 
@@ -35,6 +36,10 @@ MAX_PAGES = 3
 # 自动任务失败后不依赖时间游标重新发现，而从持久化任务史退避重试。
 AUTO_RETRY_BASE = 10 * 60
 AUTO_RETRY_MAX = 24 * 3600
+# 放弃阈值:达到后不再自动重试(用户仍可手动下载)。退避到第 8 次约 21 小时,
+# 再往上对删稿/充电专属/地区限制这类永久失败只是无限消耗任务史容量,
+# 累计到 MAX_TOTAL_TASKS 后连手动下载都会被容量检查挡住。
+AUTO_RETRY_MAX_ATTEMPTS = 8
 # 与 up_list 持久化边界共享同一来源；达到上限必须显式失败，不能裁掉旧页后
 # 继续推进游标，否则会造成永久漏稿。
 MAX_SCAN_ITEMS = up_list.MAX_SCAN_ITEMS
@@ -405,6 +410,8 @@ def _retry_items(mid: int, now: Optional[int] = None,
         if task.get("status") not in ("failed", "interrupted"):
             continue
         attempt = _as_ts(task.get("auto_attempt"))
+        if attempt >= AUTO_RETRY_MAX_ATTEMPTS:
+            continue
         delay = min(AUTO_RETRY_MAX, AUTO_RETRY_BASE * (2 ** min(attempt, 7)))
         failed_at = _as_ts(task.get("finished_at") or task.get("created_at"))
         if failed_at and now - failed_at < delay:
@@ -549,15 +556,19 @@ def refresh_once() -> int:
         acquired_here = True
     try:
         ups = up_list.list_ups()
-        if not ups:
+        collections = up_list.list_collections()
+        if not ups and not collections:
             return 0
         # 一轮只复制/扫描一次任务史；每个 UP 仍独立过滤自己的失败任务。
         tasks_snapshot = downloader.list_tasks()
+        # 游标也一轮只读一次盘:本轮内每个 UP 的写入都只动自己的条目,
+        # 快照值与「处理到它时现读」等价,不必按 UP 数重复解析整份清单。
+        last_seen_map = up_list.get_last_seen_all()
         enqueued = 0
         for i, up in enumerate(ups):
             try:
                 mid = int(up["mid"])
-                last = up_list.get_last_seen(mid)
+                last = last_seen_map.get(str(mid))
                 new, newest = fetch_new(mid, last)
                 if not newest:
                     log.warning("自动下载:%s 无投稿数据，保留 last_seen",
@@ -609,12 +620,170 @@ def refresh_once() -> int:
             # 无论本轮结果如何,UP 之间都保持间隔(防风控的关键)
             if i < len(ups) - 1:
                 time.sleep(UP_INTERVAL)
+
+        # 合集 / 收藏夹订阅:首次以全部现有条目为基线,之后只下新增的
+        # UP 与第一个合集之间也要保持间隔(否则最后一个 UP 后立刻打下一个请求)
+        if ups and collections:
+            time.sleep(UP_INTERVAL)
+        for i, coll in enumerate(collections):
+            try:
+                enqueued += _refresh_collection(coll, tasks_snapshot=tasks_snapshot)
+            except Exception:
+                _cycle_metrics.partial_errors = int(
+                    getattr(_cycle_metrics, "partial_errors", 0) or 0) + 1
+                log.exception("自动下载处理合集 %s:%s 异常",
+                              coll.get("kind"), coll.get("id"))
+            if i < len(collections) - 1:
+                time.sleep(UP_INTERVAL)
         return enqueued
     finally:
         # 直接调用 refresh_once 时自行放锁；状态包装器持有的预约要延续到
         # last_finished/last_error 提交完成，由 reservation.release() 统一释放。
         if acquired_here:
             _lock.release()
+
+
+def _fetch_collection_items(kind: str, cid: int) -> list[dict]:
+    """按订阅类型拉取合集/收藏夹当前条目(归一化视频卡字段)。"""
+    if kind == "season":
+        return bapi.fetch_season_content(cid)
+    if kind == "fav":
+        return bapi.fetch_fav_content(cid)
+    raise ValueError(f"未知订阅类型:{kind}")
+
+
+def _collection_retry_items(items: list[dict], now: Optional[int] = None,
+                            tasks_snapshot: Optional[list[dict]] = None
+                            ) -> list[dict]:
+    """从任务史恢复该合集条目里失败/中断的自动任务，带指数退避。
+
+    合集没有时间游标可用，已见集合一推进就不再回头：下载失败若只靠「下一轮
+    再看」就永远漏稿（该条已在 seen 里）。所以失败必须由任务史兜底，与 UP
+    订阅的 ``_retry_items`` 同一职责。匹配键是 bvid 而不是 uploader_mid——
+    合集条目的投稿人各不相同，用 UP mid 根本找不到这些任务。
+    """
+    now = int(time.time()) if now is None else int(now)
+    bvids = {str(it.get("bvid") or "") for it in items} - {""}
+    if not bvids:
+        return []
+    tasks = downloader.list_tasks() if tasks_snapshot is None else tasks_snapshot
+    latest: dict[tuple[str, int], dict] = {}
+    for task in tasks:
+        if task.get("source") != "auto_refresh":
+            continue
+        if str(task.get("bvid") or "") not in bvids:
+            continue
+        url = str(task.get("url") or "")
+        if not url:
+            continue
+        try:
+            page = int(task.get("page") or 1)
+        except (TypeError, ValueError):
+            continue
+        key = (url, page)
+        old = latest.get(key)
+        if old is None or _as_ts(task.get("created_at")) >= _as_ts(old.get("created_at")):
+            latest[key] = task
+
+    retries = []
+    for task in latest.values():
+        if task.get("status") not in ("failed", "interrupted"):
+            continue
+        attempt = _as_ts(task.get("auto_attempt"))
+        if attempt >= AUTO_RETRY_MAX_ATTEMPTS:
+            continue
+        delay = min(AUTO_RETRY_MAX, AUTO_RETRY_BASE * (2 ** min(attempt, 7)))
+        failed_at = _as_ts(task.get("finished_at") or task.get("created_at"))
+        if failed_at and now - failed_at < delay:
+            continue
+        url = str(task.get("url") or "")
+        if downloader.is_downloaded(url):
+            continue
+        retries.append({
+            "bvid": task.get("bvid") or "",
+            "title": task.get("title") or "(解析中)",
+            "url": url,
+            "page": int(task.get("page") or 1),
+            "thumbnail": task.get("thumbnail") or "",
+            "uploader": task.get("uploader") or "",
+            "uploader_mid": task.get("uploader_mid") or 0,
+            "duration": task.get("duration") or 0,
+            "source": "auto_refresh",
+            "auto_attempt": attempt + 1,
+        })
+    return retries
+
+
+def _refresh_collection(coll: dict,
+                        tasks_snapshot: Optional[list[dict]] = None) -> int:
+    """处理一个合集/收藏夹订阅,返回本轮入队任务数。
+
+    语义与 UP 订阅一致:首次添加时把当时全部条目记入基线,之后只下新出现的。
+    与 UP 不同,合集没有时间游标可用,只能靠 bvid 集合去重,所以:
+    - 条目数超过上限时明确失败,不截断后假装完成(否则会永久漏稿);
+    - 已见集合按「新在前」截断到 COLLECTION_SEEN_MAX,旧条目被挤出后若仍在
+      合集里会重新入队,因此上限取得比常见合集规模大得多;
+    - 失败/中断的下载由 ``_collection_retry_items`` 从任务史恢复,已下载过的
+      新条目不再重复入队(与 UP 订阅同一套判定)。
+    """
+    kind = str(coll.get("kind") or "")
+    cid = int(coll.get("id") or 0)
+    if not cid:
+        return 0
+    items = _fetch_collection_items(kind, cid)
+    if len(items) > up_list.COLLECTION_SEEN_MAX:
+        raise RuntimeError(
+            f"{kind}:{cid} 条目数 {len(items)} 超过去重上限 "
+            f"{up_list.COLLECTION_SEEN_MAX}；请先在 B 站把该合集条目减到上限以内")
+
+    seen = {str(v) for v in (coll.get("seen_bvids") or []) if v}
+    if not seen:
+        # 无基线(理论上不会发生):以当前全部条目为基线,不下任何东西。
+        up_list.commit_collection_seen(kind, cid,
+                                       [it.get("bvid") for it in items])
+        log.info("自动下载 %s:%s 建立基线 %d 条", kind, cid, len(items))
+        return 0
+
+    new_items = [it for it in items
+                 if it.get("bvid") and it.get("url")
+                 and str(it["bvid"]) not in seen]
+
+    label = str(coll.get("quality") or "").strip()
+    candidates = [
+        # 合集条目通常不带 ?p=,但仍按 URL 解析分 P,避免多 P 视频下错分集
+        {"url": str(it["url"]), "title": it.get("title", ""),
+         "page": max(1, int(page_from_url(it["url"]))),
+         "thumbnail": it.get("thumbnail", ""),
+         "uploader": it.get("uploader", ""),
+         "uploader_mid": it.get("uploader_mid") or 0,
+         "duration": it.get("duration") or 0,
+         "bvid": it.get("bvid", ""),
+         "source": "auto_refresh"}
+        # 已经下载过的条目不再重复下载;它们仍算「已见」,见下面的提交。
+        for it in new_items if not downloader.is_downloaded(it["url"])
+    ]
+    # 失败/中断的任务从任务史恢复:已见集合不再回头,不靠这里兜底就永久漏稿。
+    # 注意必须在「本轮没有新增」时也执行——没有新增不等于没有失败要重试。
+    pending = _collection_retry_items(items, tasks_snapshot=tasks_snapshot)
+    occupied = {(str(v.get("url") or ""), int(v.get("page") or 1))
+                for v in pending}
+    for video in candidates:
+        key = (str(video.get("url") or ""), int(video.get("page") or 1))
+        if key not in occupied:
+            occupied.add(key)
+            pending.append(video)
+
+    tids = (downloader.start_batch(pending, label=label, max_concurrent=1)
+            if pending else [])
+    if tids:
+        log.info("自动下载 %s:%s 新入库 %d 条入队(清晰度 %s)",
+                 kind, cid, len(tids), label or "自动")
+    # 提交「本轮新出现的全部条目」而不是只提交入队的那批:已下载的也要标已见,
+    # 否则每一轮都要为它们重新查一次是否已下载。无新增时这次提交只更新
+    # checked_at,表示「本轮检查过」。
+    up_list.commit_collection_seen(kind, cid,
+                                   [it.get("bvid") for it in new_items])
+    return len(tids)
 
 
 def start_loop() -> threading.Thread:

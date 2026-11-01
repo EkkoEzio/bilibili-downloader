@@ -109,3 +109,67 @@ def test_choice_empty_label_still_best():
     """空标签(自动)仍是最高画质,行为不变。"""
     from quality import best_video_audio_choice
     assert best_video_audio_choice(_dash_opts(), "") == "v1080+30280"
+
+
+# ---------- 60 帧档位与档位集合(B 站实际可用画质核实) ----------
+
+def test_classify_separates_60fps_from_30fps():
+    """同高度 30 帧与 60 帧是两档:按 B 站 quality 编号区分,不能只按高度合并。
+
+    实测依据(BV12msf6kEwz):quality=80 → 1080P(30080,tbr 2020),
+    quality=116 → 1080P60(30116,tbr 3416)。旧实现只按高度分桶,
+    两档被合并成「1080P」,用户无法显式选择 30 帧或 60 帧。
+    """
+    formats = [
+        {"format_id": "30080", "vcodec": "avc1", "acodec": "none",
+         "height": 1080, "fps": 30, "tbr": 2020, "quality": 80},
+        {"format_id": "30116", "vcodec": "avc1", "acodec": "none",
+         "height": 1080, "fps": 60, "tbr": 3416, "quality": 116},
+    ]
+    out = [x for x in classify_formats(formats) if x["kind"] == "video"]
+    labels = [x["label"] for x in out]
+    assert "1080P" in labels and "1080P60" in labels, f"未区分帧率档: {labels}"
+    # 60 帧档排在 30 帧档前面(同高度降序内优先)
+    assert labels.index("1080P60") < labels.index("1080P")
+
+
+def test_classify_60fps_not_inferred_from_fps_field():
+    """4K 流的 fps 字段可能被报成 120,不能据此标成 60 帧档。
+
+    实测:quality=120 的 4K 流 fps 报 120;若按 fps>=50 判定会被误标「2160P60」。
+    只有 quality 编号 74/116 才是真正的 60 帧档。
+    """
+    formats = [
+        {"format_id": "30120", "vcodec": "avc1", "acodec": "none",
+         "height": 2160, "fps": 120, "tbr": 16822, "quality": 120},
+    ]
+    out = [x for x in classify_formats(formats) if x["kind"] == "video"]
+    assert out[0]["label"] == "2160P", "4K 不应因 fps=120 被标成 60 帧档"
+
+
+def test_label_height_parses_60fps_label():
+    from quality import _label_height
+    assert _label_height("1080P60") == 1080
+    assert _label_height("720P60") == 720
+    assert _label_height("1080P") == 1080
+    assert _label_height("音频") is None
+
+
+def test_quality_ladder_matches_bilibili_reality():
+    """档位集合必须与 B 站实际可用画质一致。
+
+    核实结论(2026-10-31,实测 BV12msf6kEwz 的 playurl):
+    - B 站无 1440P/2K 档(上一版误加)
+    - 60 帧档是 1080P60(quality 116)与 720P60(quality 74)
+    """
+    import up_list
+    from pathlib import Path
+    choices = set(up_list.QUALITY_CHOICES)
+    assert "1440P" not in choices, "B 站没有 1440P/2K 档,不应提供"
+    assert "1080P60" in choices and "720P60" in choices, "60 帧档缺失"
+    assert choices == {"", "2160P", "1080P60", "1080P", "720P60", "720P", "音频"}
+
+    js = (Path(__file__).resolve().parent.parent
+          / "static" / "js" / "quality.js").read_text(encoding="utf-8")
+    assert "'1440P'" not in js, "前端不应再提供 2K"
+    assert "'1080P60'" in js and "'720P60'" in js, "前端缺 60 帧档"

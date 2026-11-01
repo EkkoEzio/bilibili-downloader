@@ -15,6 +15,7 @@ import up_list
 from bilibili_auth import (
     AuthContextChangedError,
     BROWSER_HEADERS,
+    _cookiejar_value,
     _session_lock,
     commit_if_current,
     get_auth_context,
@@ -26,6 +27,15 @@ from request_governor import UpstreamRateLimitError, governed_get, governor
 
 NAV_API = "https://api.bilibili.com/x/web-interface/nav"
 log = logging.getLogger("bd.bilibili_api")
+
+
+class NotLoggedInError(RuntimeError):
+    """预期内的未登录状态（cookiejar 缺失），不是未知异常。
+
+    API 层把它映射成 401 auth_required，让前端提示「请先登录」而不是
+    「服务器处理失败」；继承 RuntimeError 保持既有 except 兼容。
+    """
+
 
 # 现有测试会把本模块符号替换成仅接受零参数的 lambda。替换时进入兼容模式，
 # 不读取/写入真实认证状态；生产路径仍自动绑定完整认证上下文。
@@ -155,7 +165,7 @@ def _paged_get(url: str, base_params: dict, *, what: str, max_pages: int, ps: in
     else:
         _ensure_context_current(context)
     if cookiejar is None:
-        raise RuntimeError(f"未登录,无法获取{what}")
+        raise NotLoggedInError(f"未登录,无法获取{what}")
     if mid_param:
         mid = _my_mid(cookiejar)
         if not mid:
@@ -183,16 +193,16 @@ def fetch_history(page: int = 1, size: int = 50, *, context=None) -> list[dict]:
     """拉取观看历史；返回归一化的视频列表（最新在前）。"""
     context, cookiejar = _auth_session(context)
     if cookiejar is None:
-        raise RuntimeError("未登录,无法获取观看历史")
+        raise NotLoggedInError("未登录,无法获取观看历史")
     last = None
     for attempt in range(3):
         try:
             resp = _get("https://api.bilibili.com/x/v2/history",
                         cookies=cookiejar, headers=BROWSER_HEADERS,
                         params={"pn": page, "ps": min(size, 100)}, timeout=12)
-            data = resp.json()
-            governor.note_api_code(data.get("code"),
-                                   endpoint="https://api.bilibili.com/x/v2/history")
+            # 上游对风控可能回 200+HTML:裸 resp.json() 会抛 JSONDecodeError
+            # 直接变 500,_safe_json 统一防御(成功路径内部已上报 api code)。
+            data = _safe_json(resp)
             break
         except requests.RequestException as exc:
             last = exc
@@ -216,7 +226,7 @@ def fetch_watchlater(*, context=None) -> list[dict]:
     """拉取「稍后再看」列表。"""
     context, cookiejar = _auth_session(context)
     if cookiejar is None:
-        raise RuntimeError("未登录,无法获取稍后再看")
+        raise NotLoggedInError("未登录,无法获取稍后再看")
     resp = _get("https://api.bilibili.com/x/v2/history/toview",
                 cookies=cookiejar, headers=BROWSER_HEADERS, timeout=12)
     data = _safe_json(resp)
@@ -232,7 +242,7 @@ def fetch_fav_folders(*, context=None) -> list[dict]:
     """列出我的收藏夹列表。"""
     context, cookiejar = _auth_session(context)
     if cookiejar is None:
-        raise RuntimeError("未登录,无法获取收藏夹")
+        raise NotLoggedInError("未登录,无法获取收藏夹")
     mid = _my_mid(cookiejar)
     if not mid:
         raise RuntimeError("无法获取用户 ID")
@@ -261,7 +271,10 @@ def fetch_collected_seasons(max_pages: int = 5, *, context=None) -> list[dict]:
         items = [{"id": folder.get("id"),
                   "title": folder.get("title", ""),
                   "media_count": folder.get("media_count", 0),
-                  "cover": (folder.get("cover") or "").replace("http:", "https:")}
+                  "cover": (folder.get("cover") or "").replace("http:", "https:"),
+                  # 合集更新时间:前端按「自动下载优先 → 组内时间倒序」排序要用,
+                  # 接口本来就带,解析时不再丢弃(零额外请求)。
+                  "mtime": _int_or_zero(folder.get("mtime"))}
                  for folder in data.get("list") or []]
         return items, bool(data.get("has_more"))
 
@@ -320,12 +333,20 @@ _followings_refresh_lock = threading.Lock()
 _follow_refresh_lock = threading.Lock()
 
 
+def _int_or_zero(value) -> int:
+    """接口数值字段兜底:非数值/None 一律 0,避免一条脏数据打断整页解析。"""
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
 def fetch_followings_all(force: bool = False, max_pages: int = 10,
                          *, context=None) -> dict:
     """拉取全部关注 UP；缓存按完整认证上下文隔离。"""
     context, cookiejar = _auth_session(context)
     if cookiejar is None:
-        raise RuntimeError("未登录,无法获取关注列表")
+        raise NotLoggedInError("未登录,无法获取关注列表")
     cache_key = _context_key(context)
     started_at = time.time()
     cached_result = None
@@ -360,9 +381,14 @@ def fetch_followings_all(force: bool = False, max_pages: int = 10,
             box["total"] = data.get("total", 0)
             items = [{"mid": following.get("mid"),
                       "uname": following.get("uname", ""),
-                      "face": (following.get("face") or "").replace("http:", "https:")}
+                      "face": (following.get("face") or "").replace("http:", "https:"),
+                      # 关注时间与个性签名:列表接口本来就带,卡片要显示,
+                      # 解析时不再丢弃(零额外请求)。
+                      "mtime": _int_or_zero(following.get("mtime")),
+                      "sign": str(following.get("sign") or "")}
                      for following in data.get("list") or []]
             has_more = not (fetched + len(items) >= box["total"] or not items)
+            box["has_more"] = has_more
             return items, has_more
 
         all_items = _paged_get(
@@ -376,10 +402,66 @@ def fetch_followings_all(force: bool = False, max_pages: int = 10,
                                      ts=time.time(), context=key)
 
         _commit_data_cache(context, update)
-        return {"items": all_items, "total": box["total"]}
+        result = {"items": all_items, "total": box["total"]}
+        if box.get("has_more"):
+            # 页数预算(10 页 × 50)耗尽仍还有更多:显式带 truncated,
+            # 不静默截断后假装完整。
+            result["truncated"] = True
+        return result
 
 
 _wbi_ie = None
+
+
+_RELATION_MODIFY_ENDPOINT = "https://api.bilibili.com/x/relation/modify"
+_RELATION_ACTS = {"follow": 1, "unfollow": 2}
+
+
+def modify_relation(mid: int, action: str, *, context=None) -> None:
+    """关注/取消关注某 UP（写操作，作用于登录账号）。
+
+    act=1 关注、act=2 取消关注；认证走 SESSDATA，防 CSRF 走 bili_jct。
+    重复关注(22013)按成功处理，其余非 0 code 透出 B 站原始 message。
+    """
+    act = _RELATION_ACTS.get(str(action))
+    if act is None:
+        raise ValueError(f"非法关注动作:{action}")
+    mid = int(mid)
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
+        raise NotLoggedInError("未登录,无法修改关注关系")
+    csrf = _cookiejar_value(cookiejar, "bili_jct")
+    if not csrf:
+        raise NotLoggedInError("登录凭据缺少 bili_jct，无法执行关注/取关（请重新扫码登录）")
+    try:
+        resp = governor.call(
+            "sensitive", requests.post, _RELATION_MODIFY_ENDPOINT,
+            data={"fid": str(mid), "act": str(act), "re_src": "11",
+                  "csrf": csrf, "csrf_token": csrf},
+            cookies=cookiejar,
+            headers={**BROWSER_HEADERS,
+                     "Content-Type": "application/x-www-form-urlencoded",
+                     "Referer": f"https://space.bilibili.com/{mid}"},
+            timeout=12,
+        )
+        data = _safe_json(resp)
+        if not isinstance(data, dict):
+            raise RuntimeError("关注接口返回非 JSON 数据")
+        governor.note_api_code(data.get("code"),
+                               endpoint=_RELATION_MODIFY_ENDPOINT)
+        code = data.get("code")
+        already = (code == 22013 and act == 1)
+        if code != 0 and not already:
+            raise RuntimeError(data.get("message") or "操作失败")
+        _ensure_context_current(context)
+    except UpstreamRateLimitError:
+        raise
+    except AuthContextChangedError:
+        raise
+    except RuntimeError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"修改关注关系失败: {exc}") from exc
 
 
 def _get_wbi_ie(context=None):
@@ -387,7 +469,7 @@ def _get_wbi_ie(context=None):
     global _wbi_ie
     context, cookiejar = _auth_session(context)
     if cookiejar is None:
-        raise RuntimeError("未登录,无法初始化 WBI 签名器")
+        raise NotLoggedInError("未登录,无法初始化 WBI 签名器")
     cache_key = _context_key(context)
     with _session_lock:
         cached = _wbi_ie
@@ -475,7 +557,7 @@ def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False,
     """合并关注 UP 最近投稿；缓存按完整认证上下文隔离。"""
     context, cookiejar = _auth_session(context)
     if cookiejar is None:
-        raise RuntimeError("未登录,无法获取关注动态")
+        raise NotLoggedInError("未登录,无法获取关注动态")
     cache_key = _context_key(context)
     started_at = time.time()
     cache_hit = False
@@ -528,6 +610,84 @@ def fetch_follow_updates(max_ups: int = 30, ps: int = 10, force: bool = False,
 
         _commit_data_cache(context, update)
         return results
+
+
+def _format_count(value) -> str:
+    """播放/点赞数转万级中文短格式;取不到或为 0 返回空串(卡片不显示该指标)。"""
+    try:
+        n = int(value or 0)
+    except (TypeError, ValueError):
+        return ""
+    if n <= 0:
+        return ""
+    if n < 10000:
+        return str(n)
+    return f"{n / 10000:.1f}万"
+
+
+def fetch_home_feed(fresh_idx: int = 1, ps: int = 12, *, context=None) -> list[dict]:
+    """WBI 签名拉首页推荐流（登录态个性化），返回归一化视频卡列表。
+
+    - 只保留 ``goto == "av"`` 的普通视频，过滤广告位（is_ad_loc）与直播；
+    - fresh_idx 递增翻页；ps 上限 30，web 端惯用 12；
+    - 透出 rcmd_reason（推荐理由）、播放/点赞数与发布时间供前端展示。
+    """
+    fresh_idx = max(1, int(fresh_idx))
+    ps = max(1, min(30, int(ps)))
+    try:
+        context, cookiejar = _auth_session(context)
+        ie = _get_wbi_ie(context)
+        signed = ie._sign_wbi({
+            "fresh_type": "4", "version": "1", "ps": str(ps),
+            "fresh_idx": str(fresh_idx), "fresh_idx_1h": str(fresh_idx),
+            "brush": str(fresh_idx), "fetch_row": str(
+                1 + (fresh_idx - 1) * ps),
+            "web_location": "143065",
+        }, "home_feed")
+        endpoint = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd"
+        resp = _get(endpoint, kind="sensitive", params=signed,
+                    cookies=cookiejar, headers=BROWSER_HEADERS, timeout=12)
+        data = _safe_json(resp)
+        if not data:
+            raise RuntimeError("首页推荐接口返回非 JSON 数据")
+        if data.get("code") != 0:
+            raise RuntimeError(data.get("message") or "获取首页推荐失败")
+        _ensure_context_current(context)
+    except (UpstreamRateLimitError, AuthContextChangedError):
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"获取首页推荐失败: {exc}") from exc
+
+    out: list[dict] = []
+    for it in (data.get("data", {}) or {}).get("item", []) or []:
+        if not isinstance(it, dict) or it.get("goto") != "av":
+            continue
+        if it.get("is_ad_loc") or it.get("is_stock"):
+            continue
+        bvid = it.get("bvid") or ""
+        if not bvid:
+            continue
+        stat = it.get("stat") or {}
+        rcmd = it.get("rcmd_reason") or {}
+        reason = ""
+        if rcmd.get("reason_type") == 1:
+            reason = "已关注"
+        elif str(rcmd.get("content") or "").strip():
+            reason = str(rcmd["content"]).strip()
+        out.append({
+            "bvid": bvid,
+            "title": it.get("title") or "",
+            "uploader": (it.get("owner") or {}).get("name", ""),
+            "uploader_mid": (it.get("owner") or {}).get("mid"),
+            "thumbnail": (it.get("pic") or "").replace("http:", "https:"),
+            "duration": it.get("duration") or 0,
+            "url": f"https://www.bilibili.com/video/{bvid}",
+            "view_at": it.get("pubdate") or 0,
+            "rcmd_reason": reason,
+            "stat_view": _format_count(stat.get("view")),
+            "stat_like": _format_count(stat.get("like")),
+        })
+    return out
 
 
 def reset_data_caches() -> None:

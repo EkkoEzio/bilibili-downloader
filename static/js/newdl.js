@@ -226,7 +226,13 @@ export async function startDownload(button = null) {
     });
     announce('下载任务已加入队列');
   } catch (error) {
-    const message = error.message || '启动下载失败';
+    let message = error.message || '启动下载失败';
+    // 重复任务走 HTTP 409,net.js 抛 HttpError,payload 里带 task_id:
+    // 这里补上指向下载记录的引导(200+ok:false 形态已不存在,别只看 r.task_id)。
+    const dupTaskId = error && error.payload && error.payload.task_id;
+    if (dupTaskId && error.code === 'duplicate_task') {
+      message += '，请在「下载记录」查看该任务';
+    }
     announce(message, true);
     alert(message);
   }

@@ -15,18 +15,24 @@ def _vid(bvid, ts):
 
 
 def _patch_env(monkeypatch, ups, fetch_by_mid, last_seen=None,
-               stub_is_downloaded=True):
-    """打桩:UP 清单 / arc/search / last_seen 读写 / 批量下载 / sleep。
+               stub_is_downloaded=True, collections=None):
+    """打桩:UP 清单 / 合集订阅 / arc/search / last_seen 读写 / 批量下载 / sleep。
 
     `stub_is_downloaded=True`(默认)沿用原行为:把 downloader.is_downloaded
     打成恒 False 的桩。这让上面每个用例都能只关心自己那条不变量,但副作用是
     自动下载这条路径**从不执行真实判定** —— 见文件末尾「真实已下载判定」一节。
     传 False 则不打这个桩,让 refresh_once 走 taskstore.is_downloaded 的真身。
+
+    `collections` 默认空列表:`refresh_once` 也会处理合集订阅,不打桩就会去读
+    (并请求)真实订阅数据,UP 之间的间隔断言也会被合集的间隔污染。
     """
     batches, marked, sleeps = [], [], []
 
     def fake_list_ups():
         return ups
+
+    def fake_list_collections():
+        return list(collections or [])
 
     def fake_fetch(mid, ps=10, pn=1):
         return fetch_by_mid.get(int(mid), [])
@@ -36,9 +42,11 @@ def _patch_env(monkeypatch, ups, fetch_by_mid, last_seen=None,
         return ["t"] * len(items)
 
     monkeypatch.setattr(auto_refresh.up_list, "list_ups", fake_list_ups)
+    monkeypatch.setattr(auto_refresh.up_list, "list_collections",
+                        fake_list_collections)
     monkeypatch.setattr(auto_refresh.bapi, "fetch_up_videos", fake_fetch)
-    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen",
-                        lambda mid: last_seen.get(int(mid)) if last_seen else None)
+    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen_all",
+                        lambda: {str(k): v for k, v in (last_seen or {}).items()})
     monkeypatch.setattr(auto_refresh.up_list, "mark_seen",
                         lambda mid, bvid, ts, title="", fetched_at=None:
                             marked.append((int(mid), bvid, ts, fetched_at)))
@@ -392,7 +400,7 @@ def _count_round_calls(monkeypatch):
         return []          # 空页 = 限流形态:不入队、不推进 last_seen,一轮秒结束
 
     monkeypatch.setattr(auto_refresh.up_list, "list_ups", fake_list_ups)
-    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen", lambda mid: None)
+    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen_all", lambda: {})
     monkeypatch.setattr(auto_refresh.bapi, "fetch_up_videos", fake_fetch)
     monkeypatch.setattr(auto_refresh.time, "sleep", lambda s: None)
     return calls
@@ -848,9 +856,9 @@ def test_auto_download_known_gap_new_page_of_same_bv(monkeypatch):
 
     Property 3 的**残余缺口**,不是 Property 3 的实现。
 
-    ⚠️ 这条断言的**不是期望行为**,而是 spec 明确记录、本次刻意不修的缺口
-    (`.kiro/specs/app-wide-bug-fixes/design.md`「B3 → 7. 需求 2.8 的可达性」,
-    以及 tasks.md「明确不实现」第 1 条)。需求 2.8 因此只是**部分成立**:
+    ⚠️ 这条断言的**不是期望行为**,而是 2026-08 全站修复轮的既定决策:
+    「明确不实现」清单第 1 条,「B3 → 7. 需求 2.8 的可达性」。需求 2.8
+    因此只是**部分成立**:
       - 已完成任务是该 BV 的**非 1 分 P** → 键不等 → 入队,2.8 成立
         (即上一条 test_auto_download_enqueues_when_done_page_differs);
       - 已完成任务是该 BV 的 **P1**、而「新分 P」是同 BV 下新增的 P2 → 2.8 不成立,
@@ -901,3 +909,198 @@ def test_auto_download_known_gap_new_page_of_same_bv(monkeypatch):
     assert marked[0][:3] == (1, _BV1, 999), (
         "【已知缺口】这一轮仍算处理成功,last_seen 推进到 BV1 —— 下一轮 BV1 会被"
         "「已见」过滤掉,P2 是永久错过而非延后重试")
+
+
+# ---------- 合集 / 收藏夹订阅(自动下载新入库视频) ----------
+# 这条链路 2026-10-31 新增,refresh_once 里排在 UP 之后串行处理。
+# 关键不变量:基线只建一次、只下新增、失败不漏稿、条目超限明确失败。
+
+def _coll(kind="season", cid=6365894, seen=None, quality=""):
+    return {"kind": kind, "id": cid, "title": "某合集", "quality": quality,
+            "seen_bvids": list(seen or [])}
+
+
+def _patch_collection_env(monkeypatch, collections, fetch_items,
+                          seen_writes=None, downloaded=None, tasks=None):
+    """合集订阅专用打桩:清单/合集内容/已见提交/已下载判定/任务史/sleep。"""
+    batches, sleeps = [], []
+    seen_writes = seen_writes if seen_writes is not None else []
+
+    def fake_start_batch(items, label, max_concurrent=None):
+        batches.append(([v["bvid"] for v in items], label, max_concurrent))
+        return ["t"] * len(items)
+
+    monkeypatch.setattr(auto_refresh.up_list, "list_ups", lambda: [])
+    monkeypatch.setattr(auto_refresh.up_list, "list_collections",
+                        lambda: list(collections))
+    monkeypatch.setattr(auto_refresh.bapi, "fetch_season_content",
+                        lambda cid, **kw: fetch_items(cid))
+    monkeypatch.setattr(auto_refresh.bapi, "fetch_fav_content",
+                        lambda cid, **kw: fetch_items(cid))
+    monkeypatch.setattr(auto_refresh.up_list, "commit_collection_seen",
+                        lambda kind, cid, bvids:
+                            seen_writes.append((kind, cid, list(bvids))))
+    monkeypatch.setattr(auto_refresh.downloader, "start_batch", fake_start_batch)
+    monkeypatch.setattr(auto_refresh.downloader, "is_downloaded",
+                        lambda url: bool((downloaded or {}).get(url)))
+    monkeypatch.setattr(auto_refresh.downloader, "list_tasks",
+                        lambda: list(tasks or []))
+    monkeypatch.setattr(auto_refresh.time, "sleep", lambda s: sleeps.append(s))
+    return batches, seen_writes, sleeps
+
+
+def test_collection_first_round_builds_baseline_without_downloading(monkeypatch):
+    """首次订阅:以当前全部条目为基线,一条都不下(否则会一次性下完整个合集)。"""
+    items = [dict(_vid("BVc1", 10)), dict(_vid("BVc2", 20))]
+    for it in items:
+        it["url"] = it["url"]
+    batches, seen_writes, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=[])], lambda cid: items)
+
+    n = auto_refresh.refresh_once()
+
+    assert n == 0, "建立基线的那一轮不得入队"
+    assert batches == [], f"基线轮不该下载,实际 {batches}"
+    assert seen_writes == [("season", 6365894, ["BVc1", "BVc2"])], \
+        f"基线应把当前全部 bvid 记入已见,实际 {seen_writes}"
+
+
+def test_collection_downloads_only_new_bvids(monkeypatch):
+    """已有基线:只入队新出现的条目,已见的不重复下载。"""
+    items = [_vid("BVold1", 10), _vid("BVnew", 30), _vid("BVold2", 20)]
+    batches, seen_writes, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVold1", "BVold2"])], lambda cid: items)
+
+    n = auto_refresh.refresh_once()
+
+    assert n == 1, f"只应入队 1 条新条目,实际 {n}"
+    assert batches == [(["BVnew"], "", 1)], f"实际 {batches}"
+    assert seen_writes == [("season", 6365894, ["BVnew"])], \
+        "新条目要并入已见,否则下一轮会重复入队"
+
+
+def test_collection_skips_already_downloaded_new_items(monkeypatch):
+    """新增条目若已下载过(比如手动下过),不重复入队,但仍标已见。"""
+    new_url = "https://www.bilibili.com/video/BVdl"
+    items = [{"bvid": "BVdl", "title": "已下过", "uploader": "UP", "thumbnail": "",
+              "duration": 0, "url": new_url}]
+    batches, seen_writes, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVx"])], lambda cid: items,
+        downloaded={new_url: True})
+
+    n = auto_refresh.refresh_once()
+
+    assert n == 0 and batches == [], "已下载的条目不该再入队"
+    assert seen_writes == [("season", 6365894, ["BVdl"])], \
+        "已下载的条目也要标已见,否则每轮都要重新判定一次"
+
+
+def test_collection_retries_failed_task_from_task_history(monkeypatch):
+    """下载失败过的合集条目:下一轮必须从任务史恢复重试,不能永久漏稿。
+
+    回归:合集没有时间游标,已见集合一旦推进就不再回头。若失败后不重试,
+    该条目的 seen 已落盘,就再也没有任何路径会重新入队——永久漏稿。
+    """
+    url = "https://www.bilibili.com/video/BVfail"
+    items = [{"bvid": "BVfail", "title": "失败的", "uploader": "UP",
+              "thumbnail": "", "duration": 0, "url": url}]
+    failed_task = {
+        "task_id": "old", "url": url, "page": 1, "bvid": "BVfail",
+        "source": "auto_refresh", "status": "failed", "auto_attempt": 0,
+        "created_at": 1, "finished_at": 1, "uploader_mid": 0,
+    }
+    batches, seen_writes, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVfail"])], lambda cid: items,
+        tasks=[failed_task])
+
+    n = auto_refresh.refresh_once()
+
+    assert batches == [(["BVfail"], "", 1)], \
+        f"失败任务必须从任务史重试,实际 {batches}"
+    assert n == 1
+    assert seen_writes == [("season", 6365894, [])], \
+        "重试不改已见集合(该条目本来就在 seen 里)"
+
+
+def test_collection_too_many_items_fails_loudly_and_keeps_going(monkeypatch):
+    """条目数超过去重上限:明确失败且不影响后续合集(不静默截断)。"""
+    limit = auto_refresh.up_list.COLLECTION_SEEN_MAX
+    huge = [dict(_vid(f"BVh{i}", i)) for i in range(limit + 1)]
+    small = [_vid("BVok", 5)]
+    calls = []
+
+    def fetch_items(cid):
+        calls.append(cid)
+        return huge if cid == 6365894 else small
+
+    collections = [_coll(cid=6365894, seen=["BVx"]), _coll(cid=813161, seen=["BVx"])]
+    batches, _, sleeps = _patch_collection_env(monkeypatch, collections, fetch_items)
+
+    logged = []
+    monkeypatch.setattr(auto_refresh.log, "exception",
+                        lambda msg, *a, **k: logged.append(msg % a if a else msg))
+
+    n = auto_refresh.refresh_once()
+
+    assert logged, "超限必须落日志,不能静默吞掉"
+    assert calls == [6365894, 813161], "第一个合集失败不得中断整轮"
+    assert batches == [(["BVok"], "", 1)], f"第二个合集照常处理,实际 {batches}"
+    assert n == 1
+
+
+def test_collection_gap_sleep_between_ups_and_collections(monkeypatch):
+    """最后一个 UP 与第一个合集之间也要睡满防风控间隔。"""
+    ups = [{"mid": 1, "uname": "UP1"}]
+    batches, _, sleeps = _patch_env(
+        monkeypatch, ups, {1: [_vid("BV1", 100)]},
+        collections=[_coll(cid=6365894, seen=["BVx"]), _coll(cid=813161, seen=["BVx"])])
+    monkeypatch.setattr(auto_refresh.bapi, "fetch_season_content",
+                        lambda cid, **kw: [_vid("BVnew", 200)])
+
+    auto_refresh.refresh_once()
+
+    # 1 个 UP(与合集之间 1 次) + 2 个合集之间 1 次 = 2 次
+    assert sleeps == [auto_refresh.UP_INTERVAL] * 2, f"实际 {sleeps}"
+
+
+# ---------- 重试放弃阈值(2026-11-01) ----------
+
+def test_retry_gives_up_after_max_attempts(monkeypatch):
+    """永久失败的视频重试到上限后必须放弃。
+
+    退避到顶后每 ~21h 仍新建一条 failed 任务,auto_attempt 无限 +1;
+    任务史按 MAX_TOTAL_TASKS 封顶,涨满后连手动下载都被容量检查挡住。
+    """
+    url = "https://www.bilibili.com/video/BVdead"
+    items = [{"bvid": "BVdead", "title": "死稿", "uploader": "UP",
+              "thumbnail": "", "duration": 0, "url": url}]
+    base = {"task_id": "old", "url": url, "page": 1, "bvid": "BVdead",
+            "source": "auto_refresh", "status": "failed",
+            "created_at": 1, "finished_at": 1, "uploader_mid": 0}
+
+    at_limit = dict(base, auto_attempt=auto_refresh.AUTO_RETRY_MAX_ATTEMPTS)
+    batches, _, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVdead"])], lambda cid: items,
+        tasks=[at_limit])
+    n = auto_refresh.refresh_once()
+    assert batches == [] and n == 0, "达到放弃阈值后不再自动重试"
+
+    below = dict(base, auto_attempt=auto_refresh.AUTO_RETRY_MAX_ATTEMPTS - 1)
+    batches2, _, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVdead"])], lambda cid: items,
+        tasks=[below])
+    n2 = auto_refresh.refresh_once()
+    assert n2 == 1, "阈值之下仍要重试,不能提前放弃"
+
+
+def test_up_retry_items_gives_up_too(monkeypatch):
+    """UP 订阅的重试路径同样受放弃阈值约束。"""
+    monkeypatch.setattr(auto_refresh.downloader, "is_downloaded",
+                        lambda url: False)
+    task = {"task_id": "t", "url": "https://www.bilibili.com/video/BVx",
+            "page": 1, "bvid": "BVx", "source": "auto_refresh",
+            "status": "failed",
+            "auto_attempt": auto_refresh.AUTO_RETRY_MAX_ATTEMPTS,
+            "created_at": 1, "finished_at": 1}
+    out = auto_refresh._retry_items(42, now=10 ** 9, tasks_snapshot=[task])
+    assert out == []

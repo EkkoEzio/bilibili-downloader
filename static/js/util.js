@@ -11,11 +11,24 @@ export function formatTime(ts) {
   if (!ts) return '';
   const d = new Date(ts * 1000);
   const now = new Date();
-  const diff = (now - d) / 1000;
+  // 未来时间戳(定时发布/本机时钟偏慢)夹到 0:显示「刚刚」级别的
+  // 文案,不能出现「-3分钟前」。
+  const diff = Math.max(0, (now - d) / 1000);
   if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
   if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
   if (diff < 604800) return Math.floor(diff / 86400) + '天前';
   return (d.getMonth() + 1) + '/' + d.getDate();
+}
+
+/* 卡片上的「哪一天」:今年内给「M月D日」,跨年补上年份。
+   关注时间与最近投稿时间跨度可能是几年,只给 M/D 会把去年和今年混在一起。 */
+export function formatDay(ts) {
+  const n = Number(ts);
+  if (!Number.isFinite(n) || n <= 0) return '';
+  const d = new Date(n * 1000);
+  const md = `${d.getMonth() + 1}月${d.getDate()}日`;
+  return d.getFullYear() === new Date().getFullYear()
+    ? md : `${d.getFullYear()}年${md}`;
 }
 
 export function formatBytes(n) {

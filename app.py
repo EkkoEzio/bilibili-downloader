@@ -169,11 +169,12 @@ def _boolean(value, field: str, *, default=None) -> bool:
         return value
     if isinstance(value, str):
         token = value.strip().lower()
-        if token == "true":
+        if token in ("true", "1"):
             return True
-        if token == "false":
+        if token in ("false", "0"):
             return False
-    raise ApiError(400, "invalid_field", f"{field} 必须是 true 或 false", field=field)
+    raise ApiError(400, "invalid_field",
+                   f"{field} 必须是 true、false、1 或 0", field=field)
 
 
 def _string_list(value, field: str, *, max_items: int = _MAX_BATCH_ITEMS,
@@ -339,6 +340,10 @@ def api_errors(f):
             return _capacity_error(exc, "up_list_capacity_exceeded")
         except auth.AuthContextChangedError as exc:
             return _json_error(str(exc), 409, "auth_context_changed")
+        except bapi.NotLoggedInError as exc:
+            # 未登录/凭据缺失是预期态:回 401 让前端提示「请先登录」,
+            # 不能与真正的未知异常一起折叠成 500 + log.exception 噪音。
+            return _json_error(str(exc), 401, "auth_required")
         except UpstreamRateLimitError as exc:
             seconds = float(exc.retry_after or 0.0)
             if not math.isfinite(seconds) or seconds <= 0:
@@ -463,7 +468,13 @@ def login_qrcode_image():
         valid = False
     if not valid:
         raise ApiError(400, "invalid_url", "缺少/非法 url", field="url")
-    img = qrcode.make(url)
+    try:
+        img = qrcode.make(url)
+    except Exception as exc:
+        # 合法域名但超出二维码编码容量(qrcode 库抛 ValueError):是请求问题,
+        # 必须回 400,不能落进兜底 500 还记一条异常日志。
+        raise ApiError(400, "invalid_url",
+                       "url 过长，无法编码为二维码", field="url") from exc
     buf = io.BytesIO()
     img.save(buf, format="PNG")
     buf.seek(0)
@@ -742,6 +753,26 @@ def follow_updates():
     return jsonify({"ok": True, "items": items})
 
 
+@app.route("/api/home-feed")
+@api_errors
+def home_feed():
+    """首页推荐流（登录态个性化）。?fresh_idx=1 翻页递增，?ps=12 每页条数(1..30)。
+
+    推荐内容即时性强，翻页不落缓存；但 B 站风控时 rcmd 接口不报错、只返回
+    空列表，裸等现拉会让首屏停在空态。fresh_idx=1 拿到非空结果时落一份
+    账号级磁盘缓存，供下次打开先出内容再后台刷新。
+    ps 供前端按视口高度首屏一次要够铺满整页的条数，避免多次往返。
+    """
+    fresh_idx = _integer(request.args.get("fresh_idx"), "fresh_idx", default=1,
+                         minimum=1, maximum=10_000)
+    ps = _integer(request.args.get("ps"), "ps", default=12, minimum=1, maximum=30)
+    context = _request_auth_context()
+    items = _account_call(bapi.fetch_home_feed, fresh_idx, ps=ps, context=context)
+    if fresh_idx == 1 and items:
+        pagecache.save("home_feed", {"ok": True, "items": items}, context=context)
+    return jsonify({"ok": True, "items": items})
+
+
 # ---------- A3: 自定义 UP 清单 ----------
 
 def _parse_mid_from_input(s: str) -> Optional[int]:
@@ -761,10 +792,16 @@ def _parse_mid_from_input(s: str) -> Optional[int]:
 @app.route("/api/up-list")
 def up_list_get():
     ups = up_list.list_ups()
+    # 一次读回全部游标:逐 UP 调 get_last_seen 是「文件大小 × UP 数」的重复解析
+    last_seen_map = up_list.get_last_seen_all()
     for u in ups:
-        last = up_list.get_last_seen(int(u["mid"]))
+        last = last_seen_map.get(str(u["mid"]))
         u["fetched_at"] = (last or {}).get("fetched_at")
-    return jsonify({"ok": True, "ups": ups})
+    collections = up_list.list_collections()
+    for item in collections:
+        # 已见集合不下发给前端(可能几百条),只给规模与检查时间
+        item["seen_count"] = len(item.pop("seen_bvids", []) or [])
+    return jsonify({"ok": True, "ups": ups, "collections": collections})
 
 
 @app.route("/api/up-list/add", methods=["POST"])
@@ -809,6 +846,102 @@ def up_list_reset_seen():
     mid = _integer(body.get("mid"), "mid", minimum=1, maximum=10 ** 20)
     up_list.reset_seen(mid)
     return jsonify({"ok": True})
+
+
+def _collection_args(body: dict):
+    """合集订阅路由共用的参数校验。"""
+    kind = _string(body.get("kind"), "kind", required=True, max_length=16)
+    if kind not in up_list.COLLECTION_KINDS:
+        raise ApiError(400, "invalid_field", "kind 必须是 season 或 fav",
+                       field="kind")
+    cid = _integer(body.get("id"), "id", minimum=1, maximum=10 ** 20)
+    return kind, cid
+
+
+@app.route("/api/collection/add", methods=["POST"])
+@api_errors
+def collection_add():
+    """订阅合集/收藏夹的新入库视频自动下载。{kind, id, title, cover, quality}
+
+    首次订阅以当前全部条目为基线(只下之后新增的),与 UP 订阅语义一致。
+    """
+    body = _json_object()
+    kind, cid = _collection_args(body)
+    title = _string(body.get("title"), "title", max_length=_MAX_TEXT_LENGTH)
+    cover = _string(body.get("cover"), "cover", max_length=_MAX_URL_LENGTH)
+    quality = _string(body.get("quality"), "quality", max_length=32)
+    # 已订阅:直接返回,不再拉一次全集内容(省一次上游请求,也避免拉取失败误报 502)
+    existing = next((c for c in up_list.list_collections()
+                     if c["kind"] == kind and c["id"] == cid), None)
+    if existing is not None:
+        existing.pop("seen_bvids", None)
+        return jsonify({"ok": True, "collection": existing, "baseline_count": 0,
+                        "already": True})
+
+    context = _request_auth_context()
+    try:
+        items = _account_call(
+            bapi.fetch_season_content if kind == "season"
+            else bapi.fetch_fav_content, cid, context=context)
+    except UpstreamRateLimitError:
+        # 限流是账号级冷却,必须原样透出(前端按 429 提示),不能伪装成"读不到内容"
+        raise
+    except auth.AuthContextChangedError:
+        raise
+    except Exception:
+        # 拉不到基线时明确失败:没有基线的订阅会把整个合集一次性下完
+        log.exception("合集订阅建立基线失败 kind=%s id=%s", kind, cid)
+        raise ApiError(502, "baseline_failed",
+                       "无法读取该合集/收藏夹内容，未建立订阅（避免把历史内容全部下载）")
+    baseline = [it.get("bvid") for it in items if it.get("bvid")]
+    if not baseline:
+        # 空基线 = 该订阅此后永远把「当前条目」重建为基线、一条不下:
+        # 之后新增的视频会被当成基线吞掉,追更静默失效且用户无自救路径。
+        # 明确拒绝,让用户在内容非空时再订阅。
+        raise ApiError(400, "empty_collection",
+                       "该合集/收藏夹当前没有可读取的视频条目，无法建立基线；"
+                       "请确认内容非空后再订阅")
+    try:
+        entry = up_list.add_collection(kind, cid, title=title, cover=cover,
+                                       seen_bvids=baseline, quality=quality)
+    except up_list.UpListCapacityError as exc:
+        # 容量错误已由全局 handler 转成明确提示;这里补上"未建立订阅"的语境
+        raise ApiError(400, "collection_too_large", str(exc))
+    entry.pop("seen_bvids", None)
+    return jsonify({"ok": True, "collection": entry,
+                    "baseline_count": len(baseline)})
+
+
+@app.route("/api/collection/remove", methods=["POST"])
+@api_errors
+def collection_remove():
+    body = _json_object()
+    kind, cid = _collection_args(body)
+    ok = up_list.remove_collection(kind, cid)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/collection/set-quality", methods=["POST"])
+@api_errors
+def collection_set_quality():
+    body = _json_object()
+    kind, cid = _collection_args(body)
+    quality = _string(body.get("quality"), "quality", max_length=32)
+    ok = up_list.set_collection_quality(kind, cid, quality)
+    return jsonify({"ok": ok})
+
+
+@app.route("/api/collection/reset-seen", methods=["POST"])
+@api_errors
+def collection_reset_seen():
+    """清空某合集的已见基线(条目超限或想重新对齐时用)。
+
+    清空后下一轮检查会以当前全部条目重建基线,不会立刻重下历史内容。
+    """
+    body = _json_object()
+    kind, cid = _collection_args(body)
+    ok = up_list.reset_collection_seen(kind, cid)
+    return jsonify({"ok": ok})
 
 
 @app.route("/api/up-list/check", methods=["POST"])
@@ -907,11 +1040,44 @@ def followings():
     force = _boolean(request.args.get("force"), "force", default=False)
     context = _request_auth_context()
     result = _account_call(bapi.fetch_followings_all, force=force, context=context)
-    local = sorted(int(user["mid"]) for user in up_list.list_ups())
+    # 本地自动下载清单与站内关注合并：前端「关注 UP」视图一页看全两种状态。
+    # added_at 是「加入自动下载清单」的时间,手动加入且未关注时用它当时间键;
+    # last_pub_at 是本地游标里最近一次扫到的投稿时间(未跟踪的 UP 没有)。
+    local_ups = []
+    last_seen_map = up_list.get_last_seen_all()
+    for up in up_list.list_ups():
+        mid = int(up["mid"])
+        last = last_seen_map.get(str(mid)) or {}
+        local_ups.append({
+            "mid": mid,
+            "uname": up.get("uname", ""),
+            "face": (up.get("face") or "").replace("http:", "https:"),
+            "quality": up.get("quality", ""),
+            "added_at": bapi._int_or_zero(up.get("added_at")),
+            "last_pub_at": bapi._int_or_zero(last.get("ts")),
+        })
     body = {"ok": True, "items": result["items"], "total": result["total"],
-            "local_mids": local}
+            "local_ups": local_ups, "truncated": bool(result.get("truncated"))}
     pagecache.save("followings", body, context=context)
     return jsonify(body)
+
+
+@app.route("/api/relation/modify", methods=["POST"])
+@api_errors
+def relation_modify():
+    """关注/取消关注。{mid:int, action:"follow"|"unfollow"}
+
+    写操作直接作用于登录账号；重复关注按成功处理，其余错误透出 B 站 message。
+    """
+    body = _json_object()
+    mid = _integer(body.get("mid"), "mid", minimum=1, maximum=10 ** 20)
+    action = _string(body.get("action"), "action", required=True, max_length=16)
+    if action not in ("follow", "unfollow"):
+        raise ApiError(400, "invalid_field",
+                       "action 必须是 follow 或 unfollow", field="action")
+    context = _request_auth_context()
+    _account_call(bapi.modify_relation, mid, action, context=context)
+    return jsonify({"ok": True, "mid": mid, "action": action})
 
 
 @app.route("/api/watchlater")

@@ -68,3 +68,9 @@ def test_bool_coercion(fresh_config):
     r = fresh_config.set_config({"save_danmaku": 0})
     assert r["ok"]
     assert fresh_config.get_config()["save_danmaku"] is False
+
+
+def test_empty_dir_rejected(fresh_config):
+    """空串目录会静默解析成当前目录(Path("")),下载会全部落进应用源码树。"""
+    r = fresh_config.set_config({"download_dir": "   "})
+    assert not r["ok"]

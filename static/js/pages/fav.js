@@ -2,7 +2,9 @@
 import { registerPage, state, libDom, renderDefaultList, cachedLoad,
          getLibSearchQuery, replaceItems } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
-import { icon } from '../icons.js?v=20260903a';
+import { collectionAutoControl, loadCollectionSubs,
+         collSubKey, collectionSub } from './seasons.js?v=20261031e';
+import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
 let _favFolders = [];
@@ -59,7 +61,27 @@ export async function favLoadFolders() {
       _favFolders = b.folders || [];
       showFolders();
       renderFolders();
+      // 订阅状态是另一条异步请求,返回时用户可能已点进某个收藏夹:
+      // renderFolders() 会写 meta-fav,迟到执行会把「共 N 条」刷回
+      // 「共 M 个收藏夹」。只在仍停留在收藏夹列表时才重画。
+      loadCollectionSubs(() => {
+        if (state.mode === 'fav' && !_favCurrent) renderFolders();
+      });
     },
+  });
+}
+
+/* 排序规则与「关注 UP」「追更合集」一致:已开自动下载的整批在前。
+   组内用订阅时间倒序——收藏夹接口本身不带任何时间字段,只有本地订阅记录
+   有 added_at,所以未订阅的那一组没有时间键,保持 B 站返回的原顺序。 */
+function favFolderList() {
+  const subOf = (f) => collectionSub('fav', f.id);
+  return [..._favFolders].sort((a, b) => {
+    const subA = !!subOf(a);
+    const subB = !!subOf(b);
+    if (subA !== subB) return subA ? -1 : 1;
+    if (!subA) return 0;
+    return nonNegativeInt(subOf(b).added_at) - nonNegativeInt(subOf(a).added_at);
   });
 }
 
@@ -67,13 +89,14 @@ function renderFolders() {
   const box = document.getElementById('fav-folder-list');
   if (!box) return;
   const q = getLibSearchQuery();
-  let list = _favFolders;
-  if (q) list = _favFolders.filter(f => (f.title || '').toLowerCase().includes(q));
+  const all = favFolderList();
+  let list = all;
+  if (q) list = all.filter(f => (f.title || '').toLowerCase().includes(q));
   const metaEl = document.getElementById('meta-fav');
   if (metaEl) {
     metaEl.textContent = q
-      ? `共 ${_favFolders.length} 个收藏夹 · 匹配 ${list.length}`
-      : (_favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '');
+      ? `共 ${all.length} 个收藏夹 · 匹配 ${list.length}`
+      : (all.length ? `共 ${all.length} 个收藏夹` : '');
   }
   if (list.length === 0) {
     box.innerHTML = `<div class="empty">${q ? '没有匹配的收藏夹（试试其他关键词）' : '暂无收藏夹'}</div>`;
@@ -99,14 +122,14 @@ const coverMarkup = (cover) => {
 const _card = (cover, count, title, subHtml, id) => {
   const itemCount = nonNegativeInt(count);
   return `
-  <button type="button" class="fav-card" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(id ?? ''))}">
+  <div class="fav-card" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
     <div class="fc-cover">
       ${coverMarkup(cover)}
       <span class="fc-count">${itemCount} 个视频</span>
     </div>
     <div class="fc-title">${escapeHtml(title)}</div>
-    <div class="fc-sub">${subHtml}</div>
-  </button>`;
+    <div class="fc-sub">${subHtml}${collectionAutoControl('fav', id, title || '该收藏夹', title || '')}</div>
+  </div>`;
 };
 
 const folderCard = (f) => {
@@ -119,14 +142,15 @@ const folderCard = (f) => {
 function folderRow(f) {
   const itemCount = nonNegativeInt(f.media_count);
   return `
-    <button type="button" class="fav-folder" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(f.id ?? ''))}">
+    <div class="fav-folder" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(f.id ?? ''))}">
       <div class="fav-icon">${escapeHtml((f.title || '?').slice(0, 1))}</div>
       <div>
         <div class="fav-name">${escapeHtml(f.title)}</div>
         <div class="fav-count">${itemCount} 个视频</div>
       </div>
+      ${collectionAutoControl('fav', f.id, f.title || '该收藏夹', f.title || '')}
       <span class="fav-arrow">${icon('chevron')}</span>
-    </button>`;
+    </div>`;
 }
 
 function showList(title) {

@@ -314,6 +314,23 @@
   }
   .dl-badge svg { width: 10px; height: 10px; }
 
+  /* 首页推荐:推荐理由角标与播放/点赞数据 */
+  .rcmd-badge {
+    display: inline-flex; align-items: center;
+    font-size: 10.5px; font-weight: 600;
+    color: var(--accent); background: var(--accent-soft);
+    padding: 1px 6px; border-radius: 6px; vertical-align: 1px;
+    max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .vi-stat { display: inline-flex; align-items: center; gap: 2px; }
+  .vi-stat svg { width: 11px; height: 11px; opacity: .75; }
+
+  /* 卡片封面:悬停轻微放大,浏览手感 */
+  .thumb-wrap img { transition: transform .18s ease; }
+  .video-item:hover .thumb-wrap img { transform: scale(1.04); }
+
+  /* 卡片容器已从 <button> 改为 div(内部嵌了清晰度下拉,button 不能嵌套交互元素);
+     cursor / 焦点环需要显式补齐。 */
   .fav-card,
   .fav-folder {
     width: 100%;
@@ -323,6 +340,7 @@
     font: inherit;
     text-align: left;
     white-space: normal;
+    cursor: pointer;
   }
 
   /* 收藏夹文件夹列表(列表视图行) */
@@ -373,14 +391,17 @@
   .fav-card .fc-sub { width: 100%; font-size: 11.5px; color: var(--text-mute); display: flex; align-items: center; gap: 4px; }
   .fav-card .fc-sub svg { width: 12px; height: 12px; }
 
-  /* ==================== 底部批量操作条 ==================== */
+  /* ==================== 顶部批量操作条 ====================
+     勾选卡片时出现在页头位置(覆盖 sticky 页头):鼠标在卡片勾选框附近
+     点击后,「下载选中」就在同一区域,不用移到底部。点「取消」退出选择
+     模式即还原页头。 */
   .action-bar {
-    position: fixed; left: 200px; right: 0; bottom: 0; z-index: 40;
+    position: fixed; left: 200px; right: 0; top: 0; z-index: 40;
     display: none; justify-content: center;
-    padding: 12px 28px;
+    padding: 16px 28px;
     background: var(--bg-card);
-    border-top: 1px solid var(--border);
-    box-shadow: 0 -2px 12px rgba(0,0,0,.06);
+    border-bottom: 1px solid var(--border);
+    box-shadow: 0 2px 12px rgba(0,0,0,.06);
   }
   .action-bar.show { display: flex; }
   .action-bar .ab-inner { display: flex; align-items: center; gap: 10px; width: 100%; max-width: 1120px; flex-wrap: wrap; }
@@ -465,23 +486,107 @@
   .seg button { background: none; border: none; color: var(--text-soft); padding: 4px 10px; border-radius: 5px; font-size: 12.5px; }
   .seg button.active { background: var(--bg-card); color: var(--text-main); font-weight: 600; box-shadow: var(--shadow-sm); }
 
-  /* 关注 UP 网格(站点关注 → 关注 UP 视图) */
-  .up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); gap: 12px; }
+  /* 关注 UP 卡片:与视频卡片同尺寸(16:9 封面区 + 名称 + 两行说明)。
+     关注按钮与清晰度下拉压在封面底部,不额外占一行,整卡高度因此与
+     .video-item 基本一致(封面 + 三行文字)。 */
+  .up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
   .up-card {
-    display: flex; align-items: center; gap: 10px;
-    padding: 10px 12px; border: 1px solid var(--border); border-radius: 10px;
-    background: var(--bg-card);
+    display: flex; flex-direction: column; gap: 6px;
+    padding: 8px; border: 1px solid var(--border); border-radius: var(--radius);
+    background: var(--bg-card); min-width: 0;
   }
-  .up-card img { width: 40px; height: 40px; border-radius: 50%; background: var(--bg-muted); flex-shrink: 0; }
-  .up-card .uc-name { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .up-list { display: flex; flex-direction: column; gap: 6px; }
-  .up-list .up-card { padding: 8px 12px; }
+  .up-card .uc-thumb { position: relative; width: 100%; }
+  .up-card .uc-cover {
+    position: relative; width: 100%; aspect-ratio: 16/9;
+    border-radius: 7px; overflow: hidden;
+    background: linear-gradient(135deg, var(--bg-muted), var(--bg-soft));
+    display: flex; align-items: center; justify-content: center;
+    padding-bottom: 34px; /* 给底部控件条让位,头像落在视觉中心偏上 */
+  }
+  .up-card .uc-face {
+    width: 64px; height: 64px; border-radius: 50%;
+    object-fit: cover; background: var(--bg-muted); flex: none;
+  }
+  .up-card .uc-badge {
+    position: absolute; top: 6px; right: 6px;
+    font-size: 10.5px; font-weight: 600; padding: 1px 6px; border-radius: 6px;
+    color: var(--text-mute); background: var(--bg-card);
+    border: 1px solid var(--border);
+  }
+  .up-card .uc-badge.on { color: var(--accent); border-color: var(--accent); background: var(--accent-soft); }
+  /* 控件条压在封面底部:整卡不额外长一行,与视频卡片高度对齐 */
+  .up-card .uc-actions {
+    position: absolute; left: 0; right: 0; bottom: 0;
+    display: flex; align-items: center; gap: 6px;
+    padding: 4px 6px; background: var(--bg-card);
+    border-top: 1px solid var(--border);
+    /* 底角跟随封面圆角:控件条压在封面底部,不给圆角就成了「上圆下方」 */
+    border-radius: 0 0 7px 7px;
+  }
+  .up-card .uc-actions > button { flex: 0 0 auto; width: 56px; }
+  /* 自绘下拉箭头:原生 select 的三角钉死在右边框上,加宽或改 padding 都推不动它。
+     appearance:none 后箭头位置由 background-position 决定。 */
+  .up-card .uc-actions > select {
+    flex: 1 1 auto; min-width: 0;
+    font-size: 12px; padding: 3px 22px 3px 6px;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239499a0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 11px 11px;
+  }
+  .up-card .uc-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
+  .up-card .uc-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .up-card .uc-name a { color: inherit; text-decoration: none; }
+  .up-card .uc-name a:hover { color: var(--accent); }
+  .up-card .uc-sign,
+  .up-card .uc-meta {
+    font-size: 11.5px; color: var(--text-mute);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* 自动下载控件(select):开启态强调色,未开启普通灰 */
+  .up-card select.uc-auto.on {
+    color: var(--accent); border-color: var(--accent);
+    background-color: var(--accent-soft); font-weight: 600;
+  }
 
-  /* 自动下载管理卡片(页面上直接管理:清晰度 + 移除) */
-  .up-card.mgr { flex-wrap: wrap; row-gap: 8px; }
-  .up-card.mgr .uc-ctl { flex-basis: 100%; display: flex; align-items: center; justify-content: flex-end; gap: 8px; }
-  .up-card.mgr .uc-ctl select { font-size: 12px; padding: 3px 6px; }
-  .up-list .up-card.mgr .uc-ctl { flex-basis: auto; margin-left: auto; }
+  /* 列表视图:回到单行(头像 | 名称/签名/时间 | 控件),与视频列表行同高 */
+  .up-list { display: flex; flex-direction: column; gap: 6px; }
+  .up-list .up-card { flex-direction: row; align-items: center; gap: 12px; padding: 6px 8px; }
+  /* display:contents 让封面与控件条变成卡片的直接 flex 子项,再用 order
+     排成「头像 → 文字 → 控件」。不这么做的话 DOM 顺序是封面、控件、文字,
+     单行里控件会跑到名字左边。 */
+  .up-list .up-card .uc-thumb { display: contents; }
+  .up-list .up-card .uc-cover {
+    order: 1; width: 44px; height: 44px; aspect-ratio: auto; padding-bottom: 0;
+    border-radius: 50%; flex: none; background: var(--bg-muted);
+  }
+  .up-list .up-card .uc-face { width: 44px; height: 44px; }
+  .up-list .up-card .uc-badge { display: none; }
+  .up-list .up-card .uc-actions {
+    order: 3; position: static; padding: 0; border: none; background: none;
+    border-radius: 0; justify-content: flex-end; flex: none;
+  }
+  .up-list .up-card .uc-actions > select { width: 96px; flex: none; }
+  .up-list .up-card .uc-text { order: 2; flex: 1 1 auto; }
+
+  /* 合集/收藏夹卡片上的自动下载开关(嵌在卡片按钮内,需阻止冒泡) */
+  .fav-card .fc-sub .uc-auto,
+  .fav-folder .uc-auto {
+    margin-left: auto; width: 88px; flex: none;
+    font-size: 12px; padding: 3px 22px 3px 6px;
+    appearance: none; -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239499a0' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 6px center;
+    background-size: 11px 11px;
+  }
+  .fav-card .fc-sub .uc-auto.on,
+  .fav-folder .uc-auto.on {
+    color: var(--accent); border-color: var(--accent);
+    background-color: var(--accent-soft); font-weight: 600;
+  }
+  .fav-folder .uc-auto { margin-left: 8px; }
 
   /* 后台拉到新内容的提示条 */
   .fresh-hint {
@@ -624,7 +729,7 @@ button.primary:hover:not(:disabled) {
   border-radius: 7px;
   background: var(--bg-soft);
 }
-#auto-refresh-feed-status { flex-basis: 100%; }
+#auto-refresh-subs-status { flex-basis: 100%; }
 
 .confirm-dialog {
   width: min(420px, calc(100vw - 32px));
@@ -655,7 +760,6 @@ button.primary:hover:not(:disabled) {
 }
 .vi-check-hit .vi-check { position: static; margin: 0; }
 .video-item.lv .vi-check-hit { position: static; flex: none; margin-left: -4px; }
-.action-bar-open .content { padding-bottom: 104px; }
 
 @media (max-width: 860px) {
   .app-shell { height: 100dvh; min-height: 100dvh; overflow: hidden; }
@@ -663,8 +767,14 @@ button.primary:hover:not(:disabled) {
   .main { height: auto; min-height: 0; flex: 1; }
   .nav-item { width: auto; min-width: 34px; justify-content: center; }
   .content { padding-bottom: calc(56px + env(safe-area-inset-bottom)); }
+  /* 窄屏还原为底部操作条:拇指可达,顶部空间被侧边栏占据 */
   .action-bar {
+    top: auto; bottom: 0;
+    padding: 10px 14px;
     padding-bottom: calc(10px + env(safe-area-inset-bottom));
+    border-bottom: none;
+    border-top: 1px solid var(--border);
+    box-shadow: 0 -2px 12px rgba(0,0,0,.06);
   }
   .action-bar-open .content {
     padding-bottom: calc(116px + env(safe-area-inset-bottom));
@@ -696,7 +806,9 @@ button.primary:hover:not(:disabled) {
   .drawer-head { padding-top: max(16px, env(safe-area-inset-top)); }
   .drawer-body { padding-left: 14px; padding-right: 14px; }
   .video-item.lv .thumb-wrap { width: 112px; }
-  .up-list .up-card.mgr .uc-ctl { flex-basis: 100%; margin-left: 0; }
+  .up-list .up-card.mgr { flex-wrap: wrap; }
+  .up-list .up-card.mgr .uc-actions { width: 100%; margin: 0; gap: 8px; }
+
 }
 
 @media (pointer: coarse) {

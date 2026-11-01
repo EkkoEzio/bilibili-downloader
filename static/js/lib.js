@@ -419,6 +419,11 @@ export function renderLibList(pairs, container) {
       ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
       : upName];
     if (it.view_at) metaParts.push(escapeHtml(formatTime(it.view_at)));
+    // 推荐流独有的展示层信息：推荐理由（角标）与播放/点赞数。
+    if (it.stat_view) metaParts.push(`<span class="vi-stat">${icon('play')} ${escapeHtml(it.stat_view)}</span>`);
+    if (it.stat_like) metaParts.push(`<span class="vi-stat">${icon('like')} ${escapeHtml(it.stat_like)}</span>`);
+    const rcmdBadge = (state.mode === 'home' && it.rcmd_reason)
+      ? `<span class="rcmd-badge">${escapeHtml(it.rcmd_reason)}</span>` : '';
     const targetUrl = safeHttpUrl(it.url);
     const titleHtml = targetUrl
       ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
@@ -439,7 +444,7 @@ export function renderLibList(pairs, container) {
           ${durHtml}${playHtml}
         </div>
         <div class="lv-body">
-          <div class="vi-title">${titleHtml} ${badgeHtml}</div>
+          <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}${badgeHtml}</div>
           <div class="vi-meta">${metaParts.join(' · ')}</div>
           ${watchbar}
           ${warnHtml}
@@ -453,7 +458,7 @@ export function renderLibList(pairs, container) {
         <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
         ${durHtml}${playHtml}
       </div>
-      <div class="vi-title">${titleHtml} ${badgeHtml}</div>
+      <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}${badgeHtml}</div>
       <div class="vi-meta">${metaParts.join(' · ')}</div>
       ${watchbar}
       ${warnHtml}

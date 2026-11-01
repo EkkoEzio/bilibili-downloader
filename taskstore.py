@@ -887,6 +887,72 @@ def _legacy_dirs(*, root=None) -> list[Path]:
     return dirs
 
 
+# yt-dlp 半成品的磁盘标记:未下完的 `.part`(分片进行中为 `.part-Frag*`)
+# 与分片状态文件 `.ytdl`。这类文件按定义不是任何最终产物。
+_PARTIAL_FILE_MARKS = (".part", ".ytdl")
+
+
+def _is_partial_temp_name(name: str, expected_stem: str) -> bool:
+    """名字是否为期望 stem 对应的 yt-dlp 半成品临时文件。
+
+    outtmpl 是 ``stem.%(ext)s``;组合轨分流落盘为 ``stem.f<id>.<ext>``。
+    所以 stem 之后必须紧跟以 ``.`` 开头的扩展/format 链,才可能是 yt-dlp
+    自己的临时文件。刻意不放宽到 ``_STEM_SUFFIX_STARTS`` 那套(含空格、
+    连字符、下划线):``stem_belongs`` 用它判断「同前缀更长标题」是否属于
+    同一任务,照搬到这里会把另一条任务(可能正在下载)的 ``.part`` 一起
+    删掉——``直播回放`` 的删除会清掉 ``直播回放 完整版.mp4.part``。
+    """
+    if not name.startswith(expected_stem):
+        return False
+    rest = name[len(expected_stem):]
+    if not rest.startswith("."):
+        return False
+    return (name.endswith(".part") or ".part-" in name
+            or name.endswith(".ytdl"))
+
+
+def _partial_download_files(expected_stem: str, *, root=None) -> list[Path]:
+    """在下载根及一级子目录里收集该期望名的半成品临时文件。"""
+    try:
+        safe_root = _download_root() if root is None else _canonical_root(root)
+    except UnsafeDownloadPathError:
+        return []
+    out: list[Path] = []
+    for directory in _legacy_dirs(root=safe_root):
+        try:
+            children = list(directory.iterdir())
+        except OSError:
+            continue
+        for child in children:
+            try:
+                safe = resolve_download_path(child, root=safe_root)
+            except UnsafeDownloadPathError:
+                continue
+            if safe.is_file() and _is_partial_temp_name(safe.name, expected_stem):
+                out.append(safe)
+    return sorted(set(out))
+
+
+def _expected_task_stem(task: dict) -> str:
+    """任务权威 title → 期望落盘 stem;占位/缺失标题返回空串。"""
+    title = (task.get("title") or "").strip()
+    if not title or title == "(解析中)":
+        return ""
+    try:
+        page = int(task.get("page") or 1)
+    except (TypeError, ValueError):
+        page = 1
+    return extras.build_filename(title, page)
+
+
+def _manifest_lacks_media(task: dict) -> bool:
+    """任务是否从未确认过任何主媒体(取消/失败/中断的典型形态)。"""
+    if "manifest" not in task:
+        return True
+    manifest = _normalise_manifest(task, task.get("manifest"))
+    return not any(item["role"] == "media" for item in manifest["artifacts"])
+
+
 def _legacy_primary_candidates(task: dict, *, root=None) -> list[Path]:
     title = (task.get("title") or "").strip()
     if not title or title == "(解析中)":
@@ -978,8 +1044,9 @@ def delete_tasks_detailed(task_ids: list, delete_file: bool) -> dict:
     """保守删除终态记录，并返回记录与文件层面的可观察结果。
 
     记录仍保持 durable-first：写盘失败时既不移除内存记录也不 unlink 文件。
-    ``file_skipped_count`` 包括文件已不存在，以及没有可安全确认归属的产物；
-    调用方可据此区分“记录已删”与“本地文件确实已删”。
+    文件计数全部以「文件」为单位：``file_skipped_count`` 是已不存在的文件数
+    (含已被并发删除的 .part 临时文件)；没有任何可安全确认产物的任务不
+    重复计数。调用方可据此区分「记录已删」与「本地文件确实已删」。
     """
     wanted = sorted({str(task_id) for task_id in task_ids})
     result = {
@@ -1039,11 +1106,30 @@ def delete_tasks_detailed(task_ids: list, delete_file: bool) -> dict:
                     _final_paths.pop(task_id, None)
 
         if delete_file:
+            # 仍存活任务的期望名:同标题任务可能还在下载(其 .part 是进行中
+            # 状态),绝不能因为删除另一条同标题记录而误清。
+            surviving_stems: set[str] = set()
+            with _tasks_lock:
+                for other in _tasks.values():
+                    stem = _expected_task_stem(other)
+                    if stem:
+                        surviving_stems.add(stem)
+            claimed_temps: set[str] = set()
             for task in removed:
                 task_id = task["task_id"]
-                paths = files_by_task.get(task_id, [])
+                paths = list(files_by_task.get(task_id, []))
+                # 从未确认主媒体的任务(取消/失败/中断):manifest 为空,
+                # 但 yt-dlp 可能已留下半成品 .part。删除文件时一并清理;
+                # 这些临时文件不进 manifest,不清就永远留在磁盘上。
+                if _manifest_lacks_media(task):
+                    stem = _expected_task_stem(task)
+                    root = roots_by_task.get(task_id)
+                    if stem and root is not None and stem not in surviving_stems:
+                        for temp in _partial_download_files(stem, root=root):
+                            if str(temp) not in claimed_temps:
+                                claimed_temps.add(str(temp))
+                                paths.append(temp)
                 if not paths:
-                    result["file_skipped_count"] += 1
                     continue
                 for path in paths:
                     try:

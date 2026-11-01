@@ -4,6 +4,7 @@ import { registerPage, state, libDom, renderPage, getLibSearchQuery, curChunk,
 import { getJSON, isAbortError } from '../net.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
+import { announce } from '../confirm.js';
 
 let _histServerPage = 0;
 let _histHasMore = false;
@@ -64,9 +65,15 @@ async function fetchHistoryPage(generation, controller) {
     return true;
   } catch (error) {
     if (isAbortError(error) || !historyRequestIsCurrent(generation, controller)) return false;
-    libDom().list.innerHTML =
-      `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
-    _histHasMore = false;
+    if (nextPage === 1) {
+      libDom().list.innerHTML =
+        `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
+      _histHasMore = false;
+    } else {
+      // 翻页失败:保留已渲染的首页内容,不把整列表换成错误占位;
+      // _histHasMore 保持 true,下次滚到底自动重试这一页。
+      announce(error.message || '加载更多失败，稍后滚动到底部可重试', true);
+    }
     return false;
   }
 }

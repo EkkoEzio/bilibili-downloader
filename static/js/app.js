@@ -11,11 +11,13 @@ import * as drawer from './drawer.js';
 import * as login from './login.js';
 
 /* 页面模块:import 即向 lib 注册页控制器(顺序即侧边栏顺序,仅可读性) */
+import * as home from './pages/home.js?v=20261101a';
 import * as downloads from './pages/downloads.js';
 import * as history from './pages/history.js';
 import * as feed from './pages/feed.js';
-import * as seasons from './pages/seasons.js?v=20260903a';
-import * as fav from './pages/fav.js?v=20260903a';
+import * as subs from './pages/subscriptions.js?v=20261031e';
+import * as seasons from './pages/seasons.js?v=20261031e';
+import * as fav from './pages/fav.js?v=20261031e';
 import * as later from './pages/later.js';
 
 import * as newdl from './newdl.js';
@@ -32,6 +34,8 @@ Object.assign(window, {
   scrollToTop: lib.scrollToTop,
   applyFresh: lib.applyFresh,
   dismissFresh: lib.dismissFresh,
+  // 首页推荐
+  loadHomeFeed: home.loadHomeFeed,
   // 抽屉 / 登录 / 设置
   openDrawer: drawer.openDrawer,
   closeDrawer: drawer.closeDrawer,
@@ -60,18 +64,18 @@ Object.assign(window, {
   // 追更合集
   loadSeasons: seasons.loadSeasons,
   seasonEnter: seasons.seasonEnter,
+  collectionAutoChanged: seasons.collectionAutoChanged,
   seasonBack: seasons.seasonBack,
   seasonRefresh: seasons.seasonRefresh,
-  // 关注动态(三源 + UP 清单管理)
-  setFeedSource: feed.setFeedSource,
+  // 关注动态(只浏览投稿流)
   loadFollowBili: feed.loadFollowBili,
-  loadFollowAll: feed.loadFollowAll,
-  loadMyUps: feed.loadMyUps,
-  upAdd: feed.upAdd,
-  upSetQuality: feed.upSetQuality,
-  upRemove: feed.upRemove,
-  upCheckNow: feed.upCheckNow,
-  upAddLocal: feed.upAddLocal,
+  // 关注 UP(自动下载订阅管理)
+  loadSubscriptions: subs.loadSubscriptions,
+  refreshSubs: subs.refreshSubs,
+  upAdd: subs.upAdd,
+  upCheckNow: subs.upCheckNow,
+  upAutoChanged: subs.upAutoChanged,
+  upToggleFollow: subs.upToggleFollow,
   // 下载记录
   loadDownloads: downloads.loadDownloads,
   libDownload: downloads.libDownload,
@@ -84,7 +88,7 @@ Object.assign(window, {
 });
 
 /* ---------- 账号代际与静态可访问名称 ---------- */
-const ACCOUNT_BOUND_PAGES = new Set(['history', 'feed', 'seasons', 'fav', 'later']);
+const ACCOUNT_BOUND_PAGES = new Set(['home', 'history', 'feed', 'subs', 'seasons', 'fav', 'later']);
 
 function syncStaticButtonLabels() {
   document.querySelectorAll('button[title]:not([aria-label])').forEach((button) => {
@@ -122,9 +126,8 @@ syncStaticButtonLabels();
   const t = stored || (cfg && cfg.theme) || 'auto';
   theme.applyTheme(t);
   lib.updateLibViewBtn();
-  feed.syncSeg();
   await login.refreshLogin();
-  lib.goPage('downloads');
+  lib.goPage('home');
   downloads.startTaskUpdates();
   // 窗口宽度变化 → 每页条数自适应重算
   let _resizeT = null;

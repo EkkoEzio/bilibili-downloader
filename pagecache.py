@@ -17,7 +17,8 @@ from config import DATA_DIR
 CACHE_DIR = DATA_DIR / "cache"
 CACHE_DIR.mkdir(exist_ok=True)
 
-KEYS = ("follow_updates", "followings", "fav_folders", "fav_seasons", "watchlater")
+KEYS = ("follow_updates", "followings", "fav_folders", "fav_seasons", "watchlater",
+        "home_feed")
 DISCARD_AFTER = 30 * 86400
 _lock = threading.Lock()
 

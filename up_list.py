@@ -51,9 +51,15 @@ class UpListCapacityError(RuntimeError):
         self.requested = int(requested)
         if self.capacity == "ups":
             detail = f"UP 清单容量不足（当前 {self.current}，上限 {self.limit}）"
+        elif self.capacity == "collection_items":
+            detail = (f"该合集/收藏夹含 {self.current} 条，超过去重上限 "
+                      f"{self.limit}，无法建立基线")
+        elif self.capacity == "collections":
+            detail = (f"合集/收藏夹订阅数已达上限（当前 {self.current}，"
+                      f"上限 {self.limit}）")
         else:
             detail = f"续扫状态含 {self.current} 项，超过安全上限 {self.limit}"
-        super().__init__(f"{detail}；请先清理或重置后重试")
+        super().__init__(f"{detail}；请先清理后重试")
 
 
 class UpListWriteError(RuntimeError):
@@ -61,11 +67,21 @@ class UpListWriteError(RuntimeError):
 
 
 # 每个 UP 可选的默认清晰度(""=最高画质自动);与前端下拉、quality.py 标签一致
-QUALITY_CHOICES = ("", "1080P", "720P", "480P", "360P", "音频")
+# 与 static/js/quality.js 的 QUALITY_OPTIONS 保持一致(测试会比对两侧)。
+# 低于 720P 无实际需求已移除;B 站无 1440P 档(上一版误加),60 帧档为 1080P60/720P60。
+# 存量配置里的旧值由 set_quality 归一为 ""
+QUALITY_CHOICES = ("", "2160P", "1080P60", "1080P", "720P60", "720P", "音频")
 
 
 def _read() -> dict:
-    return storage.read_json(UP_LIST_FILE, default={"ups": [], "last_seen": {}})
+    data = storage.read_json(UP_LIST_FILE, default={"ups": [], "last_seen": {}})
+    # default 只在文件缺失/损坏时生效;手改或极旧遗留的合法 JSON 可能缺键,
+    # set_quality/remove_up 等写函数直接 data["ups"] 会 KeyError 变 500。
+    if not isinstance(data, dict):
+        return {"ups": [], "last_seen": {}}
+    data.setdefault("ups", [])
+    data.setdefault("last_seen", {})
+    return data
 
 
 def _write(data: dict) -> bool:
@@ -85,7 +101,12 @@ def list_ups() -> list[dict]:
     # 老数据带 auto 字段(开关已废除),读时丢弃;quality 统一补默认 ""
     for u in ups:
         u.pop("auto", None)
-        u.setdefault("quality", "")
+        # 已下线的档位(480P/360P/1440P)留在存量记录里会变成「界面显示最高画质,
+        # 实际按 480P 下载」:前端下拉里没有这个值,浏览器回落显示首项,而
+        # best_video_audio_choice 仍按 480P 挑流。读时归一成空串,与
+        # list_collections 的 quality 归一保持一致。
+        if u.get("quality") not in QUALITY_CHOICES:
+            u["quality"] = ""
     return ups
 
 
@@ -169,6 +190,18 @@ def get_last_seen(mid: int) -> Optional[dict]:
         return _read().get("last_seen", {}).get(str(mid))
 
 
+def get_last_seen_all() -> dict:
+    """一次性读回全部游标,键为字符串 mid。
+
+    ``get_last_seen`` 每次调用都要整读一遍 ``up_list.json``。合集订阅加入后
+    这份文件会带上每个订阅几百条的已见集合,批量读取方(/api/up-list、
+    /api/followings、追更循环)逐 UP 调它就是把文件大小 × UP 数的 JSON
+    解析重复 N 次。返回外层浅拷贝,调用方只读不改。
+    """
+    with _lock:
+        return dict(_read().get("last_seen", {}))
+
+
 def mark_seen(mid: int, bvid: str, ts: int, title: str = "",
               fetched_at: Optional[int] = None) -> None:
     """提交一个已完整覆盖的 ``(ts, bvid)`` 游标成员。
@@ -246,3 +279,167 @@ def reset_seen(mid: int) -> None:
         data = _read()
         data["last_seen"].pop(str(mid), None)
         _commit(data)
+
+
+# ---------- 合集 / 收藏夹订阅(自动下载新入库视频) ----------
+#
+# 与 UP 订阅并存于同一份 up_list.json,但用独立键,避免改动 ups/last_seen 的
+# 既有语义(那份数据结构有续扫游标等复杂状态,不应被这里污染)。
+#
+# collections: [{kind, id, title, cover, quality, added_at, seen_bvids}]
+#   kind = "season"(追更合集) | "fav"(收藏夹)
+#   seen_bvids = 已处理过的 bvid 集合(基线 + 后续新增),上限 COLLECTION_SEEN_MAX
+#   首次添加时以当前全部条目为基线,之后只处理新出现的 bvid。
+
+COLLECTION_KINDS = ("season", "fav")
+MAX_COLLECTIONS = 100
+COLLECTION_SEEN_MAX = 300
+
+
+def _collection_key(kind: str, cid: int) -> str:
+    return f"{kind}:{int(cid)}"
+
+
+def list_collections() -> list[dict]:
+    """返回合集/收藏夹订阅列表(quality 统一补默认空串)。"""
+    with _lock:
+        items = _read().get("collections", [])
+        if len(items) > MAX_COLLECTIONS:
+            raise UpListCapacityError("collections", MAX_COLLECTIONS, len(items))
+    out = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "")
+        if kind not in COLLECTION_KINDS:
+            continue
+        try:
+            cid = int(item.get("id"))
+        except (TypeError, ValueError):
+            continue
+        entry = dict(item)
+        entry["kind"] = kind
+        entry["id"] = cid
+        entry.setdefault("quality", "")
+        if entry["quality"] not in QUALITY_CHOICES:
+            entry["quality"] = ""
+        entry.setdefault("seen_bvids", [])
+        out.append(entry)
+    return out
+
+
+def add_collection(kind: str, cid: int, title: str = "", cover: str = "",
+                   seen_bvids: Optional[list[str]] = None,
+                   quality: str = "") -> dict:
+    """新增合集/收藏夹订阅;已存在时只回填名称/封面,不重置已见集合。"""
+    kind = str(kind or "")
+    if kind not in COLLECTION_KINDS:
+        raise ValueError(f"非法订阅类型:{kind}")
+    cid = int(cid)
+    quality = quality if quality in QUALITY_CHOICES else ""
+    raw_baseline = [str(v) for v in (seen_bvids or []) if v]
+    if len(raw_baseline) > COLLECTION_SEEN_MAX:
+        # 与轮询侧保持一致:超限明确失败,不静默截断(截断会让被裁掉的旧条目
+        # 在后续检查中被当成新增而重复下载)
+        raise UpListCapacityError("collection_items", COLLECTION_SEEN_MAX,
+                                  len(raw_baseline), 0)
+    baseline = raw_baseline
+    with _lock:
+        data = _read()
+        data.setdefault("collections", [])
+        for item in data["collections"]:
+            if (str(item.get("kind")) == kind
+                    and int(item.get("id") or 0) == cid):
+                changed = False
+                if title and not item.get("title"):
+                    item["title"] = title
+                    changed = True
+                if cover and not item.get("cover"):
+                    item["cover"] = cover
+                    changed = True
+                item.setdefault("quality", "")
+                if changed:
+                    _commit(data)
+                return dict(item)
+        if len(data["collections"]) >= MAX_COLLECTIONS:
+            raise UpListCapacityError("collections", MAX_COLLECTIONS,
+                                      len(data["collections"]), 1)
+        entry = {"kind": kind, "id": cid, "title": title, "cover": cover,
+                 "quality": quality, "added_at": int(time.time()),
+                 "seen_bvids": baseline}
+        data["collections"].append(entry)
+        _commit(data)
+        return dict(entry)
+
+
+def remove_collection(kind: str, cid: int) -> bool:
+    kind = str(kind or "")
+    cid = int(cid)
+    with _lock:
+        data = _read()
+        before = len(data.get("collections", []))
+        data["collections"] = [
+            item for item in data.get("collections", [])
+            if not (str(item.get("kind")) == kind
+                    and int(item.get("id") or 0) == cid)
+        ]
+        removed = len(data["collections"]) < before
+        if removed:
+            _commit(data)
+        return removed
+
+
+def set_collection_quality(kind: str, cid: int, quality: str) -> bool:
+    quality = quality if quality in QUALITY_CHOICES else ""
+    kind = str(kind or "")
+    cid = int(cid)
+    with _lock:
+        data = _read()
+        for item in data.get("collections", []):
+            if (str(item.get("kind")) == kind
+                    and int(item.get("id") or 0) == cid):
+                item["quality"] = quality
+                _commit(data)
+                return True
+        return False
+
+
+def reset_collection_seen(kind: str, cid: int) -> bool:
+    """清空某合集的已见集合(下次检查会重新以当前内容为基线)。
+
+    用于条目数超过去重上限、或用户想重新对齐基线时。
+    """
+    kind = str(kind or "")
+    cid = int(cid)
+    with _lock:
+        data = _read()
+        for item in data.get("collections", []):
+            if (str(item.get("kind")) == kind
+                    and int(item.get("id") or 0) == cid):
+                item["seen_bvids"] = []
+                item["checked_at"] = int(time.time())
+                _commit(data)
+                return True
+        return False
+
+
+def commit_collection_seen(kind: str, cid: int, bvids: list[str]) -> None:
+    """把本轮已处理的 bvid 并入已见集合(去重 + 上限截断,保留最新)。
+
+    传空列表表示「本轮没有新增,但仍检查过」:只更新 checked_at,不动已见集合。
+    """
+    kind = str(kind or "")
+    cid = int(cid)
+    fresh = [str(v) for v in bvids if v]
+    with _lock:
+        data = _read()
+        for item in data.get("collections", []):
+            if (str(item.get("kind")) == kind
+                    and int(item.get("id") or 0) == cid):
+                if fresh:
+                    seen = [str(v) for v in (item.get("seen_bvids") or []) if v]
+                    merged = list(dict.fromkeys([*fresh, *seen]))
+                    item["seen_bvids"] = merged[:COLLECTION_SEEN_MAX]
+                item["checked_at"] = int(time.time())
+                _commit(data)
+                return

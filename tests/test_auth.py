@@ -206,7 +206,8 @@ def test_fetch_collected_seasons_requires_platform_web(monkeypatch):
             return {"code": 0, "data": {
                 "count": 1, "has_more": False,
                 "list": [{"id": 1761108, "title": "数理小品", "media_count": 30,
-                          "cover": "http://i0.hdslb.com/bfs/s.jpg", "attr": 0}]}}
+                          "cover": "http://i0.hdslb.com/bfs/s.jpg", "attr": 0,
+                          "mtime": 1793000000}]}}
 
     def fake_get(url, cookies=None, headers=None, params=None, timeout=None):
         calls.append(params)
@@ -217,8 +218,10 @@ def test_fetch_collected_seasons_requires_platform_web(monkeypatch):
     monkeypatch.setattr(bilibili_api, "_my_mid", lambda cj: 2974547)
     seasons = bilibili_api.fetch_collected_seasons()
     assert calls[0]["platform"] == "web", "不带 platform=web 会永远拿到空列表"
+    # mtime 要保留:前端按「自动下载优先 → 组内时间倒序」排序要用
     assert seasons == [{"id": 1761108, "title": "数理小品", "media_count": 30,
-                        "cover": "https://i0.hdslb.com/bfs/s.jpg"}]
+                        "cover": "https://i0.hdslb.com/bfs/s.jpg",
+                        "mtime": 1793000000}]
 
 
 def test_fetch_collected_seasons_error_raises(monkeypatch):
@@ -459,3 +462,85 @@ def test_followings_all_mid_once_and_pages(monkeypatch):
     r = bilibili_api.fetch_followings_all(force=True, max_pages=3)
     assert [u["mid"] for u in r["items"]] == [1, 2] and r["total"] == 2
     assert len(mid_calls) == 1, "mid 只取一次(旧实现每页调 _my_mid 多打 nav 接口)"
+
+
+# ---------- modify_relation:关注/取关 ----------
+
+class _RelationResp:
+    def __init__(self, payload, status=200):
+        self._payload = payload
+        self.status_code = status
+        self.headers = {}
+        self.url = "https://api.bilibili.com/x/relation/modify"
+
+    def json(self):
+        return self._payload
+
+
+class _JarWithJct:
+    """带 bili_jct 的最小 cookiejar。"""
+    def __init__(self, jct="token123"):
+        self._jct = jct
+
+    def __iter__(self):
+        class _C: pass
+        c = _C()
+        c.name, c.value = "bili_jct", self._jct
+        yield c
+
+
+def _stub_relation(monkeypatch, payload, captured=None):
+    import requests as _requests
+    monkeypatch.setattr(bilibili_api, "_auth_session",
+                        lambda context=None: (None, _JarWithJct()))
+    monkeypatch.setattr(bilibili_api, "_ensure_context_current", lambda ctx: None)
+
+    def fake_post(url, **kwargs):
+        if captured is not None:
+            captured.update(url=url, **kwargs)
+        return _RelationResp(payload)
+
+    monkeypatch.setattr(bilibili_api.requests, "post", fake_post)
+
+
+def test_modify_relation_unfollow_sends_csrf_and_act(monkeypatch):
+    """取关:POST relation/modify,form 带 fid/act=2/csrf(bili_jct)。"""
+    captured = {}
+    _stub_relation(monkeypatch, {"code": 0, "message": "0"}, captured)
+    bilibili_api.modify_relation(5294454, "unfollow")
+    assert captured["url"] == "https://api.bilibili.com/x/relation/modify"
+    data = captured["data"]
+    assert data["fid"] == "5294454" and data["act"] == "2"
+    assert data["csrf"] == "token123" and data["csrf_token"] == "token123"
+    assert captured["headers"]["Content-Type"] == "application/x-www-form-urlencoded"
+
+
+def test_modify_relation_follow_success_and_duplicate(monkeypatch):
+    """关注:act=1;重复关注(22013)按成功处理,不误报错误。"""
+    captured = {}
+    _stub_relation(monkeypatch, {"code": 0}, captured)
+    bilibili_api.modify_relation(42, "follow")
+    assert captured["data"]["act"] == "1"
+
+    _stub_relation(monkeypatch, {"code": 22013, "message": "已经被关注"})
+    bilibili_api.modify_relation(42, "follow")  # 不抛即通过
+
+
+def test_modify_relation_surfaces_bilibili_error(monkeypatch):
+    """B 站业务错误(如被拉黑)透出原始 message。"""
+    _stub_relation(monkeypatch, {"code": 22014, "message": "对方把你拉黑了"})
+    with pytest.raises(RuntimeError, match="拉黑"):
+        bilibili_api.modify_relation(42, "follow")
+
+
+def test_modify_relation_requires_jct(monkeypatch):
+    """登录凭据缺 bili_jct(如 Edge 旧 cookie)时给出明确指引而不是裸异常。"""
+    monkeypatch.setattr(bilibili_api, "_auth_session",
+                        lambda context=None: (None, _JarWithJct(jct="")))
+    with pytest.raises(RuntimeError, match="bili_jct"):
+        bilibili_api.modify_relation(42, "unfollow")
+
+
+def test_modify_relation_rejects_unknown_action():
+    with pytest.raises(ValueError):
+        bilibili_api.modify_relation(42, "block")

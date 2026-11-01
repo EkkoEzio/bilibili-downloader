@@ -1,5 +1,10 @@
 """清晰度标注与 format 归一化。纯函数,无副作用,便于单测。"""
+import re
 from typing import Optional
+
+# B 站 playurl 的 quality 编号:74 = 720P60、116 = 1080P60。
+# 其余档位按高度标注即可(同高度多编码由码率去重)。
+_BILI_FPS_QUALITY = {74: "720P60", 116: "1080P60"}
 
 
 def height_to_label(height: Optional[int]) -> str:
@@ -20,6 +25,18 @@ def label_to_label_cn(label: str) -> str:
         "360P": "360P 流畅",
     }
     return mapping.get(label, label)
+
+
+def _format_label(f: dict, height: Optional[int]) -> str:
+    """B 站 60 帧档位用 quality 编号判定,其余按高度标注。
+
+    不能只看 fps 字段:同一条 4K 流的 fps 可能被报成 120,按 fps 判定会把
+    4K 误标成 60 帧档。quality 编号是 B 站自己给出的权威档位标识。
+    """
+    qid = f.get("quality")
+    if isinstance(qid, int) and qid in _BILI_FPS_QUALITY:
+        return _BILI_FPS_QUALITY[qid]
+    return height_to_label(height)
 
 
 def classify_formats(formats: list[dict]) -> list[dict]:
@@ -59,37 +76,37 @@ def classify_formats(formats: list[dict]) -> list[dict]:
                 audio_best = {"format_id": fid, "height": None, "label": "音频",
                               "kind": "audio", "tbr": tbr}
         elif has_video and not has_audio:
-            h = height or 0
-            cur = video_by_height.get(h)
+            label = _format_label(f, height)
+            cur = video_by_height.get(label)
             if cur is None or tbr > cur["tbr"]:
-                video_by_height[h] = {
+                video_by_height[label] = {
                     "format_id": fid, "height": height,
-                    "label": height_to_label(height), "kind": "video", "tbr": tbr,
+                    "label": label, "kind": "video", "tbr": tbr,
                 }
         else:
-            h = height or 0
-            cur = av_by_height.get(h)
+            label = _format_label(f, height)
+            cur = av_by_height.get(label)
             if cur is None or tbr > cur["tbr"]:
-                av_by_height[h] = {
+                av_by_height[label] = {
                     "format_id": fid, "height": height,
-                    "label": height_to_label(height), "kind": "av", "tbr": tbr,
+                    "label": label, "kind": "av", "tbr": tbr,
                 }
+
+    def _order(entry):
+        return (-(entry["height"] or 0), 0 if "P60" in entry["label"] else 1)
 
     result = []
     if audio_best:
         result.append(audio_best)
-    for h in sorted(video_by_height, reverse=True):
-        result.append(video_by_height[h])
-    for h in sorted(av_by_height, reverse=True):
-        result.append(av_by_height[h])
+    result.extend(sorted(video_by_height.values(), key=_order))
+    result.extend(sorted(av_by_height.values(), key=_order))
     return result
 
 
 def _label_height(label: str) -> Optional[int]:
-    """'1080P' → 1080;非标准高度标签返回 None。"""
-    if label and label.endswith("P") and label[:-1].isdigit():
-        return int(label[:-1])
-    return None
+    """'1080P' / '1080P60' → 1080;非标准高度标签返回 None。"""
+    m = re.match(r"(\d+)P", label or "")
+    return int(m.group(1)) if m else None
 
 
 def best_video_audio_choice(options: list[dict], preferred_label: str) -> str:

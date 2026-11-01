@@ -24,7 +24,8 @@ function renderAutoRefreshStatus(status) {
   const lastSuccess = formatStatusTime(status.last_success_at);
   if (lastSuccess) lines.push(`上次完成：${lastSuccess}，入队 ${Number(status.last_enqueued) || 0} 条`);
   const partial = Number(status.last_partial_errors) || 0;
-  if (partial) lines.push(`上轮有 ${partial} 个 UP 检查失败，其他 UP 已继续处理`);
+  // 这个计数同时包含 UP 与合集/收藏夹订阅的失败,文案不能只写「UP」。
+  if (partial) lines.push(`上轮有 ${partial} 项检查失败（UP 或合集），其余已继续处理`);
   if (status.last_error) lines.push(`上轮错误：${status.last_error}`);
   return lines.join(' · ');
 }
@@ -32,7 +33,7 @@ function renderAutoRefreshStatus(status) {
 export async function loadAutoRefreshStatus() {
   const targets = [
     document.getElementById('auto-refresh-status'),
-    document.getElementById('auto-refresh-feed-status'),
+    document.getElementById('auto-refresh-subs-status'),
   ].filter(Boolean);
   if (!targets.length) return null;
   try {

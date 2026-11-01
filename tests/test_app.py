@@ -123,7 +123,7 @@ def _stub_auto_refresh_round(monkeypatch):
 
     monkeypatch.setattr(auto_refresh.up_list, "list_ups",
                         lambda: [{"mid": 1, "uname": "UP"}])
-    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen", lambda mid: None)
+    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen_all", lambda: {})
     monkeypatch.setattr(auto_refresh.bapi, "fetch_up_videos", fake_fetch)
     monkeypatch.setattr(auto_refresh.time, "sleep", lambda s: None)
     return fetch_calls
@@ -266,7 +266,7 @@ def test_up_list_check_double_click_runs_one_round(client, monkeypatch):
         return []             # 空页 = 限流形态:不入队、不推进 last_seen
 
     monkeypatch.setattr(auto_refresh.up_list, "list_ups", lambda: UPS)
-    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen", lambda mid: None)
+    monkeypatch.setattr(auto_refresh.up_list, "get_last_seen_all", lambda: {})
     monkeypatch.setattr(auto_refresh.bapi, "fetch_up_videos", gated_fetch)
     monkeypatch.setattr(auto_refresh.time, "sleep", lambda s: None)
 
@@ -911,7 +911,8 @@ def test_frontend_audio_and_quality_config():
     """清晰度:批量下拉有仅音频;UP 清单可配每个 UP 的默认清晰度。"""
     html = _tpl()
     assert '<option value="音频">' in html, "清晰度下拉应有仅音频"
-    assert "upSetQuality" in html, "UP 管理应有默认清晰度设置"
+    assert "upAutoChanged" in html and "up-list/set-quality" in html, \
+        "UP 管理应有默认清晰度设置(合并进自动下载控件)"
     assert "/api/up-list/set-quality" in html
     assert "dl-badge" in html, "列表项应有已下载角标"
 
@@ -924,25 +925,41 @@ def test_frontend_no_pending_confirm_flow():
         assert gone not in html, f"追更确认制残留:{gone}"
 
 
-def test_frontend_feed_three_views():
-    """UP 更新页三个视图:关注动态 / 关注列表 / 自动下载清单。"""
+def test_frontend_feed_and_subs_are_separate_pages():
+    """关注动态与关注 UP 是两个独立页面。
+
+    回归:两者曾合并在「关注动态」的三个视图里,浏览行为和订阅管理互相干扰;
+    拆开后 feed 只负责投稿流,订阅管理(加 UP/自动下载/取关回关)在 subs 页。
+    """
     html = _tpl()
-    for src in ("bili", "all", "mine"):
-        assert f'data-src="{src}"' in html, f"缺 UP 更新视图 {src}"
-    for label in ("关注动态", "关注列表", "自动下载"):
+    assert 'data-page="feed"' in html and 'data-page="subs"' in html, \
+        "应有两个独立页面容器"
+    assert 'data-src="bili"' not in html and 'data-src="ups"' not in html, \
+        "feed 页不再有来源切换 seg"
+    for label in ("关注动态", "关注 UP"):
         assert label in html
+
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    assert "upToggleFollow" in subs_js and "relation/modify" in subs_js, \
+        "订阅页应有取关/回关能力"
+    assert "local_ups" in subs_js, "订阅页应消费 local_ups 字段"
+    assert "upAutoChanged" in subs_js, "订阅页应有自动下载开关"
+
+    feed_js = (_js_dir() / "pages" / "feed.js").read_text(encoding="utf-8")
+    assert "follow-updates" in feed_js, "feed 页只拉投稿流"
+    assert "local_ups" not in feed_js, "feed 页不应再承载订阅管理"
 
 
 def test_frontend_sidebar_pages():
-    """左侧菜单六个页面,顺序:下载记录/观看历史/关注动态/追更合集/我的收藏/稍后再看;
-    左下角设置在前、账号在后。"""
+    """左侧菜单七个页面,顺序:首页推荐/关注动态/追更合集/我的收藏/稍后再看/
+    观看历史/下载记录;左下角设置在前、账号在后。"""
     html = _tpl()
     tags = [f'data-page="{p}"' for p in
-            ("downloads", "history", "feed", "seasons", "fav", "later")]
+            ("home", "feed", "seasons", "fav", "later", "history", "downloads")]
     pos = [html.find(t) for t in tags]
     assert all(p >= 0 for p in pos), f"缺侧边栏页面:{[t for t, p in zip(tags, pos) if p < 0]}"
     assert pos == sorted(pos), "侧边栏页面顺序不对"
-    for label in ("下载记录", "观看历史", "关注动态", "追更合集", "我的收藏", "稍后再看"):
+    for label in ("首页推荐", "关注动态", "追更合集", "我的收藏", "稍后再看", "观看历史", "下载记录"):
         assert label in html
     foot = html[html.find('class="sidebar-foot"'):]
     assert "openDrawer('account')" in foot, "左下角应有账号入口"
@@ -1023,7 +1040,7 @@ def test_frontend_cache_first_loading():
     assert "fresh-hint" in html
     assert "applyFresh" in html
     # 五个数据源都走统一加载器
-    for fn in ("loadFollowBili", "loadFollowAll", "favLoadFolders", "loadSeasons", "loadWatchlater"):
+    for fn in ("loadFollowBili", "loadMergedUps", "favLoadFolders", "loadSeasons", "loadWatchlater"):
         assert f"cacheKey" in html, "加载器应声明 cacheKey"
 
 
@@ -1048,12 +1065,11 @@ def test_frontend_fast_sources_auto_apply():
 
 
 def test_frontend_uplist_drawer_removed():
-    """UP 清单抽屉已删:管理功能并入「自动下载」视图。"""
+    """UP 清单抽屉已删:管理功能在独立的「关注 UP」页。"""
     html = _tpl()
     assert "dpanel-uplist" not in html, "抽屉应删除"
     assert "管理 UP 清单" not in html
-    assert 'id="feed-mine-tools"' in html, "自动下载视图应有管理条(添加+立即检查)"
-    assert 'id="up-check-btn"' in html
+    assert 'id="up-check-btn"' in html, "订阅页应有「立即检查」按钮"
     assert 'id="up-add-input"' in html
     assert "up-card mgr" in html, "UP 卡片应带清晰度/移除控件"
 
@@ -1068,16 +1084,29 @@ def test_frontend_unified_toolbar_everywhere():
 
 
 def test_launcher_reports_port_conflict_and_only_cleans_own_child():
-    """启动器只报告端口冲突；ready helper 受单调 deadline 且无 PID 能力。"""
+    """端口冲突:同源旧实例 INT→TERM→KILL 递进优雅停止,未知进程只报告;
+    ready helper 受单调 deadline 且无 PID 能力。"""
     from pathlib import Path
     src = (Path(__file__).resolve().parent.parent / "启动.command").read_text(encoding="utf-8")
     assert 'PORT="${BD_PORT:-5050}"' in src
     assert 'lsof -nP -iTCP:"$PORT" -sTCP:LISTEN' in src
-    assert "kill -9" not in src, "不得强制终止未知端口占用者"
+    assert "kill -9" not in src, "不得以 -9 拼写强制终止进程"
     assert "CHILD_PID" not in src and "PID_FILE" not in src and "$!" not in src
     assert "pidfile" not in src.lower()
     assert "wait_for_owned_child" not in src and "trap cleanup" not in src
-    assert "kill " not in src, "launcher/readiness helper 都不得向数值 PID 发信号"
+    # 发信号的前置条件是归属判定:工作目录为本目录且命令行在运行 app.py。
+    assert '[[ "$pid_cwd" == "$SCRIPT_DIR" && "$pid_cmd" == *app.py* ]]' in src, \
+        "接管旧实例前必须现查进程归属"
+    assert "被非本项目进程占用。启动器不会终止未知进程。" in src
+    assert src.count('pid_cwd="$(lsof -a -p "$pid" -d cwd -Fn') == 2, \
+        "归属判定现查两次:接管前一次,SIGKILL 前对每个 PID 再核验一次"
+    assert src.count("kill -") == 3, "全脚本只允许 INT/TERM/KILL 三处信号"
+    assert 'kill -INT ${OWN_PIDS[@]+"${OWN_PIDS[@]}"}' in src
+    assert 'kill -TERM ${OWN_PIDS[@]+"${OWN_PIDS[@]}"}' in src
+    assert 'kill -KILL "$pid"' in src, "SIGKILL 只发给逐个再核验过的存活 PID"
+    assert src.index('kill -KILL "$pid"') \
+        > src.rindex('pid_cwd="$(lsof -a -p "$pid" -d cwd -Fn'), \
+        "SIGKILL 必须发生在第二次归属核验之后"
     assert 'exec "$PYTHON" app.py' in src, \
         "launcher 必须由 app.py 原位替换，让终端信号和退出码直接属于 Python"
     assert '"$PYTHON" app.py &' not in src, "服务本身不得作为裸 PID 后台 child 启动"
@@ -1784,7 +1813,7 @@ def test_frontend_up_check_has_no_fixed_window():
 
     Validates: Requirements 2.10
     """
-    feed_js = (_js_dir() / "pages" / "feed.js").read_text(encoding="utf-8")
+    feed_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
     body = _js_func_body(feed_js, "upCheckNow")
 
     assert "r.started" in body, (
@@ -1887,3 +1916,842 @@ def test_interrupted_task_consistent_across_routes_end_to_end(client, monkeypatc
         assert "e2e_intr" not in taskstore._tasks, "记录应已从任务表移除"
     finally:
         taskstore._tasks.pop("e2e_intr", None)
+
+
+# ---------- /api/home-feed:首页推荐流 ----------
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+        self.url = "https://api.bilibili.com/x/web-interface/wbi/index/top/feed/rcmd"
+
+    def json(self):
+        return self._payload
+
+
+class _FakeWbiIE:
+    def _sign_wbi(self, params, video_id):
+        return {**params, "w_rid": "fake", "wts": 1}
+
+
+def _rcmd_item(bvid="BV1xx411c7mD", goto="av", ad=False, stock=0):
+    return {
+        "bvid": bvid, "goto": goto, "title": f"标题{bvid}",
+        "pic": "http://i0.hdslb.com/bfs/x.jpg", "duration": 300,
+        "pubdate": 1793000000,
+        "owner": {"mid": 42, "name": "某UP"},
+        "stat": {"view": 234500, "like": 12345},
+        "rcmd_reason": {"reason_type": 3, "content": "2万点赞"},
+        "is_ad_loc": ad, "is_stock": stock,
+    }
+
+
+def _setup_home_feed(monkeypatch, payload):
+    import bilibili_api as bapi
+    monkeypatch.setattr(bapi, "get_auth_context", lambda: {"authenticated": True}, raising=False)
+    monkeypatch.setattr(bapi, "_auth_session", lambda context=None: (None, object()))
+    monkeypatch.setattr(bapi, "_ensure_context_current", lambda ctx: None)
+    monkeypatch.setattr(bapi, "_get_wbi_ie", lambda context=None: _FakeWbiIE())
+    monkeypatch.setattr(bapi, "_get",
+                        lambda url, **kw: _FakeResp(payload))
+
+
+def test_home_feed_filters_ads_and_normalizes(client, monkeypatch):
+    """推荐流只保留普通视频:广告位/直播/推广被过滤,字段归一化。"""
+    payload = {
+        "code": 0, "message": "0", "ttl": 1,
+        "data": {"item": [
+            _rcmd_item("BV1aaaaaaaa1"),
+            _rcmd_item("BV1bbbbbbbb2", ad=True),
+            _rcmd_item("BV1cccccccc3", goto="live"),
+            _rcmd_item("BV1dddddddd4", stock=1),
+            {"goto": "av", "title": "无bvid", "owner": {}},
+        ]},
+    }
+    _setup_home_feed(monkeypatch, payload)
+    resp = client.get("/api/home-feed?fresh_idx=1")
+    body = resp.get_json()
+    assert resp.status_code == 200 and body["ok"] is True
+    items = body["items"]
+    assert [it["bvid"] for it in items] == ["BV1aaaaaaaa1"]
+    it = items[0]
+    assert it["url"] == "https://www.bilibili.com/video/BV1aaaaaaaa1"
+    assert it["uploader"] == "某UP" and it["uploader_mid"] == 42
+    assert it["thumbnail"].startswith("https://")
+    assert it["rcmd_reason"] == "2万点赞"
+    assert it["stat_view"] == "23.4万" and it["stat_like"] == "1.2万"
+    assert it["duration"] == 300 and it["view_at"] == 1793000000
+
+
+def test_home_feed_followed_reason(client, monkeypatch):
+    """reason_type=1(已关注)映射为「已关注」文案。"""
+    item = _rcmd_item()
+    item["rcmd_reason"] = {"reason_type": 1, "content": ""}
+    _setup_home_feed(monkeypatch,
+                     {"code": 0, "data": {"item": [item]}})
+    body = client.get("/api/home-feed?fresh_idx=2").get_json()
+    assert body["items"][0]["rcmd_reason"] == "已关注"
+
+
+def test_home_feed_upstream_error_passthrough(client, monkeypatch):
+    """B 站返回非 0 code 时透出错误信息,不静默给空列表。"""
+    _setup_home_feed(monkeypatch, {"code": -403, "message": "访问权限不足"})
+    resp = client.get("/api/home-feed")
+    assert resp.status_code // 100 != 2 or resp.get_json().get("ok") is False
+
+
+def test_home_feed_fresh_idx_validation(client, monkeypatch):
+    """fresh_idx 非法值按 400/错误处理,不发起请求。"""
+    calls = []
+    import bilibili_api as bapi
+    monkeypatch.setattr(bapi, "fetch_home_feed",
+                        lambda idx, **kw: calls.append(idx) or [])
+    resp = client.get("/api/home-feed?fresh_idx=abc")
+    assert resp.status_code == 400
+    assert not calls
+
+
+def test_home_feed_ps_passthrough(client, monkeypatch):
+    """ps 原样透传给 fetch_home_feed:前端靠它首屏一次要够铺满整页的条数。"""
+    calls = []
+    import bilibili_api as bapi
+    monkeypatch.setattr(bapi, "fetch_home_feed",
+                        lambda idx, ps=12, **kw: calls.append((idx, ps)) or [])
+    body = client.get("/api/home-feed?fresh_idx=1&ps=24").get_json()
+    assert body["ok"] is True and calls == [(1, 24)]
+    calls.clear()
+    client.get("/api/home-feed?fresh_idx=3")
+    assert calls == [(3, 12)], "省略 ps 时按 web 端惯用值 12"
+
+
+def test_home_feed_ps_validation(client, monkeypatch):
+    """ps 越界或非整数按 400,不发请求(接口上限 30)。"""
+    calls = []
+    import bilibili_api as bapi
+    monkeypatch.setattr(bapi, "fetch_home_feed",
+                        lambda idx, ps=12, **kw: calls.append((idx, ps)) or [])
+    for bad in ("31", "0", "abc"):
+        resp = client.get(f"/api/home-feed?fresh_idx=1&ps={bad}")
+        assert resp.status_code == 400, bad
+    assert not calls
+
+
+def test_home_feed_first_page_saves_cache(client, monkeypatch):
+    """fresh_idx=1 且非空的结果落缓存,且 /api/cache/home_feed 能读回——
+    前端靠它「打开先出上次内容再后台刷新」。"""
+    import pagecache
+    payload = {"code": 0, "data": {"item": [_rcmd_item("BV1aaaaaaaa1")]}}
+    _setup_home_feed(monkeypatch, payload)
+    body = client.get("/api/home-feed?fresh_idx=1").get_json()
+    assert body["ok"] is True
+    cached = client.get("/api/cache/home_feed").get_json()
+    assert cached["ok"] is True and cached["data"]["ok"] is True
+    assert [it["bvid"] for it in cached["data"]["items"]] == ["BV1aaaaaaaa1"]
+    assert pagecache.load("home_feed") is not None
+
+
+def test_home_feed_empty_result_and_pagination_skip_cache(client, monkeypatch):
+    """空结果(风控典型表现)不覆盖已有缓存;翻页(fresh_idx>1)不写缓存。"""
+    _setup_home_feed(monkeypatch,
+                     {"code": 0, "data": {"item": [_rcmd_item("BV1aaaaaaaa1")]}})
+    client.get("/api/home-feed?fresh_idx=1")
+    _setup_home_feed(monkeypatch, {"code": 0, "data": {"item": []}})
+    client.get("/api/home-feed?fresh_idx=1")
+    cached = client.get("/api/cache/home_feed").get_json()
+    assert cached["ok"] is True, "空结果不得覆盖缓存"
+    assert cached["data"]["items"][0]["bvid"] == "BV1aaaaaaaa1"
+    _setup_home_feed(monkeypatch,
+                     {"code": 0, "data": {"item": [_rcmd_item("BV1bbbbbbbb2")]}})
+    client.get("/api/home-feed?fresh_idx=2")
+    cached = client.get("/api/cache/home_feed").get_json()
+    assert cached["data"]["items"][0]["bvid"] == "BV1aaaaaaaa1", "翻页不写缓存"
+
+
+# ---------- /api/relation/modify:关注/取关 ----------
+
+def test_relation_modify_dispatches_to_bapi(client, monkeypatch):
+    """取关/回关路由把 (mid, action) 原样交给 bapi.modify_relation。"""
+    calls = []
+    import app as app_module
+    monkeypatch.setattr(app_module.bapi, "modify_relation",
+                        lambda mid, action, **kw: calls.append((mid, action)))
+    r = client.post("/api/relation/modify",
+                    json={"mid": 12345, "action": "unfollow"})
+    body = r.get_json()
+    assert r.status_code == 200 and body["ok"] is True
+    assert calls == [(12345, "unfollow")]
+
+
+def test_relation_modify_rejects_unknown_action(client):
+    """非法 action 按 400 拒绝,不触发任何上游调用。"""
+    r = client.post("/api/relation/modify",
+                    json={"mid": 12345, "action": "block"})
+    assert r.status_code == 400
+    assert r.get_json()["error"]
+
+
+def test_relation_modify_requires_mid(client):
+    r = client.post("/api/relation/modify", json={"action": "follow"})
+    assert r.status_code == 400
+
+
+def test_followings_keep_mtime_and_sign(monkeypatch):
+    """关注列表解析保留关注时间与个性签名。
+
+    回归:解析时只留 mid/uname/face,卡片上的「关注于」和个性签名拿不到,
+    而要补这两项就得为每个 UP 额外打一次接口。
+    """
+    import bilibili_api as bapi
+    monkeypatch.setattr(bapi, "_auth_session",
+                        lambda context=None: (None, object()))
+    monkeypatch.setattr(bapi, "_ensure_context_current", lambda ctx: None)
+    captured = {}
+
+    def fake_paged_get(url, base_params, *, what, max_pages, ps, gap,
+                       mid_param, parse, context, cookiejar):
+        items, _has_more = parse({"total": 2, "list": [
+            {"mid": 1, "uname": "A", "face": "http://x/a.jpg",
+             "mtime": 1700000000, "sign": "签名 A"},
+            {"mid": 2, "uname": "B", "face": "http://x/b.jpg", "sign": None},
+            {"mid": 3, "uname": "C", "face": "http://x/c.jpg",
+             "mtime": "not-a-number", "sign": 0},
+        ]}, 0)
+        captured["items"] = items
+        return items
+
+    monkeypatch.setattr(bapi, "_paged_get", fake_paged_get)
+    bapi.fetch_followings_all(force=True)
+    items = captured["items"]
+    assert items[0]["mtime"] == 1700000000 and items[0]["sign"] == "签名 A"
+    assert items[1]["sign"] == "", "缺失签名字段应为空串,不能是 None"
+    # 脏数据不得打断整页解析:非数值 mtime 归 0,空/零签名归空串
+    assert items[2]["mtime"] == 0 and items[2]["sign"] == ""
+
+
+def test_followings_response_includes_local_ups(client, monkeypatch):
+    """关注列表响应带 local_ups(自动下载清单详情),供合并视图渲染。"""
+    import app as app_module
+    monkeypatch.setattr(app_module.bapi, "fetch_followings_all",
+                        lambda **kw: {"items": [{"mid": 1, "uname": "A",
+                                                 "face": "http://x/a.jpg"}],
+                                      "total": 1})
+    monkeypatch.setattr(app_module.up_list, "list_ups",
+                        lambda: [{"mid": 2, "uname": "B", "face": "https://x/b.jpg",
+                                  "quality": "1080P", "added_at": 1700000000},
+                                 {"mid": 1, "uname": "A", "face": "http://x/a.jpg",
+                                  "quality": ""}])
+    monkeypatch.setattr(app_module.up_list, "get_last_seen_all",
+                        lambda: {"2": {"ts": 1793000000}})
+    r = client.get("/api/followings")
+    body = r.get_json()
+    assert body["ok"] is True
+    local = {u["mid"]: u for u in body["local_ups"]}
+    assert set(local) == {1, 2}
+    assert local[2]["quality"] == "1080P"
+    assert local[2]["face"].startswith("https://")
+    # 卡片的时间行靠这两个字段:加入清单时间与最近投稿时间
+    assert local[2]["added_at"] == 1700000000
+    assert local[2]["last_pub_at"] == 1793000000
+    assert local[1]["added_at"] == 0, "老记录没有 added_at 时按 0 兜底"
+    assert local[1]["last_pub_at"] == 0
+    assert "local_mids" not in body, "旧字段应被 local_ups 取代"
+
+
+# ---------- 取关交互与操作条位置 ----------
+
+def test_up_card_toggles_have_no_confirmation_dialog():
+    """关注/自动下载两个开关都不弹二次确认:点击即切换、可立即反悔。
+
+    回归:曾按写操作惯例给取关/移出清单加确认弹窗;用户反馈不必要——
+    开关交互里反悔成本为零,确认只会打断操作节奏。
+    """
+    feed_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    body = _js_func_body(feed_js, "upToggleFollow")
+    assert "confirmAction" not in body, "取关不应弹二次确认"
+    assert "relation/modify" in body, "回关/取关仍要走 relation/modify"
+    auto_body = _js_func_body(feed_js, "upAutoChanged")
+    assert "confirmAction" not in auto_body, "自动下载开关不应弹二次确认"
+    assert "up-list/remove" in auto_body and "up-list/add" in auto_body
+
+
+def test_up_card_auto_is_single_merged_control():
+    """自动下载与画质合成一个 select 控件,控件条压在封面底部。
+
+    回归:旧卡片「画质下拉」单独占第二行且按钮挤得名称全是省略号;
+    合并后开启态一个 select(选项=画质,含「不下载」),未开启态选画质即加入。
+    控件条不再额外占行,整卡高度与视频卡片对齐。
+    """
+    feed_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    card = _js_func_body(feed_js, "upCardHtml")
+    assert "upAutoControlHtml" in card and "uc-actions" in card, \
+        "自动下载控件应收进 uc-actions"
+    assert "upToggleFollow" in card, "卡片应有关注开关按钮"
+    assert "dl-badge" not in card, "绿色自动下载标签应移除"
+    assert "加入清单" not in card and ">移除<" not in card, \
+        "旧的加入清单/移除按钮应移除"
+    ctrl = _js_func_body(feed_js, "upAutoControlHtml")
+    assert 'class="uc-auto on"' in ctrl and "不下载" in ctrl, \
+        "开启态控件应含画质选项与「不下载」项"
+    # 两态都要有显式的「不下载」:用户要能直接看到/选择"不自动下载"状态
+    assert ctrl.count("不下载") >= 2, \
+        "未开启态与开启态都应提供「不下载」选项"
+    assert 'value="__off" selected>不下载' in ctrl, \
+        "未开启态应以「不下载」为当前选中项(而非误导性的「自动下载」占位)"
+    assert "停止下载" not in feed_js, "选项文案统一为「不下载」"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert "select.uc-auto.on" in css, "开启态控件应有强调色样式"
+    up_grid = [line.strip() for line in css.splitlines()
+               if line.strip().startswith(".up-grid")]
+    assert up_grid and "minmax(200px, 1fr)" in up_grid[0], \
+        "UP 卡须与视频卡一致(弹性铺满整行),固定宽度会在宽屏右侧空出一整列"
+    assert ".up-card .uc-actions > button { flex: 0 0 auto; width: 56px; }" in css, \
+        "关注/不关注按钮必须等宽,切换时不跳动"
+    assert "flex: 1 1 auto" in css, "下拉占满控件条剩余宽度"
+    # 原生 select 的三角钉死在右边框上,加宽/改 padding 都推不动;
+    # 必须 appearance:none 自绘箭头,才能让箭头与右边框留出间距
+    assert "appearance: none" in css and "background-position: right 6px center" in css, \
+        "下拉须自绘箭头(appearance:none + background-position),否则三角贴右边框"
+    assert "background-color: var(--accent-soft)" in css, \
+        "开启态须用 background-color,否则 shorthand 会覆盖自绘箭头"
+
+
+def test_action_bar_rendered_at_top():
+    """批量操作条固定在顶部(覆盖 sticky 页头),不再放屏幕底部。
+
+    回归:勾选卡片后「下载选中」在屏幕底部,鼠标要从卡片区长途移动;
+    顶部条让按钮出现在勾选动作发生的同一区域。窄屏保留底部(拇指可达)。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert "top: 0" in css and "bottom: auto" not in css.split("@media")[0], \
+        "桌面操作条应固定在顶部"
+    assert ".action-bar-open .content { padding-bottom: 104px; }" not in css, \
+        "顶部条不遮内容,不再需要底部补偿"
+    mobile = css[css.find("@media (max-width: 860px)"):]
+    assert "bottom: 0" in mobile, "窄屏应保留底部操作条"
+
+
+# ---------- 合集/收藏夹自动下载订阅 ----------
+
+def test_collection_add_baselines_existing_items(client, monkeypatch):
+    """订阅合集时以当前全部条目为基线,之后只下新增的(不能把历史全下一遍)。"""
+    import app as app_module
+    captured = {}
+
+    def fake_fetch(cid, **kw):
+        captured["cid"] = cid
+        return [{"bvid": "BV1", "title": "旧1", "url": "https://www.bilibili.com/video/BV1"},
+                {"bvid": "BV2", "title": "旧2", "url": "https://www.bilibili.com/video/BV2"}]
+
+    monkeypatch.setattr(app_module.bapi, "fetch_season_content", fake_fetch)
+    monkeypatch.setattr(app_module.up_list, "add_collection",
+                        lambda kind, cid, **kw: (captured.update(kw) or
+                                                 {"kind": kind, "id": cid,
+                                                  "quality": kw.get("quality", "")}))
+    r = client.post("/api/collection/add",
+                    json={"kind": "season", "id": 123, "title": "合集",
+                          "quality": "1080P"})
+    body = r.get_json()
+    assert r.status_code == 200 and body["ok"] is True
+    assert body["baseline_count"] == 2, "基线应包含现有 2 条"
+    assert captured["seen_bvids"] == ["BV1", "BV2"]
+    assert captured["quality"] == "1080P"
+
+
+def test_collection_add_fails_when_baseline_unreadable(client, monkeypatch):
+    """读不到基线时明确失败:没有基线的订阅会把整个合集一次性下完。"""
+    import app as app_module
+
+    def boom(cid, **kw):
+        raise RuntimeError("接口失败")
+
+    monkeypatch.setattr(app_module.bapi, "fetch_fav_content", boom)
+    r = client.post("/api/collection/add", json={"kind": "fav", "id": 456})
+    assert r.status_code >= 400
+    assert "未建立订阅" in (r.get_json() or {}).get("error", "")
+
+
+def test_collection_routes_validate_kind(client):
+    """kind 只接受 season/fav。"""
+    r = client.post("/api/collection/add", json={"kind": "up", "id": 1})
+    assert r.status_code == 400
+    r = client.post("/api/collection/remove", json={"kind": "season"})
+    assert r.status_code == 400
+
+
+def test_up_list_returns_collections_without_seen_payload(client, monkeypatch):
+    """订阅列表下发合集信息,但不下发可能几百条的 seen_bvids。"""
+    import app as app_module
+    monkeypatch.setattr(app_module.up_list, "list_ups", lambda: [])
+    monkeypatch.setattr(app_module.up_list, "list_collections", lambda: [
+        {"kind": "season", "id": 1, "title": "合集", "quality": "",
+         "seen_bvids": ["BV1", "BV2", "BV3"]}])
+    body = client.get("/api/up-list").get_json()
+    assert body["collections"][0]["seen_count"] == 3
+    assert "seen_bvids" not in body["collections"][0]
+
+
+def test_frontend_collection_toggle_wired():
+    """追更合集/我的收藏卡片上有自动下载开关,并接到合集订阅接口。"""
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    assert "collectionAutoControl" in seasons_js
+    assert "collectionAutoChanged" in seasons_js
+    assert "/api/collection/add" in seasons_js
+    assert "/api/collection/remove" in seasons_js
+    assert "collectionAutoControl" in fav_js, "收藏夹也应复用同一开关"
+    assert "stopPropagation" in seasons_js, "开关点击不得触发进入合集"
+
+
+# ---------- 前端模块图完整性(防「测试全绿但页面白屏」) ----------
+
+def test_collection_unsubscribed_control_has_one_selected_option():
+    """未订阅时控件只能有一个 selected 项,否则「最高画质」永远订阅不上。
+
+    回归:未订阅分支用 `_qualityOptionsHtml('')` 生成画质项,空串画质
+    (最高画质)因此也被打上 selected,与「不下载」同时选中。浏览器只认
+    最后一个,控件显示成「最高画质」而实际没有订阅;用户再选一次
+    「最高画质」不产生 change 事件,`/api/collection/add` 永远不会被调用。
+    """
+    import re
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    ctrl = _js_func_body(seasons_js, "collectionAutoControl")
+    # 未订阅分支必须传 null(明确「无当前档位」),不能传空串
+    assert "_qualityOptionsHtml(null)" in ctrl, \
+        "未订阅分支不得把空串当作已选档位"
+    assert "_qualityOptionsHtml('')" not in ctrl, \
+        "空串会让「最高画质」被误选中"
+    # 选项生成器必须真的区分 null 与空串
+    opts = _js_func_body(seasons_js, "_qualityOptionsHtml")
+    assert "cur != null" in opts, "生成器要显式跳过 null 的选中标记"
+
+    # 未订阅分支整段里 selected 只应出现一次(「不下载」)
+    unsubscribed = ctrl[ctrl.index('class="uc-auto"'):]
+    assert unsubscribed.count("selected") == 1, \
+        f"未订阅控件出现多个 selected: {unsubscribed}"
+
+
+def test_quality_select_puts_off_option_first():
+    """「不下载」固定第一项:两个页面的开关排序必须一致。
+
+    用户反馈追更合集的排序更好(「不下载」在最前),关注 UP 卡片要对齐。
+    """
+    import re
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    flat_seasons = re.sub(r"\s+", " ", _js_func_body(seasons_js, "collectionAutoControl"))
+    flat_subs = re.sub(r"\s+", " ", _js_func_body(subs_js, "upAutoControlHtml"))
+    for flat, name in ((flat_seasons, "collectionAutoControl"),
+                       (flat_subs, "upAutoControlHtml")):
+        # 已订阅态:不下载项必须排在画质项之前
+        assert re.search(r'__off">不下载</option>\s*\$\{', flat), \
+            f"{name} 的已订阅态应把「不下载」放在画质项之前"
+        # 文案不再说「末项」
+        assert "末项" not in flat, f"{name} 的提示文案仍写着「末项」"
+
+
+def test_frontend_module_urls_are_not_duplicated():
+    """同一个模块文件不得以两个不同 URL 被导入。
+
+    回归:app.js 用 `./pages/seasons.js?v=...`、fav.js 用 `./seasons.js`
+    导入同一个文件。带查询串与不带查询串在浏览器里是两个不同资源,于是
+    seasons.js 被实例化两次:`_collSubs` 状态分裂、`registerPage('seasons')`
+    被重复注册,合集页的开关和列表会读到另一份内存状态。
+    """
+    import re
+    import posixpath
+    js_dir = _js_dir()
+    refs: dict[str, set] = {}
+    for f in js_dir.rglob("*.js"):
+        src = f.read_text(encoding="utf-8")
+        rel = f.relative_to(js_dir).as_posix()
+        for spec in re.findall(r"from\s+['\"]([^'\"]+)['\"]", src):
+            if not spec.startswith("."):
+                continue
+            path, _, query = spec.partition("?")
+            target = posixpath.normpath(
+                posixpath.join(posixpath.dirname(rel), path))
+            refs.setdefault(target, set()).add(query)
+    duplicated = {k: sorted(v) for k, v in refs.items() if len(v) > 1}
+    assert not duplicated, f"同一模块存在多个导入 URL: {duplicated}"
+
+
+def test_subs_merge_ups_orders_auto_first_then_time():
+    """关注 UP 列表排序:自动下载优先,组内按关注时间倒序。
+
+    用户明确要求恢复这个顺序:先按「是否自动下载」分组,同一组内再按
+    关注时间排。卡片上的关注时间因此与列表顺序一致。
+    同时列表要携带关注时间/最近投稿/签名三项卡片信息。
+    """
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    body = _js_func_body(subs_js, "mergeUps")
+    sort_body = _js_func_body(subs_js, "sortUps")
+    assert ".auto" in sort_body, "排序第一关键字必须是「是否自动下载」"
+    assert "followedAt" in sort_body, "组内第二关键字必须是关注时间"
+    assert "sortUps(merged)" in body, "mergeUps 必须走统一排序"
+    # 切换开关后要立刻归位:开启升到自动组,关闭落到不下载组
+    auto_body = _js_func_body(subs_js, "upAutoChanged")
+    assert auto_body.count("sortUps()") == 2, \
+        "开启与关闭自动下载后都要立即重排"
+    for key in ("followedAt", "lastPubAt", "sign"):
+        assert key in body, f"mergeUps 应携带 {key}"
+
+    card = _js_func_body(subs_js, "upCardHtml")
+    for text in ("关注于", "加入于", "最近投稿", "尚未检查投稿", "暂无个性签名"):
+        assert text in card, f"卡片缺少「{text}」"
+    assert "uc-sign" in card and "uc-meta" in card, "卡片应有签名行与时间行"
+
+
+def test_fav_folders_order_auto_first_then_subscription_time():
+    """收藏夹与另外两页同一套排序:已订阅在前,组内按订阅时间倒序。
+
+    收藏夹接口(created/list-all)不返回任何时间字段,唯一可用的时间键是
+    本地订阅记录里的 added_at;未订阅的一组没有时间键,保持 B 站原顺序。
+    """
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    body = _js_func_body(fav_js, "favFolderList")
+    assert "collectionSub(" in body, "排序第一关键字必须是「是否已订阅」"
+    assert "added_at" in body, "组内第二关键字必须是订阅时间"
+    render = _js_func_body(fav_js, "renderFolders")
+    assert "favFolderList()" in render, "渲染必须使用排序后的列表"
+    assert "_favFolders.length" not in render, \
+        "统计口径应取排序后的全集,不能再用未排序的 _favFolders"
+    # 订阅记录通过访问函数读取,收藏页不直接碰 seasons.js 的模块内 Map
+    assert "export function collectionSub(" in seasons_js
+    assert "collectionSub" in fav_js
+    assert "_collSubs" not in fav_js, "收藏页不应直接访问 seasons.js 的内部 Map"
+
+
+def test_seasons_overview_orders_auto_first_then_time():
+    """追更合集与关注 UP 同一套排序:已订阅在前,组内按合集更新时间倒序。"""
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    body = _js_func_body(seasons_js, "overviewList")
+    assert "_collSubs.has" in body, "已开自动下载的合集必须排在前面"
+    assert "mtime" in body, "组内必须按合集更新时间倒序"
+    render = _js_func_body(seasons_js, "renderOverview")
+    assert "overviewList()" in render, "渲染必须使用排序后的列表"
+    assert "_seasons.length" not in render, \
+        "统计口径应取排序后的全集,不能再用未排序的 _seasons"
+
+    import inspect
+    import bilibili_api as bapi
+    src = inspect.getsource(bapi.fetch_collected_seasons)
+    assert '"mtime"' in src, "合集列表解析必须保留 mtime,否则组内无法按时间排序"
+
+
+def test_up_card_matches_video_card_footprint():
+    """UP 卡片与视频卡片同尺寸:同样的网格列宽 + 16:9 封面区。
+
+    控件压在封面底部而不是另起一行,整卡高度与 .video-item 基本一致。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    grid = "display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px;"
+    assert f".lib-grid {{ {grid} }}" in css, "视频网格列宽应保持"
+    assert f".up-grid {{ {grid} }}" in css, "UP 网格列宽必须与视频网格一致"
+    block = css[css.index(".up-card {"):css.index(".up-list {")]
+    assert "aspect-ratio: 16/9" in block, "封面区应与视频封面同为 16:9"
+    assert "position: absolute" in block, "控件条应压在封面底部,不额外占行"
+
+
+def test_frontend_module_imports_all_resolve():
+    """所有 ES module 的相对 import 都能在目标文件里找到对应导出。
+
+    回归:页面拆分时 seasons.js 里的 collectionAutoControl 忘了加 export,
+    fav.js 却 import 了它——浏览器端整个模块图加载失败,页面白屏,而当时
+    344 个 pytest 全绿。这类断链只能在「导出/导入」层面静态校验。
+    """
+    import re
+    js_dir = _js_dir()
+    exports: dict[str, set] = {}
+    for f in js_dir.rglob("*.js"):
+        src = f.read_text(encoding="utf-8")
+        names = set(re.findall(r"export (?:async )?function (\w+)", src))
+        names |= set(re.findall(r"export (?:const|let) (\w+)", src))
+        for group in re.findall(r"export \{([^}]+)\}", src):
+            for part in group.split(","):
+                part = part.strip()
+                if " as " in part:
+                    names.add(part.split(" as ")[1].strip())
+                elif part:
+                    names.add(part)
+        exports[f.name] = names
+
+    problems = []
+    for f in js_dir.rglob("*.js"):
+        src = f.read_text(encoding="utf-8")
+        for blob, target in re.findall(r"import\s*\{([^}]+)\}\s*from\s*'([^']+)'", src):
+            key = target.split("?")[0].lstrip("./").split("/")[-1]
+            avail = exports.get(key)
+            if avail is None:
+                problems.append(f"{f.name}: 模块 {target} 不存在")
+                continue
+            for raw in blob.split(","):
+                name = raw.strip().split(" as ")[0].strip()
+                if name and name not in avail:
+                    problems.append(f"{f.name}: 从 {target} 导入 {name} 未导出")
+    assert not problems, "前端模块断链: " + "; ".join(problems)
+
+
+def test_frontend_init_does_not_call_removed_functions():
+    """app.js 初始化流程不得调用已删除的页面函数。
+
+    回归:feed.syncSeg() 在页面拆分后已被删除,app.js 启动时仍调用它 →
+    TypeError → 整个 init 中断,页面停在空白初始态。
+    """
+    import re
+    app_js = (_js_dir() / "app.js").read_text(encoding="utf-8")
+    init = app_js[app_js.find("async function init()"):]
+    calls = re.findall(r"\b(feed|subs|lib|downloads|login|settings)\s*\.\s*(\w+)\s*\(", init)
+    for alias, name in calls:
+        target = {"feed": "pages/feed.js", "subs": "pages/subscriptions.js",
+                  "lib": "lib.js", "downloads": "pages/downloads.js",
+                  "login": "login.js", "settings": "settings.js"}[alias]
+        src = (_js_dir() / target).read_text(encoding="utf-8")
+        has = (f"function {name}(" in src or f"const {name}" in src
+               or f"let {name}" in src)
+        assert has, f"init() 调用了 {alias}.{name}，但 {target} 里没有该定义"
+
+
+def test_feed_page_writes_items_into_state():
+    """feed 页的 apply 必须把结果写进共享 state(否则列表永远空白)。
+
+    回归:拆分时漏掉 replaceItems(b.items),数据拉回来了但从不渲染。
+    """
+    feed_js = (_js_dir() / "pages" / "feed.js").read_text(encoding="utf-8")
+    apply_body = _js_func_body(feed_js, "loadFollowBili")
+    assert "replaceItems(" in apply_body, "apply 必须调用 replaceItems 写入列表数据"
+
+
+def test_collection_cards_are_not_buttons():
+    """合集/收藏卡片容器不能用 <button>:内部嵌了清晰度 <select>。
+
+    HTML 规范禁止交互元素嵌套,浏览器会忽略内层 select 的点击;
+    回归:原实现是 <button class="fav-card"> 里塞 select。
+    """
+    for page in ("seasons.js", "fav.js"):
+        src = (_js_dir() / "pages" / page).read_text(encoding="utf-8")
+        for marker in ('<button type="button" class="fav-card"',
+                       '<button type="button" class="fav-folder"'):
+            assert marker not in src, f"{page} 仍用 button 包裹卡片: {marker}"
+        assert 'role="button"' in src, f"{page} 卡片应改用 div[role=button]"
+
+
+# ---------- 复查补充:跨页状态与元素 id 一致性 ----------
+
+def test_autorefresh_status_element_matches_consumers():
+    """settings.js 读的状态元素必须真的存在于 index.html。
+
+    回归:页面拆分时把 auto-refresh-feed-status 改名成 auto-refresh-subs-status,
+    settings.js 仍按旧 id 查找 → 关注 UP 页的「检查状态」永远空白。
+    """
+    html = _tpl()
+    settings_js = (_js_dir() / "settings.js").read_text(encoding="utf-8")
+    import re
+    ids = set(re.findall(r"getElementById\('(auto-refresh[^']*)'\)", settings_js))
+    for element_id in ids:
+        assert f'id="{element_id}"' in html, \
+            f"settings.js 引用的 #{element_id} 在 index.html 中不存在"
+
+
+def test_collection_subs_rerender_covers_fav_page():
+    """合集订阅状态加载后要能刷新收藏页,而不是只重画合集页 DOM。
+
+    回归:loadCollectionSubs 硬编码 renderOverview(),收藏页的开关永远停在
+    「不下载」,与实际订阅状态不符。
+
+    重画还必须是「只在收藏夹列表视图」:该回调是另一条异步请求的迟到回调,
+    用户可能已经点进某个收藏夹,无条件下 renderFolders() 会把 meta-fav
+    从「共 N 条」刷回「共 M 个收藏夹」。
+    """
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    assert "loadCollectionSubs(rerender)" in seasons_js, \
+        "loadCollectionSubs 应接受调用方的重渲染回调"
+    assert "typeof rerender === 'function'" in seasons_js, \
+        "应按回调重渲染,缺省才回落合集页"
+    assert "loadCollectionSubs(" in fav_js, \
+        "收藏页应传入自己的重渲染函数"
+    assert "state.mode === 'fav' && !_favCurrent" in fav_js, \
+        "收藏页的重画回调必须限定在收藏夹列表视图,否则会覆盖夹内列表的 meta"
+
+
+def test_collection_add_skips_rebaseline_when_already_subscribed():
+    """已订阅时重复调用不再拉一次全集内容(省请求,也避免拉取失败误报 502)。"""
+    import app as app_module
+    src = (_js_dir().parent.parent / "app.py").read_text(encoding="utf-8")
+    start = src.find("def collection_add():")
+    body = src[start:src.find("@app.route(\"/api/collection/remove\"")]
+    assert "existing is not None" in body, "应前置判断是否已订阅"
+    assert '"already": True' in body, "已订阅应直接返回,不建立新基线"
+
+
+def test_refresh_between_up_and_collection_has_interval():
+    """UP 与第一个合集之间也要 sleep,否则最后一个 UP 后立刻打下一个请求。"""
+    src = (_js_dir().parent.parent / "auto_refresh.py").read_text(encoding="utf-8")
+    idx = src.find("# UP 与第一个合集之间也要保持间隔")
+    assert idx > 0 and "time.sleep(UP_INTERVAL)" in src[idx:idx + 200]
+
+
+# ---------- 复查第三轮:交互与错误处理 ----------
+
+def test_collection_card_keydown_ignores_child_controls():
+    """卡片是 div[role=button],内部有 select;键盘事件必须只认卡片自身。
+
+    回归:select 聚焦时按 Enter 会冒泡到卡片 keydown → 直接进入合集,
+    而不是打开下拉。
+    """
+    for page in ("seasons.js", "fav.js"):
+        src = (_js_dir() / "pages" / page).read_text(encoding="utf-8")
+        assert "event.target!==this" in src, \
+            f"{page} 的 keydown 应先判断事件源,否则子控件按键会误触发进入"
+
+
+def test_collection_add_does_not_swallow_rate_limit():
+    """限流与认证变更必须原样透出,不能被包装成「读不到内容」。"""
+    src = (_js_dir().parent.parent / "app.py").read_text(encoding="utf-8")
+    start = src.find("def collection_add():")
+    body = src[start:src.find('@app.route("/api/collection/remove"')]
+    assert "except UpstreamRateLimitError:" in body, "限流应透传"
+    assert "except auth.AuthContextChangedError:" in body, "认证变更应透传"
+    assert "baseline_failed" in body, "真正的读取失败仍应明确报错"
+
+
+def test_subscribe_success_reflected_even_if_quality_fails():
+    """订阅成功但设清晰度失败时,界面仍须显示「已开启」而不是「不下载」。
+
+    回归:先 add 后 set-quality,后者失败时直接抛错跳过状态更新,
+    导致界面显示未订阅而实际已订阅。
+    """
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    body = _js_func_body(subs_js, "upAutoChanged")
+    patch_idx = body.find("patchUp(mid, { auto: true, quality: value });")
+    quality_idx = body.find("'/api/up-list/set-quality'")
+    assert patch_idx > 0, "订阅成功后应立即更新本地状态"
+    assert patch_idx < quality_idx, "状态更新必须在设置清晰度之前(失败也要如实反映)"
+
+
+def test_collection_items_parse_page_from_url():
+    """合集条目入队时按 URL 解析分 P,不能硬编码 page=1。"""
+    src = (_js_dir().parent.parent / "auto_refresh.py").read_text(encoding="utf-8")
+    assert "page_from_url(it[\"url\"])" in src, "应按 URL 解析分 P"
+
+
+def test_subs_extract_returns_array_for_sig():
+    """订阅页的 extract 必须返回数组:sig() 对非数组一律返回 "0"。
+
+    回归:extract 返回 {items, local_ups, total} 对象时,sig 新旧都是 "0",
+    cachedLoad 永远判定「无变化」——加 UP 或订阅状态变化后页面不更新。
+    """
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    body = _js_func_body(subs_js, "loadSubscriptions")
+    assert "extract:" in body
+    extract_part = body[body.find("extract:"):body.find("stillValid:")]
+    # 只看 extract 的返回起始,不能拿数组元素的对象字面量误判
+    assert "extract: (b) => [" in extract_part, \
+        "extract 必须直接返回数组(供 sig 比对);返回对象会让 sig 恒为 \"0\""
+
+
+def test_subs_refresh_bypasses_cache():
+    """订阅页刷新按钮与加 UP 后都必须绕过缓存。
+
+    回归:慢源数据被磁盘缓存与内存缓存挡住,用户点刷新看不到任何变化。
+    """
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    html = _tpl()
+    assert "force=1" in subs_js, "应支持 force 参数绕过缓存"
+    assert "loadSubscriptions(true)" in subs_js, "加 UP 后应强制刷新"
+    assert 'onclick="refreshSubs()"' in html, "订阅页刷新按钮应走强制刷新"
+
+
+def test_subs_force_refresh_applies_data_directly():
+    """强制刷新必须走 fast 分支直接应用,不能只弹「获取到新内容」提示条。
+
+    回归:cachedLoad 对慢源只在 sig 变化时弹提示,用户点刷新后列表纹丝不动。
+    """
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    body = _js_func_body(subs_js, "loadSubscriptions")
+    assert "fast: forced" in body, "强制刷新应传 fast,让新数据直接应用"
+
+
+def test_collection_baseline_over_limit_fails_loudly():
+    """基线超限必须明确失败,不能静默截断。
+
+    回归:add_collection 曾静默截断到上限,被裁掉的旧条目在后续检查里会被
+    当成新增重复下载;而轮询侧同样超限是报错的,两侧行为不一致。
+    """
+    import up_list
+    import pytest as _pytest
+    with _pytest.raises(up_list.UpListCapacityError):
+        up_list.add_collection(
+            "fav", 42,
+            seen_bvids=[f"BV{i}" for i in range(up_list.COLLECTION_SEEN_MAX + 1)])
+
+
+def test_collection_reset_seen_route(client, monkeypatch):
+    """合集基线可重置(超限或想重新对齐时用)。"""
+    import app as app_module
+    monkeypatch.setattr(app_module.up_list, "reset_collection_seen",
+                        lambda kind, cid: True)
+    r = client.post("/api/collection/reset-seen",
+                    json={"kind": "season", "id": 123})
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+
+
+# ---------- 本轮走查修复(2026-11-01):force 参数 / 二维码容量 / 空基线 / 401 ----------
+
+def test_followings_accepts_force_1(client, monkeypatch):
+    """订阅页刷新按钮发 ?force=1:_boolean 必须认 1/0,不能 400。
+
+    回归:_boolean 只认 true/false,前端 force=1 直接 400 invalid_field,
+    强制刷新失效且用户只看到「force 必须是 true 或 false」。
+    """
+    import app as app_module
+    monkeypatch.setattr(app_module.bapi, "fetch_followings_all",
+                        lambda **kw: {"items": [], "total": 0})
+    r = client.get("/api/followings?force=1")
+    assert r.status_code == 200 and r.get_json()["ok"] is True
+    assert client.get("/api/followings?force=0").status_code == 200
+
+
+def test_qrcode_image_rejects_oversized_url(client):
+    """合法护照域名但超出二维码编码容量:必须 400,不能落成 500。
+
+    qrcode 库对超长输入抛 ValueError,此前未被接住,走 api_errors 兜底
+    变成 internal_error + 异常日志。
+    """
+    long_url = "https://passport.bilibili.com/" + "a" * 3000
+    r = client.get("/api/login/qrcode-image?url=" + long_url)
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "invalid_url"
+
+
+def test_collection_add_rejects_empty_baseline(client, monkeypatch):
+    """订阅当时为空的合集必须拒绝:空基线会让之后新增的条目被当基线吞掉,
+    追更静默失效且用户没有任何自救路径。"""
+    import app as app_module
+    monkeypatch.setattr(app_module.bapi, "fetch_season_content",
+                        lambda cid, **kw: [])
+    r = client.post("/api/collection/add",
+                    json={"kind": "season", "id": 123, "title": "空合集"})
+    body = r.get_json()
+    assert r.status_code == 400 and body["code"] == "empty_collection"
+    assert "未建立订阅" in body["error"] or "无法建立基线" in body["error"]
+
+
+def test_not_logged_in_maps_to_401(client, monkeypatch):
+    """未登录是预期态:401 auth_required,不是 500 internal_error。
+
+    此前 RuntimeError("未登录…") 落进兜底 except Exception,前端提示
+    「服务器处理失败,请查看应用日志」,离「请先登录」差很远。
+    """
+    import app as app_module
+
+    def boom(**kw):
+        raise app_module.bapi.NotLoggedInError("未登录,无法获取关注列表")
+
+    monkeypatch.setattr(app_module.bapi, "fetch_followings_all", boom)
+    r = client.get("/api/followings")
+    assert r.status_code == 401
+    body = r.get_json()
+    assert body["code"] == "auth_required"
+    assert "未登录" in body["error"]

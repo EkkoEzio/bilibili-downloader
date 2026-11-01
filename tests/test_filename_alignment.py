@@ -916,3 +916,130 @@ def test_rename_sidecars_single_suffix_unchanged(monkeypatch, tmp_path):
     assert on_disk == ["新名.jpg", "新名.mp4", "新名.srt", "新名.xml"], \
         f"单段扩展名副文件的改名行为不应改变,实际落盘:{on_disk}"
     assert not list(tmp_path.glob("旧名.*")), "旧 stem 下不得残留"
+
+
+# ---------- 删除任务时清理 yt-dlp 半成品临时文件 ----------
+
+def test_delete_file_removes_leftover_part_files(monkeypatch, tmp_path):
+    """取消/失败的任务删除记录+文件时,.part 半成品一并清理。
+
+    回归:manifest 只记录确认过的产物;未完成的任务 manifest 为空,
+    旧实现「删除记录和文件」什么都不删,yt-dlp 留下的
+    `<stem>.f303.mp4.part`/`<stem>.m4a.part` 永远留在磁盘上。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "直播回放.mp4.part").write_bytes(b"x" * 50)
+    (tmp_path / "直播回放.f303.mp4.part").write_bytes(b"y" * 30)
+    (tmp_path / "直播回放.m4a.part-Frag2").write_bytes(b"z" * 10)
+    (tmp_path / "直播回放.mp4.ytdl").write_bytes(b"s")
+    _mk_task("pt1", status="cancelled", title="直播回放")
+    try:
+        taskstore.delete_tasks(["pt1"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt1", None)
+    for name in ("直播回放.mp4.part", "直播回放.f303.mp4.part",
+                 "直播回放.m4a.part-Frag2", "直播回放.mp4.ytdl"):
+        assert not (tmp_path / name).exists(), f"半成品 {name} 应被清理"
+
+
+def test_delete_file_keeps_final_files_and_neighbours(monkeypatch, tmp_path):
+    """半成品清理只针对 .part/.ytdl:最终产物与邻居文件不受影响。
+
+    任务带空 manifest(v2 任务未完成的形态):文件删除只认 manifest 与
+    半成品标记,磁盘上同名最终文件不属于该任务,必须保留。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "直播回放.mp4.part").write_bytes(b"x")
+    final = tmp_path / "直播回放.mp4"
+    final.write_bytes(b"final")
+    neighbour = tmp_path / "直播回放完整版.mp4"
+    neighbour.write_bytes(b"n")
+    _mk_task("pt2", status="cancelled", title="直播回放")
+    downloader._tasks["pt2"]["manifest"] = {"version": 1, "artifacts": []}
+    downloader._tasks["pt2"]["artifact_root"] = str(tmp_path)
+    try:
+        taskstore.delete_tasks(["pt2"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt2", None)
+    assert not (tmp_path / "直播回放.mp4.part").exists()
+    # cancelled 任务没有确认产物,最终文件不属于它,但也不是半成品 → 保留
+    assert final.exists()
+    assert neighbour.exists(), "同前缀更长标题的邻居文件不得被误删"
+
+
+def test_delete_file_part_cleanup_skips_surviving_same_stem(monkeypatch, tmp_path):
+    """同标题的存活任务仍在下载时,其 .part 是进行中状态,不得被清掉。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "同名视频.mp4.part").write_bytes(b"downloading")
+    victim = _mk_task("pt3", status="cancelled", title="同名视频")
+    survivor = _mk_task("pt4", status="downloading", title="同名视频")
+    survivor["task_id"] = "pt4"
+    try:
+        taskstore.delete_tasks(["pt3"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt3", None)
+    assert (tmp_path / "同名视频.mp4.part").exists(), \
+        "存活下载任务的 .part 不得被另一条同标题记录的删除清掉"
+
+
+def test_delete_file_part_cleanup_skips_longer_title_neighbour(monkeypatch, tmp_path):
+    """同前缀但标题更长的邻居 .part 不得被误删。
+
+    回归:半成品前缀判定曾沿用 ``_STEM_SUFFIX_STARTS``(含空格),于是
+    删「直播回放」时会把「直播回放 完整版」这条正在下载的视频的
+    ``.part`` 一并删掉——那条任务的进度直接丢失,yt-dlp 只能从头重下。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "直播回放.mp4.part").write_bytes(b"own")
+    neighbour = tmp_path / "直播回放 完整版.mp4.part"
+    neighbour.write_bytes(b"someone-else-downloading")
+    _mk_task("pt7", status="cancelled", title="直播回放")
+    try:
+        taskstore.delete_tasks(["pt7"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt7", None)
+    assert not (tmp_path / "直播回放.mp4.part").exists()
+    assert neighbour.exists(), "标题更长的邻居任务的 .part 不得被删"
+
+
+def test_delete_file_part_cleanup_respects_up_subdir(monkeypatch, tmp_path):
+    """按 UP 归档时,半成品在 UP 子目录里也要清理到。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    up_dir = tmp_path / "某UP主"
+    up_dir.mkdir()
+    (up_dir / "归档视频.mp4.part").write_bytes(b"x")
+    _mk_task("pt5", status="failed", title="归档视频")
+    try:
+        taskstore.delete_tasks(["pt5"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt5", None)
+    assert not (up_dir / "归档视频.mp4.part").exists()
+
+
+def test_delete_placeholder_title_skips_part_cleanup(monkeypatch, tmp_path):
+    """占位标题(解析中)的任务不做半成品扫描:期望名无意义,防止误删。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    # 占位标题清洗后是 "(解析中)" 前缀无关的文件,不匹配;真正要防的是
+    # 期望名计算退化为占位文本后匹配到别人的半成品。
+    (tmp_path / "video.mp4.part").write_bytes(b"x")
+    _mk_task("pt6", status="cancelled", title="(解析中)")
+    try:
+        taskstore.delete_tasks(["pt6"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt6", None)
+    assert (tmp_path / "video.mp4.part").exists()
+
+
+def test_delete_result_counts_files_not_tasks(monkeypatch, tmp_path):
+    """file_skipped_count 以文件为单位:无产物任务不再被计成「跳过的文件」。"""
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    _mk_task("pt7", status="failed", title="无产物")
+    try:
+        result = taskstore.delete_tasks_detailed(["pt7"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt7", None)
+    assert result["count"] == 1
+    assert result["file_deleted_count"] == 0
+    assert result["file_skipped_count"] == 0, \
+        "没有任何产物的任务不应计入文件级 skipped 计数"
+    assert result["partial"] is False
