@@ -5,7 +5,7 @@ import { escapeHtml, escapeAttr, formatDuration, pageFromUrl,
 import { goPage, isUrlDownloaded, itemBusinessId } from './lib.js';
 import { closeDrawer } from './drawer.js';
 import { announce, setBusy, withPending } from './confirm.js';
-import { subscribeProgress } from './pages/downloads.js';
+import { subscribeProgress } from './pages/downloads.js?v=20261103c';
 import { QUALITY_OPTIONS } from './quality.js';
 
 let _singleUrl = '';
@@ -127,7 +127,7 @@ function renderParseResult(info, url, loggedIn) {
           <div class="vt">${escapeHtml(info.title)} <span style="color:var(--accent);font-size:12.5px;">（共 ${info.parts.length} P）</span></div>
           <div class="vm">UP主：${escapeHtml(info.uploader || '-')}</div>
           <div class="btn-row"><select id="part-select" aria-label="选择分 P"></select></div>
-          <div id="part-formats" style="margin-top:10px;"><div class="hint"><span class="spinner"></span>加载清晰度...</div></div>
+          <div id="part-formats" class="mt-10"><div class="hint"><span class="spinner"></span>加载清晰度...</div></div>
         </div>
       </div>`;
     const sel = document.getElementById('part-select');
@@ -148,7 +148,7 @@ function renderParseResult(info, url, loggedIn) {
         <div class="vt">${escapeHtml(info.title)}</div>
         <div class="vm">UP主：${escapeHtml(info.uploader || '-')} ${info.duration ? '· 时长：' + formatDuration(info.duration) : ''}</div>
         ${qualitySelectHtml(info.formats, info.best_label)}
-        <div class="btn-row" style="margin-top:10px;">
+        <div class="btn-row mt-10">
           <button type="button" class="primary" id="single-download-btn" onclick="startDownload(this)">开始下载</button>
         </div>
       </div>
@@ -172,7 +172,7 @@ async function loadPartFormats() {
     _singleInfo = r.info;
     box.innerHTML = `
       ${qualitySelectHtml(r.info.formats, r.info.best_label)}
-      <div class="btn-row" style="margin-top:10px;"><button type="button" class="primary" id="single-download-btn" onclick="startDownload(this)">开始下载</button></div>`;
+      <div class="btn-row mt-10"><button type="button" class="primary" id="single-download-btn" onclick="startDownload(this)">开始下载</button></div>`;
   } catch (error) {
     if (isAbortError(error) || !partRequestIsCurrent(generation, controller, select, url, page, box)) return;
     const message = error.message || '请求失败';
@@ -198,7 +198,7 @@ function qualitySelectHtml(formats, bestLabel) {
     options += `<option value="音频">仅音频${sizeTxt}</option>`;
   }
   if (!options) return '<div class="hint">无可用清晰度</div>';
-  return `<div class="btn-row" style="margin-top:8px;"><select id="quality-select" aria-label="下载清晰度">${options}</select></div>`;
+  return `<div class="btn-row mt-8"><select id="quality-select" aria-label="下载清晰度">${options}</select></div>`;
 }
 
 export async function startDownload(button = null) {
@@ -285,16 +285,16 @@ function renderBatchList(title) {
     </label>`;
   }).join('');
   box.innerHTML = `
-    <div class="hint" style="margin:14px 0 8px;">「${escapeHtml(title)}」共 ${_batchItems.length} 项</div>
-    <div class="btn-row" style="margin-bottom:8px;">
-      <button type="button" class="ghost sm" onclick="batchToggleAll(true)">全选</button>
-      <button type="button" class="ghost sm" onclick="batchToggleAll(false)">全不选</button>
-      <span style="color:var(--text-mute);font-size:12px;">已选 <b id="batch-count">0</b> 项</span>
+    <div class="batch-head">「${escapeHtml(title)}」共 ${_batchItems.length} 项</div>
+    <div class="toolbar tight">
+      <button type="button" class="quiet" onclick="batchToggleAll(true)">全选</button>
+      <button type="button" class="quiet" onclick="batchToggleAll(false)">全不选</button>
+      <span class="tb-note">已选 <b id="batch-count">0</b> 项</span>
     </div>
-    <div style="max-height:280px;overflow-y:auto;border:1px solid var(--border);border-radius:8px;">
+    <div class="batch-scroll">
       ${itemRows}
     </div>
-    <div class="btn-row" style="margin-top:10px;">
+    <div class="btn-row mt-10">
       <select id="batch-quality" aria-label="批量下载清晰度">${QUALITY_OPTIONS.map(([v, l]) => `<option value="${v}">${l}</option>`).join('')}</select>
       <button type="button" class="primary" id="batch-download-btn" onclick="batchDownload(this)">批量下载</button>
     </div>

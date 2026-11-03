@@ -100,7 +100,7 @@ export async function loadSubscriptions(force = false) {
       d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载关注与自动下载清单...</div>';
     },
     showError: (msg) => {
-      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadSubscriptions()">${icon('refresh')} 重试</button></div>`;
+      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadSubscriptions()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       _mergedUps = mergeUps(b.items || [], b.local_ups || []);
@@ -156,8 +156,8 @@ function upCardHtml(u) {
   const name = escapeHtml(u.uname || ('UP ' + mid));
   const nameHtml = `<a href="https://space.bilibili.com/${mid}" target="_blank" rel="noopener">${name}</a>`;
   const followBtn = u.followed
-    ? `<button class="ghost sm" onclick="upToggleFollow(this.dataset.mid, true, this)" data-mid="${escapeAttr(mid)}" title="取消关注该 UP">已关注</button>`
-    : `<button class="primary sm" onclick="upToggleFollow(this.dataset.mid, false, this)" data-mid="${escapeAttr(mid)}" title="关注该 UP">关注</button>`;
+    ? `<button class="ghost" onclick="upToggleFollow(this.dataset.mid, true, this)" data-mid="${escapeAttr(mid)}" title="取消关注该 UP">已关注</button>`
+    : `<button class="primary" onclick="upToggleFollow(this.dataset.mid, false, this)" data-mid="${escapeAttr(mid)}" title="关注该 UP">关注</button>`;
   const sign = String(u.sign || '').trim();
   // 时间行:站内关注给「关注于」,手动加入给「加入于」;没扫过投稿就明说,
   // 不显示一个空白让用户以为是加载失败。
@@ -181,7 +181,7 @@ function upCardHtml(u) {
     <div class="uc-text">
       <div class="uc-name" title="${escapeAttr(u.uname || '')}">${nameHtml}</div>
       <div class="uc-sign" title="${escapeAttr(sign)}">${sign ? escapeHtml(sign) : '暂无个性签名'}</div>
-      <div class="uc-meta">${escapeHtml(whenParts.join(' · '))}</div>
+      <div class="uc-meta">${whenParts.map(part => `<span>${escapeHtml(part)}</span>`).join('')}</div>
     </div>
   </div>`;
 }

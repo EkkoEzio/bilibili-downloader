@@ -67,7 +67,7 @@ async function fetchHistoryPage(generation, controller) {
     if (isAbortError(error) || !historyRequestIsCurrent(generation, controller)) return false;
     if (nextPage === 1) {
       libDom().list.innerHTML =
-        `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
+        `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
       _histHasMore = false;
     } else {
       // 翻页失败:保留已渲染的首页内容,不把整列表换成错误占位;
@@ -95,7 +95,14 @@ export async function maybeLoadMoreHistory() {
 registerPage('history', {
   load: loadHistory,
   retry: loadHistory,
-  showCount: false,
+  // 上游 /x/v2/history 只回当页列表、给不出总数,所以不写「共 N 条」——
+  // 但也不能整行留空:原来 showCount:false 会在页头下面留一条 32px 的空白带,
+  // 看着像统计坏了。改成说清楚"已加载多少、还有没有更早"。
+  metaText: (q, pairs) => {
+    const loaded = state.items.length;
+    if (q) return `已加载 ${loaded} 条 · 匹配 ${pairs.length}`;
+    return _histHasMore ? `已加载 ${loaded} 条 · 继续下滑加载更早` : `已加载 ${loaded} 条`;
+  },
   fetchMore: maybeLoadMoreHistory,
   deactivate: cancelHistoryLoad,
 });

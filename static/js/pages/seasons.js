@@ -139,6 +139,7 @@ function showOverview() {
   document.getElementById('list-seasons').style.display = 'none';
   document.getElementById('season-back-btn').style.display = 'none';
   document.getElementById('season-page-title').textContent = '追更合集';
+  document.getElementById('season-page-title').classList.add('sr-only');
   document.getElementById('meta-seasons').textContent =
     _seasons.length ? `共 ${_seasons.length} 个追更中的合集` : '';
 }
@@ -174,7 +175,7 @@ export async function loadSeasons() {
     },
     showError: (msg) => {
       document.getElementById('season-overview').innerHTML =
-        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadSeasons()">${icon('refresh')} 重试</button></div>`;
+        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadSeasons()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       _seasons = b.seasons || [];
@@ -213,7 +214,7 @@ function renderOverview() {
   }
   box.innerHTML = state.view === 'grid'
     ? `<div class="lib-grid">${list.map(seasonCard).join('')}</div>`
-    : `<div class="panel"><div class="panel-body tight">${list.map(seasonRow).join('')}</div></div>`;
+    : `<div class="row-list">${list.map(seasonRow).join('')}</div>`;
 }
 
 const isBilibiliDefaultCover = (cover) =>
@@ -245,7 +246,7 @@ function seasonRow(s) {
   return `
     <div class="fav-folder" role="button" tabindex="0" onclick="seasonEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();seasonEnter(this.dataset.id)}" data-id="${escapeAttr(String(s.id ?? ''))}">
       <div class="fav-icon">${icon('layers')}</div>
-      <div>
+      <div class="fav-main">
         <div class="fav-name">${escapeHtml(s.title)}<span class="fav-tag">追更中</span></div>
         <div class="fav-count">${itemCount} 个视频</div>
       </div>
@@ -269,6 +270,7 @@ export async function seasonEnter(sid) {
   document.getElementById('list-seasons').style.display = '';
   document.getElementById('season-back-btn').style.display = '';
   document.getElementById('season-page-title').textContent = season.title;
+  document.getElementById('season-page-title').classList.remove('sr-only');
   const d = libDom();
   d.meta.textContent = '';
   d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载合集内容...</div>';
@@ -283,7 +285,7 @@ export async function seasonEnter(sid) {
     d.meta.textContent = `共 ${state.items.length} 条`;
   } catch (error) {
     if (isAbortError(error) || !seasonRequestIsCurrent(generation, controller, sid)) return;
-    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="seasonEnter(this.dataset.id)" data-id="${escapeAttr(String(sid))}">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="seasonEnter(this.dataset.id)" data-id="${escapeAttr(String(sid))}">${icon('refresh')} 重试</button></div>`;
   }
 }
 

@@ -195,7 +195,7 @@ export async function loadDownloads(prefetchedTasks) {
     if (isAbortError(error) || !downloadLoadIsCurrent(generation, controller)
         || state.mode !== 'downloads') return;
     const d = libDom();
-    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="loadDownloads()">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="loadDownloads()">${icon('refresh')} 重试</button></div>`;
   } finally {
     if (downloadLoadIsCurrent(generation, controller)) _loadController = null;
   }
@@ -426,9 +426,9 @@ function taskWarnHtml(it) {
   const taskArg = inlineStringArg(it.task_id);
   if (it.rename_conflict) {
     return `<div class="dp-err">名称冲突：已有同名文件
-      <button class="ghost sm" onclick="resolveTaskConflict(${taskArg},'rename_with_index',this)">加 (1) 改名</button>
-      <button class="ghost sm" onclick="resolveTaskConflict(${taskArg},'open_existing',this)">打开现有文件</button>
-      <button class="ghost sm" onclick="resolveTaskConflict(${taskArg},'cancel',this)">忽略</button></div>`;
+      <button class="ghost" onclick="resolveTaskConflict(${taskArg},'rename_with_index',this)">加 (1) 改名</button>
+      <button class="ghost" onclick="resolveTaskConflict(${taskArg},'open_existing',this)">打开现有文件</button>
+      <button class="ghost" onclick="resolveTaskConflict(${taskArg},'cancel',this)">忽略</button></div>`;
   }
   if (it.rename_error) {
     return `<div class="dp-err" title="${escapeAttr(it.rename_error)}">自动改名失败：${escapeHtml(String(it.rename_error).slice(0, 60))}</div>`;
@@ -460,7 +460,7 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
     + (it.label ? `<span class="q-label">[${escapeHtml(it.label)}]</span>` : '');
   const taskArg = inlineStringArg(it.task_id);
   const cancelBtn = active
-    ? `<button class="danger sm" onclick="cancelTask(${taskArg},this)">取消</button>` : '';
+    ? `<button class="danger" onclick="cancelTask(${taskArg},this)">取消</button>` : '';
   const targetUrl = safeHttpUrl(it.url);
   const titleHtml = targetUrl
     ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`

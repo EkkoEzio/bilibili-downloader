@@ -18,7 +18,7 @@ export async function loadFollowBili() {
       d.list.innerHTML = '<div class="empty">正在后台拉取关注 UP 的近期投稿（串行防限流，约需数十秒），完成后自动展示。</div>';
     },
     showError: (msg) => {
-      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadFollowBili()">${icon('refresh')} 重试</button></div>`;
+      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadFollowBili()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       replaceItems(b.items || []);

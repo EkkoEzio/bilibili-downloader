@@ -213,7 +213,7 @@ export async function loadHomeFeed() {
       announce(lastError ? '推荐流刷新失败，先展示之前的内容'
                          : 'B 站暂时没给新推荐，先展示之前的内容');
     } else if (lastError) {
-      d.list.innerHTML = `<div class="empty">${escapeHtml(lastError.message || '加载失败')}<br><button class="ghost sm" onclick="loadHomeFeed()">重试</button></div>`;
+      d.list.innerHTML = `<div class="empty">${escapeHtml(lastError.message || '加载失败')}<br><button class="ghost" onclick="loadHomeFeed()">重试</button></div>`;
     } else {
       replaceItems([]);
       renderPage();  // 落回标准空态:空态文案 + 重新加载按钮

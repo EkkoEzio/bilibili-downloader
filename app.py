@@ -21,7 +21,7 @@ try:
 except AlreadyRunningError as exc:
     raise SystemExit(f"启动失败：{exc}") from exc
 
-from flask import Flask, request, jsonify, render_template, Response, stream_with_context
+from flask import Flask, request, jsonify, render_template, Response, make_response, stream_with_context
 from werkzeug.exceptions import HTTPException
 
 import qrcode
@@ -413,7 +413,12 @@ def disable_api_caching(response):
 
 @app.route("/")
 def index():
-    return render_template("index.html")
+    # 首页必须每次重新渲染:模板改动(结构/类名/资源版本号)要立刻生效。
+    # 原来没有任何缓存头,浏览器按启发式缓存直接复用旧文档,新模板与新的
+    # ?v= 资源版本都对不上,表现为「改了没反应」。
+    response = make_response(render_template("index.html"))
+    response.headers["Cache-Control"] = "no-store"
+    return response
 
 
 # ---------- 登录 ----------

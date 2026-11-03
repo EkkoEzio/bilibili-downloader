@@ -18,7 +18,7 @@ export async function loadWatchlater() {
     },
     showError: (msg) => {
       const d = libDom();
-      d.list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
+      d.list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       replaceItems(b.items || []);

@@ -13,6 +13,7 @@
    - emptyHint(q)       空态文案
    - retry()            空态/错误态的重新加载
    - showCount          是否显示总数
+   - metaText(q, pairs)  自定义统计行文案(缺省「共 N 条」;用于总数不可得的页面)
    - onViewToggle()     列表/网格切换时的额外复位 */
 import { icon } from './icons.js';
 import { escapeHtml, escapeAttr, sig, formatDuration, formatTime,
@@ -137,6 +138,10 @@ export function goPage(name, skipLoad) {
     replaceItems([]);
     state.shown = 0;
     state.checked.clear();
+    // 换页时选择集已清空,操作条必须同步收起:收藏/合集的首屏是卡片而不是
+    // 可勾选列表,不主动收起就会把上一个页面(如下载记录)的删除条留在顶部,
+    // 盖住新页面的页头。
+    updateActionBar();
     const ctrl = page(name);
     if (ctrl.reset) ctrl.reset();
     const pg = document.querySelector(`.page[data-page="${name}"]`);
@@ -210,7 +215,11 @@ export function renderDefaultList(d = libDom()) {
   const pairs = visiblePairs(q);
   renderLibList(pairs, d.list);
   if (d.meta) {
-    d.meta.textContent = q
+    // metaText 给"总数拿不到"的页面自己定义统计口径(如观看历史是服务端分页,
+    // 上游只回当页列表)。缺省仍是「共 N 条」;showCount:false 会留出一整行空白,
+    // 只在确实没话可说时才用。
+    if (typeof ctrl.metaText === 'function') d.meta.textContent = ctrl.metaText(q, pairs);
+    else d.meta.textContent = q
       ? `共 ${state.items.length} 条 · 匹配 ${pairs.length}`
       : (ctrl.showCount === false ? '' : `共 ${state.items.length} 条`);
   }
@@ -280,8 +289,8 @@ export function showFreshHint(pageName, applyFn) {
   bar.setAttribute('role', 'status');
   bar.setAttribute('aria-live', 'polite');
   bar.innerHTML = `<span class="fh-text">获取到新内容</span>
-    <button class="primary sm" onclick="applyFresh('${pageName}')">查看最新</button>
-    <button class="quiet sm" onclick="dismissFresh('${pageName}')">暂不</button>`;
+    <button class="primary" onclick="applyFresh('${pageName}')">查看最新</button>
+    <button class="quiet" onclick="dismissFresh('${pageName}')">暂不</button>`;
   bar.style.display = '';
 }
 
@@ -390,7 +399,7 @@ export function renderLibList(pairs, container) {
     if (ctrl.emptyRetry === false) {
       container.innerHTML = `<div class="empty">${hint}</div>`;
     } else {
-      container.innerHTML = `<div class="empty">${hint}<br><button class="ghost sm" data-lib-retry>${icon('refresh')} 重新加载</button></div>`;
+      container.innerHTML = `<div class="empty">${hint}<br><button class="ghost" data-lib-retry>${icon('refresh')} 重新加载</button></div>`;
     }
     return;
   }
@@ -415,13 +424,18 @@ export function renderLibList(pairs, container) {
       : '';
     const upName = escapeHtml(it.uploader || '-');
     const uploaderMid = safeDecimalId(it.uploader_mid);
-    const metaParts = [uploaderMid
+    const identParts = [uploaderMid
       ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
       : upName];
-    if (it.view_at) metaParts.push(escapeHtml(formatTime(it.view_at)));
-    // 推荐流独有的展示层信息：推荐理由（角标）与播放/点赞数。
-    if (it.stat_view) metaParts.push(`<span class="vi-stat">${icon('play')} ${escapeHtml(it.stat_view)}</span>`);
-    if (it.stat_like) metaParts.push(`<span class="vi-stat">${icon('like')} ${escapeHtml(it.stat_like)}</span>`);
+    if (it.view_at) identParts.push(escapeHtml(formatTime(it.view_at)));
+    // 播放/点赞单独成组:它们和上面的身份信息不在同一个换行单元里。
+    // 原来四段平铺 + flex-wrap,UP 名字一长就把「点赞」挤到第二行,
+    // 同一行卡片因此一高一矮;现在身份区可截断、统计区固定不换行。
+    const statParts = [];
+    if (it.stat_view) statParts.push(`<span class="vi-stat">${icon('play')} ${escapeHtml(it.stat_view)}</span>`);
+    if (it.stat_like) statParts.push(`<span class="vi-stat">${icon('like')} ${escapeHtml(it.stat_like)}</span>`);
+    const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>`
+      + (statParts.length ? `<span class="vi-stats">${statParts.join('')}</span>` : '');
     const rcmdBadge = (state.mode === 'home' && it.rcmd_reason)
       ? `<span class="rcmd-badge">${escapeHtml(it.rcmd_reason)}</span>` : '';
     const targetUrl = safeHttpUrl(it.url);
@@ -445,7 +459,7 @@ export function renderLibList(pairs, container) {
         </div>
         <div class="lv-body">
           <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}${badgeHtml}</div>
-          <div class="vi-meta">${metaParts.join(' · ')}</div>
+          <div class="vi-meta">${metaHtml}</div>
           ${watchbar}
           ${warnHtml}
         </div>
@@ -459,7 +473,7 @@ export function renderLibList(pairs, container) {
         ${durHtml}${playHtml}
       </div>
       <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}${badgeHtml}</div>
-      <div class="vi-meta">${metaParts.join(' · ')}</div>
+      <div class="vi-meta">${metaHtml}</div>
       ${watchbar}
       ${warnHtml}
     </div>`;

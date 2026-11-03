@@ -3,7 +3,7 @@ import { registerPage, state, libDom, renderDefaultList, cachedLoad,
          getLibSearchQuery, replaceItems } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { collectionAutoControl, loadCollectionSubs,
-         collSubKey, collectionSub } from './seasons.js?v=20261031e';
+         collSubKey, collectionSub } from './seasons.js?v=20261103c';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
@@ -33,6 +33,7 @@ function showFolders() {
   document.getElementById('fav-back-btn').style.display = 'none';
   document.getElementById('fav-search').style.display = '';
   document.getElementById('fav-page-title').textContent = '我的收藏';
+  document.getElementById('fav-page-title').classList.add('sr-only');
   document.getElementById('meta-fav').textContent =
     _favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '';
 }
@@ -55,7 +56,7 @@ export async function favLoadFolders() {
     },
     showError: (msg) => {
       document.getElementById('fav-folder-list').innerHTML =
-        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost sm" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
+        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
     },
     apply: (b) => {
       _favFolders = b.folders || [];
@@ -104,7 +105,7 @@ function renderFolders() {
   }
   box.innerHTML = state.view === 'grid'
     ? `<div class="lib-grid">${list.map(folderCard).join('')}</div>`
-    : `<div class="panel"><div class="panel-body tight">${list.map(folderRow).join('')}</div></div>`;
+    : `<div class="row-list">${list.map(folderRow).join('')}</div>`;
 }
 
 const normalizedCover = (value) => safeHttpUrl(value, { httpsOnly: true });
@@ -144,7 +145,7 @@ function folderRow(f) {
   return `
     <div class="fav-folder" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(f.id ?? ''))}">
       <div class="fav-icon">${escapeHtml((f.title || '?').slice(0, 1))}</div>
-      <div>
+      <div class="fav-main">
         <div class="fav-name">${escapeHtml(f.title)}</div>
         <div class="fav-count">${itemCount} 个视频</div>
       </div>
@@ -159,6 +160,7 @@ function showList(title) {
   document.getElementById('fav-back-btn').style.display = '';
   document.getElementById('fav-search').style.display = '';
   document.getElementById('fav-page-title').textContent = title;
+  document.getElementById('fav-page-title').classList.remove('sr-only');
 }
 
 export async function favEnter(fid) {
@@ -192,7 +194,7 @@ export async function favEnter(fid) {
     d.meta.textContent = `共 ${state.items.length} 条`;
   } catch (error) {
     if (isAbortError(error) || !favRequestIsCurrent(generation, controller, fid)) return;
-    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost sm" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(fid))}">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(fid))}">${icon('refresh')} 重试</button></div>`;
   }
 }
 

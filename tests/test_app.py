@@ -2211,8 +2211,8 @@ def test_up_card_auto_is_single_merged_control():
     # 必须 appearance:none 自绘箭头,才能让箭头与右边框留出间距
     assert "appearance: none" in css and "background-position: right 6px center" in css, \
         "下拉须自绘箭头(appearance:none + background-position),否则三角贴右边框"
-    assert "background-color: var(--accent-soft)" in css, \
-        "开启态须用 background-color,否则 shorthand 会覆盖自绘箭头"
+    assert "background-color: var(--info-soft)" in css, \
+        "开启态须用 background-color 长属性(追更态用信息蓝),否则 shorthand 会覆盖自绘箭头"
 
 
 def test_action_bar_rendered_at_top():
