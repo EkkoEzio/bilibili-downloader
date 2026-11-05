@@ -2,40 +2,44 @@
    bilibili 下载 · 视觉系统
    ------------------------------------------------------------
    身份:B 站官方双色 —— 粉(行动/选中/当前) × 蓝(信息/追更/提示)
-   表面:浅色模式 = 深色侧栏 + 浅色画布;深色模式 = 层次化蓝黑
-   签名:小电视 logo、侧栏粉指示条、下载糖果条纹进度条
+   表面:对齐 B 站网页版 —— 浅色 = 白壳侧栏 + 浅灰画布 + 纯白无框卡;
+        深色 = 中性黑层次(卡面亮于画布,靠明度分层,不靠描边)
+   形状:卡片/封面 6px 小圆角,按钮一律胶囊,封面时长角标是深色小方
+   签名:小电视 logo、品牌粉字标、下载糖果条纹进度条
    约束:类名与 DOM 结构承接旧版,仅重绘视觉层
    ============================================================ */
 
 :root {
-  /* 画布与表面 */
+  /* 画布与表面(B 站灰阶:画布浅灰、卡面纯白,靠明度差成型) */
   --bg-page: #f3f4f6;
   --bg-card: #fff;
-  --bg-soft: #f1f2f4;
-  --bg-hover: #e8eaee;
+  --bg-soft: #f1f2f3;
+  --bg-hover: #e3e5e7;
   --bg-muted: #e0e3e8;
 
-  /* 侧栏:两种主题下都保持深色,与画布形成"工具壳/内容面"分层 */
-  --sb-bg: #15161b;
-  --sb-hover: rgba(255,255,255,.06);
-  --sb-border: rgba(255,255,255,.07);
-  --sb-text: #a6abb6;
-  --sb-text-strong: #edeff3;
+  /* 侧栏:对齐 B 站网页版白壳 —— 浅色模式侧栏与页头同为白色;
+     深色模式由 body.dark 覆盖为深壳。旧的"两主题恒深壳"已弃。 */
+  --sb-bg: #fff;
+  --sb-hover: rgba(0,0,0,.05);
+  --sb-border: rgba(0,0,0,.08);
+  --sb-text: #61666d;
+  --sb-text-strong: #18191c;
 
-  /* 文本 */
-  --text-main: #17181c;
-  --text-soft: #575c66;
-  --text-mute: #6d7480;
-  --border: #e1e3e8;
-  --border-soft: #edeef1;
+  /* 文本(B 站三级灰) */
+  --text-main: #18191c;
+  --text-soft: #61666d;
+  --text-mute: #9499a0;
+  --border: #e3e5e7;
+  --border-soft: #eef0f2;
 
-  /* 双色系统 */
-  --accent: #d63d73;          /* 行动粉:按钮/链接/选中,文本级对比 */
-  --accent-hover: #e8497f;
-  --accent-bright: #fb7299;   /* 图形粉:指示条/进度/装饰,只做非文本 */
+  /* 双色系统:品牌粉 #FB7299 / 品牌蓝 #00AEEC(B 站官方色)。
+     按钮常态用略深的 #f25d8e 保证白字可读,悬停抬亮到品牌粉本体。 */
+  --accent: #f25d8e;          /* 行动粉:按钮/链接/选中 */
+  --accent-hover: #fb7299;
+  --accent-bright: #fb7299;   /* 图形粉:字标/进度/装饰/焦点环 */
   --accent-soft: rgba(251,114,153,.10);
-  --info: #0091c2;            /* 信息蓝:推荐理由/自动追更/新内容 */
-  --info-soft: rgba(0,161,214,.09);
+  --info: #00aeec;            /* 信息蓝:推荐理由/自动追更/新内容 */
+  --info-soft: rgba(0,174,236,.09);
 
   /* 语义色 */
   --green: #1e8a3c;
@@ -51,8 +55,8 @@
   --shadow-sm: 0 1px 2px rgba(21,22,27,.06);
   --shadow-md: 0 10px 30px rgba(21,22,27,.16);
   --shadow-lift: 0 5px 18px rgba(21,22,27,.10);
-  --radius: 10px;
-  --radius-ctl: 8px;
+  --radius: 6px;
+  --radius-ctl: 6px;
 
   /* 控件尺寸:按钮/输入框/下拉共用同一高度,页头控件才会落在同一条基线上。
      以前按钮靠 padding 撑高(6+6+行高≈34)、搜索框写死 32、纯图标按钮只有 29,
@@ -60,36 +64,43 @@
   --ctl-h: 32px;
   --ctl-h-xs: 26px;
 
+  /* 卡片网格:列宽下限 + 间距。视频卡与 UP 卡共用这两个令牌——同一串数字
+     抄在两处,改一张卡就会漏另一张。列宽下限决定卡墙密度:200px 时宽屏要挤
+     到 7 列才铺得满,卡片只能很小;260px 让每张卡落在 260–300px。 */
+  --card-min: 260px;
+  --card-gap: 16px;
+
   /* 内嵌图形(搜索放大镜/下拉箭头):data URI 里没法用 currentColor,
      深浅两套各备一份,改色只需改这里 */
   --icon-search: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236d7480' stroke-width='2' stroke-linecap='round'%3E%3Ccircle cx='11' cy='11' r='8'/%3E%3Cline x1='21' y1='21' x2='16.65' y2='16.65'/%3E%3C/svg%3E");
   --icon-chev: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236d7480' stroke-width='2.5' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
 }
 body.dark {
-  --bg-page: #101116;
-  --bg-card: #1a1c22;
-  --bg-soft: #22242b;
-  --bg-hover: #2a2d35;
-  --bg-muted: #363a43;
+  /* B 站深色版的中性黑:画布 #17171c,卡面亮一档,靠明度分层 */
+  --bg-page: #17171c;
+  --bg-card: #222327;
+  --bg-soft: #2b2c31;
+  --bg-hover: #34353b;
+  --bg-muted: #3d3e45;
 
-  --sb-bg: #0c0d12;
-  --sb-hover: rgba(255,255,255,.05);
-  --sb-border: rgba(255,255,255,.06);
-  --sb-text: #9aa0ac;
-  --sb-text-strong: #e8eaef;
+  --sb-bg: #101014;
+  --sb-hover: rgba(255,255,255,.06);
+  --sb-border: rgba(255,255,255,.07);
+  --sb-text: #9499a1;
+  --sb-text-strong: #f1f2f4;
 
-  --text-main: #e9ebef;
-  --text-soft: #b0b5bf;
+  --text-main: #eceef1;
+  --text-soft: #b2b7c0;
   --text-mute: #9ba1ac;
-  --border: #2c2f37;
-  --border-soft: #25272e;
+  --border: #33353b;
+  --border-soft: #2b2d33;
 
   --accent: #ff719e;
   --accent-hover: #ff8bb2;
   --accent-bright: #fb7299;
   --accent-soft: rgba(251,114,153,.13);
-  --info: #3ec0ee;
-  --info-soft: rgba(62,192,238,.10);
+  --info: #23ade5;
+  --info-soft: rgba(35,173,229,.12);
 
   --green: #7fce92;
   --green-bg: rgba(127,206,146,.10);
@@ -125,7 +136,7 @@ body {
 /* ==================== 骨架 ==================== */
 .app-shell { display: flex; min-height: 100vh; }
 
-/* ---------- 侧边栏(工具壳,恒深色) ---------- */
+/* ---------- 侧边栏(浅色模式白壳 / 深色模式深壳) ---------- */
 .sidebar {
   width: 200px; flex-shrink: 0;
   background: var(--sb-bg);
@@ -136,14 +147,14 @@ body {
 }
 .brand {
   display: flex; align-items: center; gap: 9px;
-  color: var(--sb-text-strong);
+  color: var(--accent-bright);   /* B 站字标:品牌粉 logo 字 */
   font-size: 15px; font-weight: 700;
   padding: 4px 8px 16px;
   letter-spacing: .01em;
 }
 .brand .logo {
-  width: 30px; height: 30px; border-radius: 9px;
-  background: linear-gradient(135deg, var(--accent-bright), #ff9db9);
+  width: 30px; height: 30px; border-radius: 8px;
+  background: var(--accent-bright);
   color: #fff;
   display: flex; align-items: center; justify-content: center;
   flex-shrink: 0;
@@ -161,20 +172,15 @@ body {
 .nav-item svg { width: 17px; height: 17px; flex-shrink: 0; opacity: .8; }
 .nav-item:hover { background: var(--sb-hover); color: var(--sb-text-strong); }
 .nav-item:hover svg { opacity: 1; }
+/* 当前导航:B 站样式 —— 粉字 + 浅粉胶囊底(旧版左侧指示条已随白壳方案移除) */
 .nav-item.active {
-  background: rgba(251,114,153,.14);
-  color: #ff85ab; font-weight: 600;
+  background: var(--accent-soft);
+  color: var(--accent-bright); font-weight: 600;
 }
 .nav-item.active svg { opacity: 1; }
-/* 签名:当前导航左侧的亮粉指示条 */
-.nav-item.active::before {
-  content: ""; position: absolute; left: 0; top: 22%; bottom: 22%;
-  width: 3px; border-radius: 2px;
-  background: var(--accent-bright);
-}
 .nav-badge {
   margin-left: auto; min-width: 18px; height: 18px; padding: 0 5px;
-  border-radius: 9px; background: var(--accent-bright); color: #4d0f22;
+  border-radius: 9px; background: var(--accent-bright); color: #fff;
   font-size: 11px; font-weight: 700; line-height: 18px; text-align: center; flex-shrink: 0;
 }
 .sidebar-foot { margin-top: auto; border-top: 1px solid var(--sb-border); padding-top: 10px; }
@@ -193,7 +199,11 @@ body {
 
 /* ---------- 主区域:页头固定,内容区独立滚动 ---------- */
 .main { flex: 1; min-width: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; }
-.content { width: 100%; max-width: 1560px; margin: 0 auto; padding: 0 28px 48px; overflow-y: auto; flex: 1; min-height: 0; }
+/* 内容区铺满侧栏右侧的全部宽度:原来 1560px 上限 + 居中,1440 以上的屏两侧
+   都留出一条空带(2560 屏每侧近 400px),卡墙被挤在中间、卡片只能更小。
+   卡墙是浏览型内容,宽度越宽只是多一列,不需要阅读宽度限制;两侧留白交给
+   padding(随视口略增:窄屏不浪费,宽屏不贴边)。 */
+.content { width: 100%; padding: 0 clamp(18px, 1.6vw, 36px) 48px; overflow-y: auto; flex: 1; min-height: 0; }
 .page { display: none; }
 .page.active { display: block; }
 
@@ -256,8 +266,8 @@ body {
 .page-head .ph-right > * { flex: 0 0 auto; }
 .search-input {
   height: var(--ctl-h); padding: 0 10px 0 32px;
-  border: 1px solid var(--border); border-radius: var(--radius-ctl);
-  background: var(--bg-card); color: var(--text-main);
+  border: 1px solid transparent; border-radius: var(--radius-ctl);
+  background: var(--bg-soft); color: var(--text-main);
   font-size: 13px; font-family: inherit; outline: none;
   width: 300px;
   transition: border .14s;
@@ -270,7 +280,8 @@ body {
    它的 width:100% 会覆盖上面的固定宽度——搜索框实际一直是"占满父容器",
    既没法加宽也让页头整组被算出怪宽度后折行。这里用两级选择器压回去。 */
 .page-head .search-input { width: 300px; }
-.page-head .search-input:focus { border-color: var(--accent-bright); }
+/* 聚焦:B 站搜索框手感 —— 灰底翻白底 + 品牌粉细圈 */
+.search-input:focus { background: var(--bg-card); border-color: var(--accent-bright); box-shadow: 0 0 0 3px var(--accent-soft); }
 .search-input::placeholder { color: var(--text-mute); }
 
 /* 计数行:左边是统计信息,右边是低频维护动作(清记录等)。把这类动作
@@ -292,10 +303,11 @@ body {
 /* ==================== 面板 ==================== */
 .panel {
   background: var(--bg-card);
-  border: 1px solid var(--border);
+  border: 1px solid transparent;
   border-radius: var(--radius);
   margin-bottom: 14px;
   overflow: hidden;
+  box-shadow: var(--shadow-sm);
 }
 .panel-head {
   display: flex; align-items: center; gap: 8px;
@@ -308,9 +320,10 @@ body {
 .panel-body.tight { padding: 0; }
 
 /* ==================== 按钮体系 ==================== */
+/* 按钮一律胶囊(B 站形状语言);分段控件(.tab/.seg)自带小圆角覆盖 */
 button {
   font-family: inherit; font-size: 13px; cursor: pointer;
-  border-radius: var(--radius-ctl); border: 1px solid transparent;
+  border-radius: 999px; border: 1px solid transparent;
   height: var(--ctl-h); padding: 0 14px; line-height: 1;
   display: inline-flex; align-items: center; justify-content: center; gap: 6px;
   transition: background .14s, border .14s, color .14s, transform .14s;
@@ -319,8 +332,9 @@ button {
 button svg { width: 15px; height: 15px; flex-shrink: 0; }
 button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
 button.primary:hover:not(:disabled) { background: var(--accent-hover); border-color: var(--accent-hover); }
-button.ghost { background: var(--bg-card); border-color: var(--border); color: var(--text-main); }
-button.ghost:hover:not(:disabled) { background: var(--bg-soft); border-color: var(--text-mute); }
+/* 次级按钮:B 站灰底胶囊,无描边 */
+button.ghost { background: var(--bg-soft); border-color: transparent; color: var(--text-soft); }
+button.ghost:hover:not(:disabled) { background: var(--bg-hover); border-color: transparent; color: var(--text-main); }
 button.danger { background: transparent; border-color: var(--red); color: var(--red); }
 button.danger:hover:not(:disabled) { background: var(--red-bg); }
 /* 实心危险:同一组里只有真正不可恢复的动作配实心,其余用描边,层级才分得开 */
@@ -413,18 +427,18 @@ body.dark .empty::before {
 
 /* ==================== 视频列表(统一) ==================== */
 /* 网格:实体卡墙。每张卡自带边界与白底,hover 轻抬。 */
-.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr)); gap: var(--card-gap); }
+/* B 站卡片:纯白无描边无静息阴影,靠与画布的明度差成型;悬停才起影。
+   边框保留为透明占位:勾选态把边框点亮成品牌粉,不引起布局位移。 */
 .lib-grid .video-item,
 .lib-grid .fav-card {
   background: var(--bg-card);
-  border: 1px solid var(--border-soft);
-  box-shadow: var(--shadow-sm);
+  border: 1px solid transparent;
 }
 .lib-grid .video-item:hover,
 .lib-grid .fav-card:hover {
-  border-color: var(--border);
   box-shadow: var(--shadow-lift);
-  transform: translateY(-1px);
+  transform: translateY(-2px);
 }
 /* 列表视图:左图右文,无边框行式 */
 .lib-list:not(.lib-grid) { display: flex; flex-direction: column; gap: 2px; }
@@ -444,35 +458,38 @@ body.dark .empty::before {
   padding: 8px;
   margin: -8px; /* 抵消 padding,让列表视图行距与网格 gap 视觉一致 */
 }
-.lib-grid .video-item { margin: 0; }
+/* 网格卡比列表行大一号:卡片内边距与图文间距同步放宽,8px 是留给 200px 卡的 */
+.lib-grid .video-item { margin: 0; padding: 10px; gap: 8px; }
 .video-item:hover { background: var(--bg-soft); }
 .video-item.checked { background: var(--accent-soft); outline: 1px solid var(--accent-bright); outline-offset: -1px; }
 .lib-grid .video-item.checked { border-color: var(--accent-bright); }
 .video-item.checked .vi-title { color: var(--accent); }
+/* B 站浏览手感:悬停卡片时标题转品牌粉 */
+.video-item:hover .vi-title, .fav-card:hover .fc-title { color: var(--accent); }
 .thumb-wrap { position: relative; border-radius: var(--radius-ctl); overflow: hidden; background: var(--bg-muted); aspect-ratio: 16/9; cursor: pointer; }
 .video-item img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .thumb-dur {
   position: absolute; right: 5px; bottom: 5px;
-  background: rgba(12,13,17,.72); color: #fff;
-  font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums;
-  padding: 1px 7px; border-radius: 999px;
+  background: rgba(0,0,0,.55); color: #fff;
+  font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums;
+  padding: 1px 6px; border-radius: 4px;
 }
 .vi-check { position: absolute; top: 4px; left: 4px; z-index: 2; width: 16px; height: 16px; opacity: 0; transition: opacity .1s; }
 .video-item:hover .vi-check, .video-item.checked .vi-check { opacity: 1; }
 /* 下载记录页:封面右下角播放按钮 → 在 Finder 中定位该视频文件 */
 .vi-play {
   position: absolute; right: 5px; bottom: 5px; z-index: 2;
-  width: 27px; height: 27px; padding: 0; border: none; border-radius: 50%;
-  background: rgba(12,13,17,.6); color: #fff;
+  width: 30px; height: 30px; padding: 0; border: none; border-radius: 50%;
+  background: rgba(0,0,0,.55); color: #fff;
   display: flex; align-items: center; justify-content: center;
   cursor: pointer;
   opacity: 0; transition: opacity .14s, background .14s;
 }
 .video-item:hover .vi-play { opacity: 1; }
 .vi-play:hover { background: var(--accent-bright); }
-.vi-play svg { width: 12px; height: 12px; margin-left: 1px; }
+.vi-play svg { width: 13px; height: 13px; margin-left: 1px; }
 .thumb-wrap.has-play .thumb-dur { left: 5px; right: auto; }
-.vi-title { font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.vi-title { font-size: 14px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 /* 网格卡片:标题固定占两行高度。标题一行还是两行,下面的元信息与进度条
    都要落在同一水平线上——否则同一行卡片一张短一张长。 */
 .lib-grid .vi-title { min-height: 2.8em; }
@@ -481,7 +498,7 @@ body.dark .empty::before {
 /* 元信息固定一行:身份区(UP/时间)超出就省略,统计区(播放/点赞)永不被挤走。
    原来 flex-wrap:wrap 会让「·」和统计各自换行,同一行卡片高度跟着内容变。 */
 .vi-meta {
-  font-size: 11.5px; color: var(--text-mute);
+  font-size: 12px; color: var(--text-mute);
   display: flex; align-items: center; gap: 6px;
   flex-wrap: nowrap; min-width: 0;
   font-variant-numeric: tabular-nums;
@@ -494,7 +511,7 @@ body.dark .empty::before {
 /* 已下载角标 */
 .dl-badge {
   display: inline-flex; align-items: center; gap: 3px;
-  font-size: 10.5px; font-weight: 600;
+  font-size: 11px; font-weight: 600;
   color: var(--green); background: var(--green-bg);
   padding: 1px 8px; border-radius: 999px; vertical-align: 1px;
 }
@@ -503,13 +520,13 @@ body.dark .empty::before {
 /* 首页推荐:推荐理由角标(信息 → 蓝)与播放/点赞数据 */
 .rcmd-badge {
   display: inline-flex; align-items: center;
-  font-size: 10.5px; font-weight: 600;
+  font-size: 11px; font-weight: 600;
   color: var(--info); background: var(--info-soft);
   padding: 1px 8px; border-radius: 999px; vertical-align: 1px;
   max-width: 9em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .vi-stat { display: inline-flex; align-items: center; gap: 2px; }
-.vi-stat svg { width: 11px; height: 11px; opacity: .75; }
+.vi-stat svg { width: 12px; height: 12px; opacity: .75; }
 
 /* 卡片封面:悬停轻微放大,浏览手感 */
 .thumb-wrap img { transition: transform .18s ease; }
@@ -553,7 +570,7 @@ body.dark .empty::before {
   border-radius: var(--radius); padding: 8px; margin: -8px;
   transition: background .14s, border-color .14s, box-shadow .14s, transform .14s;
 }
-.lib-grid .fav-card { margin: 0; }
+.lib-grid .fav-card { margin: 0; padding: 10px; gap: 8px; }
 .fav-card:hover { background: var(--bg-soft); }
 .lib-grid .fav-card:hover { background: var(--bg-card); }
 .fav-card .fc-cover {
@@ -575,14 +592,14 @@ body.dark .empty::before {
 }
 .fav-card .fc-count {
   position: absolute; right: 5px; bottom: 5px; z-index: 2;
-  background: rgba(12,13,17,.72); color: #fff;
-  font-size: 11px; font-weight: 500; font-variant-numeric: tabular-nums;
-  padding: 1px 7px; border-radius: 999px;
+  background: rgba(0,0,0,.55); color: #fff;
+  font-size: 12px; font-weight: 500; font-variant-numeric: tabular-nums;
+  padding: 1px 6px; border-radius: 4px;
 }
-.fav-card .fc-title { width: 100%; font-size: 13px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
+.fav-card .fc-title { width: 100%; font-size: 14px; font-weight: 600; line-height: 1.4; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; word-break: break-all; }
 /* 封面卡同理:标题恒占两行,卡片底边的控件条才会齐 */
 .lib-grid .fav-card .fc-title { min-height: 2.8em; }
-.fav-card .fc-sub { width: 100%; font-size: 11.5px; color: var(--text-mute); display: flex; align-items: center; gap: 4px; }
+.fav-card .fc-sub { width: 100%; font-size: 12px; color: var(--text-mute); display: flex; align-items: center; gap: 4px; }
 .fav-card .fc-sub svg { width: 12px; height: 12px; }
 
 /* ==================== 顶部批量操作条 ====================
@@ -694,7 +711,7 @@ body.dark .empty::before {
 /* 关注 UP 卡片:与视频卡片同尺寸(16:9 封面区 + 名称 + 两行说明)。
    关注按钮与清晰度下拉压在封面底部,不额外占一行,整卡高度因此与
    .video-item 基本一致(封面 + 三行文字)。 */
-.up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px; }
+.up-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(var(--card-min), 1fr)); gap: var(--card-gap); }
 .up-card {
   display: flex; flex-direction: column; gap: 6px;
   padding: 8px; border: 1px solid transparent; border-radius: var(--radius);
@@ -702,8 +719,8 @@ body.dark .empty::before {
   transition: background .14s, border-color .14s, box-shadow .14s, transform .14s;
 }
 /* 网格视图:与视频卡、收藏夹卡共用同一套外壳(白底 + 细边 + 轻阴影) */
-.up-grid .up-card { background: var(--bg-card); border-color: var(--border-soft); box-shadow: var(--shadow-sm); }
-.up-grid .up-card:hover { border-color: var(--border); box-shadow: var(--shadow-lift); transform: translateY(-1px); }
+.up-grid .up-card { background: var(--bg-card); border-color: transparent; padding: 10px; gap: 8px; }
+.up-grid .up-card:hover { box-shadow: var(--shadow-lift); transform: translateY(-2px); }
 .up-card .uc-thumb { position: relative; width: 100%; }
 .up-card .uc-cover {
   position: relative; width: 100%; aspect-ratio: 16/9;
@@ -713,13 +730,13 @@ body.dark .empty::before {
   padding-bottom: 34px; /* 给底部控件条让位,头像落在视觉中心偏上 */
 }
 .up-card .uc-face {
-  width: 64px; height: 64px; border-radius: 50%;
+  width: 76px; height: 76px; border-radius: 50%;
   object-fit: cover; background: var(--bg-muted); flex: none;
   box-shadow: 0 0 0 3px var(--bg-card);
 }
 .up-card .uc-badge {
   position: absolute; top: 6px; right: 6px;
-  font-size: 10.5px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
+  font-size: 11px; font-weight: 600; padding: 1px 8px; border-radius: 999px;
   color: var(--text-mute); background: var(--bg-card);
   border: 1px solid var(--border);
 }
@@ -750,11 +767,11 @@ body.dark .empty::before {
   background-size: 11px 11px;
 }
 .up-card .uc-text { display: flex; flex-direction: column; gap: 2px; min-width: 0; }
-.up-card .uc-name { font-size: 13px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.up-card .uc-name { font-size: 14px; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .up-card .uc-name a { color: inherit; text-decoration: none; }
 .up-card .uc-name a:hover { color: var(--accent); }
 .up-card .uc-sign {
-  font-size: 11.5px; color: var(--text-mute);
+  font-size: 12px; color: var(--text-mute);
   overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 /* 时间行允许换行:200px 卡里「关注于 X · 最近投稿 Y」两个日期一行放不下,
@@ -763,7 +780,7 @@ body.dark .empty::before {
    拆成两行后左缘对齐,阅读顺序也稳定(关注时间在上、最近投稿在下)。 */
 .up-card .uc-meta {
   display: flex; flex-direction: column;
-  font-size: 11.5px; color: var(--text-mute);
+  font-size: 12px; color: var(--text-mute);
   white-space: normal; line-height: 1.5;
 }
 /* 自动下载控件(select):开启态用蓝(追更是状态,不是行动) */
@@ -816,9 +833,9 @@ body.dark .empty::before {
 /* 后台拉到新内容的提示条(信息通知 → 蓝) */
 .fresh-hint {
   display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-  padding: 8px 14px; margin-bottom: 12px; border-radius: var(--radius);
-  background: var(--info-soft); border: 1px dashed var(--info);
-  color: var(--info); font-size: 12.5px;
+  padding: 9px 14px; margin-bottom: 12px; border-radius: var(--radius);
+  background: var(--info-soft); border: none;
+  color: var(--info); font-size: 12.5px; font-weight: 500;
 }
 .fresh-hint .fh-text { font-weight: 600; }
 
@@ -857,7 +874,7 @@ body.dark .empty::before {
 }
 .modal-mask.open { display: flex; }
 .modal {
-  background: var(--bg-card); border-radius: 14px;
+  background: var(--bg-card); border-radius: 10px;
   padding: 20px; width: 340px; max-width: 90vw;
   box-shadow: var(--shadow-md);
 }
@@ -870,6 +887,12 @@ body.dark .empty::before {
 @keyframes spin { to { transform: rotate(360deg); } }
 
 /* ==================== 响应式 ==================== */
+/* 1500 以下的窗口:列宽下限收一档。260px 在 1280 屏上只排得下三列(每张 336,
+   比旧版四列 244 还占地方),收一档后 1280 仍是四列、卡片略大,1920 以上不受影响。 */
+@media (max-width: 1500px) {
+  :root { --card-min: 236px; --card-gap: 14px; }
+}
+
 @media (max-width: 860px) {
   .app-shell { flex-direction: column; }
   .sidebar { width: auto; height: auto; position: static; flex-direction: row; align-items: center; gap: 2px; padding: 8px 10px; overflow-x: auto; border-right: none; border-bottom: 1px solid var(--sb-border); }
@@ -877,12 +900,13 @@ body.dark .empty::before {
   .brand span { display: none; }
   .nav-item { padding: 7px 9px; }
   .nav-item span { display: none; }
-  /* 顶栏模式下,粉指示条从左侧移到底部 */
-  .nav-item.active::before { left: 18%; right: 18%; top: auto; bottom: 1px; width: auto; height: 2.5px; }
+  /* 顶栏模式下当前导航靠粉色胶囊底区分(指示条已随白壳方案移除) */
   .sidebar-foot { margin-top: 0; margin-left: auto; border-top: none; padding-top: 0; display: flex; gap: 2px; }
   .side-btn span { display: none; }
   .side-btn .dot { display: none; }
   .content { padding: 0 14px 48px; }
+  /* 顶栏模式下内容区变宽为整个屏宽,卡片列宽下限跟着收一档,平板仍保三列 */
+  :root { --card-min: 208px; --card-gap: 12px; }
   .action-bar { left: 0; padding: 10px 14px; }
   .page-head .search-input { width: 220px; }
 }
@@ -943,7 +967,7 @@ body.dark .empty::before {
   width: min(420px, calc(100vw - 32px));
   padding: 0;
   border: 1px solid var(--border);
-  border-radius: 14px;
+  border-radius: 10px;
   background: var(--bg-card);
   color: var(--text-main);
   box-shadow: var(--shadow-md);
@@ -989,6 +1013,11 @@ body.dark .empty::before {
   }
   .back-top { bottom: calc(26px + env(safe-area-inset-bottom)); }
   .drawer { padding-bottom: env(safe-area-inset-bottom); }
+}
+
+/* 手机:两列。260px 下限在 390px 屏上只排得下一列,卡片会变成通栏大图 */
+@media (max-width: 560px) {
+  :root { --card-min: 158px; --card-gap: 10px; }
 }
 
 @media (max-width: 480px) {

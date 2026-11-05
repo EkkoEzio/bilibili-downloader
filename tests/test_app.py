@@ -2202,7 +2202,7 @@ def test_up_card_auto_is_single_merged_control():
     assert "select.uc-auto.on" in css, "开启态控件应有强调色样式"
     up_grid = [line.strip() for line in css.splitlines()
                if line.strip().startswith(".up-grid")]
-    assert up_grid and "minmax(200px, 1fr)" in up_grid[0], \
+    assert up_grid and "minmax(var(--card-min), 1fr)" in up_grid[0], \
         "UP 卡须与视频卡一致(弹性铺满整行),固定宽度会在宽屏右侧空出一整列"
     assert ".up-card .uc-actions > button { flex: 0 0 auto; width: 56px; }" in css, \
         "关注/不关注按钮必须等宽,切换时不跳动"
@@ -2445,12 +2445,30 @@ def test_up_card_matches_video_card_footprint():
     控件压在封面底部而不是另起一行,整卡高度与 .video-item 基本一致。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    grid = "display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 14px;"
+    grid = ("display: grid; grid-template-columns: repeat(auto-fill, "
+            "minmax(var(--card-min), 1fr)); gap: var(--card-gap);")
     assert f".lib-grid {{ {grid} }}" in css, "视频网格列宽应保持"
     assert f".up-grid {{ {grid} }}" in css, "UP 网格列宽必须与视频网格一致"
+    # 列宽下限收敛到 :root 令牌:两处各写一串数字时,改卡片大小必然漏一处
+    assert "--card-min:" in css and "--card-gap:" in css, \
+        "卡片列宽/间距必须由 :root 令牌单点控制"
     block = css[css.index(".up-card {"):css.index(".up-list {")]
     assert "aspect-ratio: 16/9" in block, "封面区应与视频封面同为 16:9"
     assert "position: absolute" in block, "控件条应压在封面底部,不额外占行"
+
+
+def test_content_area_fills_width_without_cap():
+    """内容区不许设宽度上限。
+
+    回归:原来 `.content` 是 max-width: 1560px + margin: auto,1440 以上
+    的屏两侧就各空出一条带(2560 屏每侧近 400px),卡墙被夹在中间、卡片被
+    迫变小。卡墙是浏览型内容,多宽的屏只是多一列,不需要阅读宽度限制。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    content = [line for line in css.splitlines() if line.startswith(".content {")]
+    assert content, "应存在 .content 规则"
+    assert "max-width" not in content[0], \
+        "内容区不该设宽度上限:宽屏两侧会留出空带,卡片也跟着变小"
 
 
 def test_frontend_module_imports_all_resolve():

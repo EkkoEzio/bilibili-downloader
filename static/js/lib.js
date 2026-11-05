@@ -157,23 +157,41 @@ export function refreshLib() {
 }
 
 /* ---------- 每页条数自适应 ---------- */
-export function computePageSize(minCol = 200, gap = 14, rowH = 232) {
+/* 卡片列宽下限与间距只有一处事实源:CSS 的 --card-min / --card-gap。
+   JS 里再抄一份 200/14 时,卡片一改大小首屏条数就按旧列数算——按 7 列要
+   25 条,实际只排得下 5 列,首屏要么多拉一页,要么留半屏空白。
+   getComputedStyle 返回的是活对象,媒体查询换了令牌值也能立刻读到。 */
+let _rootStyle = null;
+function cardMetrics() {
+  if (!_rootStyle) _rootStyle = getComputedStyle(document.documentElement);
+  const num = (name, fallback) => {
+    const v = parseFloat(_rootStyle.getPropertyValue(name));
+    return Number.isFinite(v) && v > 0 ? v : fallback;
+  };
+  return { min: num('--card-min', 260), gap: num('--card-gap', 16) };
+}
+
+/* rowH:一行的总高(16:9 封面 + 两行标题 + 元信息)。卡片变宽时封面跟着变高,
+   这里取保守估计——估小只是多拉几条,估大首屏会留白。 */
+export function computePageSize(rowH = 250) {
   if (state.view === 'list') {
     return Math.max(10, parseInt(localStorage.getItem('bd_list_size') || '30', 10));
   }
+  const { min, gap } = cardMetrics();
   const d = libDom();
-  const w = (d && d.list) ? d.list.clientWidth : 1064;
-  const cols = Math.max(2, Math.floor((w + gap) / (minCol + gap)));
+  const w = (d && d.list) ? d.list.clientWidth : 1664;
+  const cols = Math.max(2, Math.floor((w + gap) / (min + gap)));
   const rows = Math.max(2, Math.floor((window.innerHeight - 150) / rowH) + 1);
   return cols * rows;
 }
 
 export function defaultChunk() {
-  return state.view === 'list' ? computePageSize() : computePageSize(200, 14, 232);
+  return computePageSize();
 }
 
+/* UP 卡与视频卡同列宽,只是每行更矮(封面 + 三行文字) */
 export function upCardChunk() {
-  return state.view === 'list' ? computePageSize() : computePageSize(240, 12, 76);
+  return computePageSize(76);
 }
 
 export function curChunk() {

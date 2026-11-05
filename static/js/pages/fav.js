@@ -3,7 +3,7 @@ import { registerPage, state, libDom, renderDefaultList, cachedLoad,
          getLibSearchQuery, replaceItems } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { collectionAutoControl, loadCollectionSubs,
-         collSubKey, collectionSub } from './seasons.js?v=20261103c';
+         collSubKey, collectionSub } from './seasons.js?v=20261104a';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
