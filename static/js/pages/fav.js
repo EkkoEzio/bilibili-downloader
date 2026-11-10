@@ -3,7 +3,7 @@ import { registerPage, state, libDom, renderDefaultList, cachedLoad,
          getLibSearchQuery, replaceItems } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { collectionAutoControl, loadCollectionSubs,
-         collSubKey, collectionSub } from './seasons.js?v=20261104a';
+         collSubKey, collectionSub } from './seasons.js?v=20261110g';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
@@ -120,7 +120,7 @@ const coverMarkup = (cover) => {
       ${image}`;
 };
 
-const _card = (cover, count, title, subHtml, id) => {
+const _card = (cover, count, title, id) => {
   const itemCount = nonNegativeInt(count);
   return `
   <div class="fav-card" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
@@ -128,16 +128,17 @@ const _card = (cover, count, title, subHtml, id) => {
       ${coverMarkup(cover)}
       <span class="fc-count">${itemCount} 个视频</span>
     </div>
-    <div class="fc-title">${escapeHtml(title)}</div>
-    <div class="fc-sub">${subHtml}${collectionAutoControl('fav', id, title || '该收藏夹', title || '')}</div>
+    <div class="fc-head">
+      <div class="fc-title" title="${escapeAttr(title)}">${escapeHtml(title)}</div>
+      ${collectionAutoControl('fav', id, title || '该收藏夹', title || '')}
+    </div>
   </div>`;
 };
 
 const folderCard = (f) => {
   const learnedCover = _favLearnedCovers.get(String(f.id)) || '';
   return _card(normalizedCover(f.cover) || learnedCover,
-               f.media_count, f.title || '(未命名)',
-               icon('folder') + '收藏夹', f.id);
+               f.media_count, f.title || '(未命名)', f.id);
 };
 
 function folderRow(f) {

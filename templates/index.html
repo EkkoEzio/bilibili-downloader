@@ -7,7 +7,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>bilibili download</title>
-<link rel="stylesheet" href="/static/css/main.css?v=20261110a">
+<link rel="stylesheet" href="/static/css/main.css?v=20261110g">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -161,15 +161,15 @@
             </button>
             <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
           </div>
-        </div>
-        <div class="sub-info" id="meta-subs"></div>
-        <div class="panel">
-          <div class="toolbar">
+          <div class="ph-add" aria-label="添加 UP 订阅">
             <input type="text" id="up-add-input" class="tb-input" aria-label="UP 主页链接或 mid" placeholder="粘贴 UP 主页链接或 mid;加入后新投稿自动进入下载队列">
             <button class="primary" id="up-add-btn" onclick="upAdd()">添加</button>
             <button class="ghost" id="up-check-btn" onclick="upCheckNow(this)">立即检查新视频</button>
-            <span id="auto-refresh-subs-status" class="auto-refresh-status" role="status" aria-live="polite"></span>
           </div>
+        </div>
+        <div class="sub-info">
+          <span id="meta-subs"></span>
+          <span id="auto-refresh-subs-status" class="auto-refresh-status" role="status" aria-live="polite"></span>
         </div>
         <div id="list-subs" class="lib-list"></div>
       </div>
@@ -453,6 +453,6 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/js/app.js?v=20261104a"></script>
+<script type="module" src="/static/js/app.js?v=20261110g"></script>
 </body>
 </html>

@@ -234,10 +234,13 @@ const seasonCard = (s) => {
     <div class="fc-cover">
       <span class="fc-placeholder" aria-hidden="true">${icon('bilibili')}<span>暂无封面</span></span>
       ${image}
+      <span class="uc-badge on">追更中</span>
       <span class="fc-count">${itemCount} 个视频</span>
     </div>
-    <div class="fc-title">${escapeHtml(s.title || '(未命名)')}</div>
-    <div class="fc-sub">${icon('layers')}追更中${collectionAutoControl('season', s.id, s.title || '该合集', s.title || '')}</div>
+    <div class="fc-head">
+      <div class="fc-title" title="${escapeAttr(s.title || '')}">${escapeHtml(s.title || '(未命名)')}</div>
+      ${collectionAutoControl('season', s.id, s.title || '该合集', s.title || '')}
+    </div>
   </div>`;
 };
 

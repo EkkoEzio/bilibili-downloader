@@ -28,6 +28,8 @@ function inlineStringArg(value) {
 }
 
 let _doneKeys = new Set();
+/* 进行中的任务键:让卡片在下载过程中就能显示「下载中」,而不是等下载完才有标记。 */
+let _activeKeys = new Set();
 let _loadGeneration = 0;
 let _loadController = null;
 let _dirty = false;
@@ -52,6 +54,14 @@ function doneKeySet(tasks) {
     .filter(Boolean));
 }
 
+/* 进行中任务的键集合:与 doneKeySet 同粒度((bv, 分P)),给卡片上的「下载中」角标用。
+   只有集合本身变化才需要重绘卡片,进度/速度变化不走这里。 */
+function activeKeySet(tasks) {
+  return new Set(tasks.filter(t => TASK_ACTIVE.includes(t.status))
+    .map(t => { const bv = bvFromUrl(t.url); return bv ? dlKey(bv, t.page || 1) : null; })
+    .filter(Boolean));
+}
+
 function sameSet(a, b) {
   return a.size === b.size && [...a].every(value => b.has(value));
 }
@@ -59,6 +69,17 @@ function sameSet(a, b) {
 function isDownloaded(url) {
   const bv = bvFromUrl(url);
   return !!bv && _doneKeys.has(dlKey(bv, pageFromUrl(url)));
+}
+
+/* 卡片要展示的下载状态:''(无) / 'done'(已下载) / 'active'(下载中)。
+   与 isDownloaded 同一套键规则,只是多做一步「进行中」判定——
+   「已下载」优先:同一视频重复下载时按已完成算,不让角标在两个状态间抖。 */
+function downloadState(url) {
+  const bv = bvFromUrl(url);
+  if (!bv) return '';
+  const key = dlKey(bv, pageFromUrl(url));
+  if (_doneKeys.has(key)) return 'done';
+  return _activeKeys.has(key) ? 'active' : '';
 }
 
 function hasVisibleChecks() {
@@ -76,8 +97,12 @@ function updateBadge(tasks) {
 
 function applyTaskBadges(tasks) {
   const nextDone = doneKeySet(tasks);
-  const changed = !sameSet(_doneKeys, nextDone);
+  const nextActive = activeKeySet(tasks);
+  // 两个集合任一变化都要重绘:只认 done 的话,「下载中」角标要等下一次整页刷新
+  // 才出现或消失(开始下载时卡片上什么都看不到)。
+  const changed = !sameSet(_doneKeys, nextDone) || !sameSet(_activeKeys, nextActive);
   _doneKeys = nextDone;
+  _activeKeys = nextActive;
   updateBadge(tasks);
   return changed;
 }
@@ -658,6 +683,7 @@ setItemExtras({
   progressCard: taskCardHtml,
   warnHtml: taskWarnHtml,
   isDownloaded,
+  downloadState,
   onChecksEmpty: () => {
     if (state.mode === 'downloads' && _dirty) {
       _dirty = false;

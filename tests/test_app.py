@@ -1670,8 +1670,10 @@ def test_frontend_downloaded_consumers_preserved():
         "isUrlDownloaded 应转发到注入的 isDownloaded,不得自建第二份判定"
 
     # 2) 列表角标:非下载页才挂「已下载」
-    assert "_itemExtras.isDownloaded(it.url)" in lib_js, \
-        "renderLibList 的「已下载」角标应走同一份判定"
+    #   2026-11-10 起这里改用 downloadState(it.url):同一份注入来源、同一套
+    #   (bv, 分P) 键规则,只是多返回一个「下载中」态供卡片显示。
+    assert "_itemExtras.downloadState(it.url)" in lib_js, \
+        "renderLibList 的下载状态角标应走同一份注入判定(downloadState)"
     assert "state.mode !== 'downloads'" in lib_js, \
         "角标只在内容页挂;下载记录页本身不需要(那里渲染的是任务卡)"
 
@@ -2473,6 +2475,90 @@ def test_up_card_poster_cover():
     assert ".up-list .up-card{flex-direction:row" in css, "列表模式应为行式"
 
 
+def test_badge_icon_svg_has_explicit_size():
+    """「已下载」角标里的勾选图标必须有显式尺寸。
+
+    回归（2026-11-10 关注动态页实拍）：icons.js 的 icon() 只输出带 viewBox 的
+    <svg>，不带 width/height 属性；.dl-badge 是全项目唯一漏写尺寸规则的图标容器
+    （button svg / .vi-stat svg / #qr-status svg 等都有），于是勾选图标退回
+    "替换元素默认尺寸"（约 150px 方块），把角标撑成一个占满标题行的浅绿色大矩形，
+    中文标题也被挤得逐字换行。修法两层：.dl-badge 里给显式 11px（与 .vi-stat svg
+    同规格），基础层再给 svg 一个 1em 兜底，新容器漏写尺寸时不会重演。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    # 基础层兜底：任何新容器忘写尺寸都不会退回 150px 方块
+    base_rule = [ln for ln in css.splitlines() if ln.replace(" ", "").startswith("svg{")]
+    assert base_rule and "width:1em" in base_rule[0] and "height:1em" in base_rule[0], \
+        "基础层要给 svg 一个 1em 兜底尺寸：icon() 的 svg 没有 width/height 属性"
+    # 出事的那一处：显式尺寸
+    badge_svg = css[css.index(".dl-badge svg{"):]
+    badge_svg = badge_svg[:badge_svg.index("}")]
+    assert "width:11px" in badge_svg and "height:11px" in badge_svg, \
+        ".dl-badge svg 必须显式给尺寸，否则勾选图标会撑成一个大矩形盖住标题"
+    # 根因是图标缺尺寸，不要再用改标题行布局的方式绕过（已用 A/B 复现页证伪）
+    assert ":has(.dl-badge)" not in css and ":has(.rcmd-badge)" not in css, \
+        "角标问题根因在图标尺寸，不应再改 .vi-title 的布局去绕过"
+
+
+def test_downloaded_badge_sits_on_cover_corner():
+    """「已下载」标记挂在封面右上角，与合集卡的「追更中」是同一枚角标。
+
+    回归（2026-11-10 实拍）：它原先跟在标题行里（标题 + 「✓已下载」挤同一行，
+    长标题和角标互相压），用户圈图要求「和追更中放一样的位置」。现在网格卡把它
+    移进封面容器、复用 .uc-badge（.ok 变体 = 实底绿白字），行式列表的封面只有
+    150px 宽、挂角标会挤，保留行内浅底小标签。
+    """
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert 'class="uc-badge ok"' in lib_js, \
+        "「已下载」应复用封面角标 .uc-badge（与「追更中」同一枚）"
+    lv_at = lib_js.index('<div class="video-item lv${checkedCls}">')
+    grid_at = lib_js.index('<div class="video-item${checkedCls}">')
+    assert lv_at < grid_at, "两个分支的顺序变了，下面切片的前提不成立"
+    lv_card = lib_js[lv_at:grid_at]
+    grid_card = lib_js[grid_at:lib_js.index("updateLibCount();", grid_at)]
+    title_at = grid_card.index('<div class="vi-title"')
+    assert "coverBadgeHtml" in grid_card[:title_at], "网格卡的角标必须落在封面容器内"
+    assert "coverBadgeHtml" not in grid_card[title_at:], "标题行里不应再挂「已下载」"
+    assert "badgeHtml" in lv_card, "行式列表保留行内「已下载」标签"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".uc-badge svg{width:11px;height:11px}" in css, \
+        "角标里的勾选图标必须显式给尺寸，否则退回替换元素默认尺寸（约 150px 方块）"
+    assert ".uc-badge.ok{color:#fff;background:var(--green-solid)}" in css, \
+        "已下载角标要用实底绿：浅底绿只有 9% 不透明度，压在封面上读不出来"
+    assert css.count("--green-solid:") == 2, \
+        "实底绿要有明暗两套令牌（对齐 --red-solid 的做法）"
+
+
+def test_active_download_badge_on_cover_corner():
+    """正在下载的视频，封面右上角也显示角标「下载中」。
+
+    用户要求（2026-11-10）：「已下载或者有下载中 [都] 放一样的位置」。原先下载过程中
+    卡片上没有任何标记——只有任务完成后才出现「已下载」，正在下的视频看起来和没下过
+    一样。现在把进行中的任务键也算进卡片状态（与 doneKeySet 同粒度：(bv, 分P)），
+    网格卡显示实底蓝「下载中」角标，行式列表显示行内蓝色小标签。
+    """
+    dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
+    assert "function activeKeySet(" in dl_js, "要有「进行中任务」键集合"
+    assert "TASK_ACTIVE.includes(t.status)" in dl_js, "进行中集合按 TASK_ACTIVE 判状态"
+    assert "function downloadState(" in dl_js, "要把状态判定暴露给卡片"
+    assert "downloadState,\n  onChecksEmpty" in dl_js, "downloadState 要挂进 setItemExtras"
+    badges = dl_js[dl_js.index("function applyTaskBadges("):]
+    badges = badges[:badges.index("\n}")]
+    assert "_activeKeys" in badges, "applyTaskBadges 要维护进行中集合"
+    assert "||" in badges, \
+        "进行中集合变化也要算 changed 并触发重绘，否则角标要等下次整页刷新才出现"
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert "downloadState: () => ''" in lib_js, "lib.js 要有缺省实现（未接线时不报错）"
+    assert 'class="uc-badge dl"' in lib_js, "网格卡的「下载中」用同一枚封面角标"
+    assert "dlState === 'active'" in lib_js, "已下载 / 下载中两态都要处理"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".uc-badge.dl{color:#fff;background:var(--blue-solid)}" in css, \
+        "「下载中」角标要用实底蓝：浅底蓝压在封面画面上读不出来"
+    assert css.count("--blue-solid:") == 2, "实底蓝要有明暗两套令牌"
+    assert ".dl-badge.active{color:var(--blue);background:var(--blue-soft)}" in css, \
+        "行式列表的行内标签也要有「下载中」态"
+
+
 def test_content_area_fills_width_without_cap():
     """内容区不许设宽度上限。
 
@@ -2569,6 +2655,46 @@ def test_collection_cards_are_not_buttons():
                        '<button type="button" class="fav-folder"'):
             assert marker not in src, f"{page} 仍用 button 包裹卡片: {marker}"
         assert 'role="button"' in src, f"{page} 卡片应改用 div[role=button]"
+
+
+def test_collection_card_control_shares_title_row():
+    """合集/收藏卡的画质控件与标题同一行,不再独占一行。
+
+    回归一(2026-11-10 实拍打回):控件自占一行,前面还跟一枚类型小字
+    (「追更中」/「收藏夹」),「小字标签 + 28px 描边下拉」两个不等重的块并排,
+    整行像硬凑在一起。现在控件收进标题行并改浅底标签语言。
+    回归二(同日):把「追更中」做成标题行内的小标签不是用户要的——他要的是
+    封面右上角的角标,与关注 UP 卡的「已关注」同一套(.uc-badge.on)。
+    """
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    for name, src in (("seasons.js", seasons_js), ("fav.js", fav_js)):
+        assert "fc-head" in src, f"{name} 的卡片正文应为「标题 + 控件」一行"
+        assert "fc-sub" not in src, f"{name} 不应再有独占一行的控件行"
+        assert "collectionAutoControl" in src, f"{name} 的标题行应带画质控件"
+    # 「追更中」= 封面右上角角标,复用关注 UP 卡那一套(不是标题行内小标签)
+    card = seasons_js[seasons_js.index("const seasonCard"):]
+    card = card[:card.index("function seasonRow")]
+    assert '<span class="uc-badge on">追更中</span>' in card, \
+        "「追更中」应为封面角标,复用关注 UP 卡的 .uc-badge"
+    cover = card[card.index('class="fc-cover"'):card.index('class="fc-head"')]
+    assert "uc-badge" in cover, "角标必须放在封面容器内才能钉到右上角"
+    assert "fc-tag" not in seasons_js, "不要标题行内的「追更中」小标签"
+    assert '<span class="fav-tag">追更中</span>' in seasons_js, \
+        "行式列表没有封面可挂角标,保留原有的「追更中」小标签"
+    assert "icon('folder') + '收藏夹'" not in fav_js, \
+        "收藏页的类型小字保持移除(用户只点了「追更中」)"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".fav-tag{" in css, "行式标签样式要保留"
+    assert ".fc-tag{" not in css, "标题行标签样式应撤掉"
+    assert ".uc-badge{position:absolute;top:8px;right:8px" in css, \
+        "角标靠 .uc-badge 的绝对定位钉在右上角"
+    # 卡内控件改标签语言:不再画 28px 描边下拉
+    chip = css[css.index(".fc-head .uc-auto,"):]
+    chip = chip[:chip.index("}")]
+    assert "border:none" in chip and "height:20px" in chip, \
+        "卡内画质控件应改浅底标签样式(无描边、20px)"
+    assert "background-color:var(--bg-soft)" in chip, "静息态靠浅底表达,不靠描边"
 
 
 # ---------- 复查补充:跨页状态与元素 id 一致性 ----------

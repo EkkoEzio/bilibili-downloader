@@ -21,10 +21,10 @@
   /* 双色系统:粉=行动/选中,蓝=信息/追更 */
   --accent:#f25d8e; --accent-hover:#fb7299; --accent-bright:#fb7299;
   --accent-soft:rgba(251,114,153,.10);
-  --blue:#00aeec; --blue-soft:rgba(0,174,236,.09);
+  --blue:#00aeec; --blue-soft:rgba(0,174,236,.09); --blue-solid:#0b7ba5;
 
   /* 语义色 */
-  --green:#1e8a3c; --green-soft:rgba(30,138,60,.09);
+  --green:#1e8a3c; --green-soft:rgba(30,138,60,.09); --green-solid:#1e8a3c;
   --red:#c62828; --red-soft:rgba(198,40,40,.07);
   --red-solid:#c62828; --amber:#9a6700; --amber-soft:rgba(154,103,0,.10);
 
@@ -45,8 +45,8 @@ body.dark{
   --text-main:#eceef1; --text-soft:#b2b7c0; --text-mute:#9ba1ac;
   --accent:#ff719e; --accent-hover:#ff8bb2; --accent-bright:#fb7299;
   --accent-soft:rgba(251,114,153,.14);
-  --blue:#23ade5; --blue-soft:rgba(35,173,229,.13);
-  --green:#7fce92; --green-soft:rgba(127,206,146,.10);
+  --blue:#23ade5; --blue-soft:rgba(35,173,229,.13); --blue-solid:#12799e;
+  --green:#7fce92; --green-soft:rgba(127,206,146,.10); --green-solid:#2f7d4a;
   --red:#f09898; --red-soft:rgba(240,152,152,.10);
   --red-solid:#b53939; --amber:#ffd166; --amber-soft:rgba(255,209,102,.10);
   --shadow-md:0 12px 32px rgba(0,0,0,.5);
@@ -62,7 +62,11 @@ button svg{width:14px;height:14px}
 button.primary,button.ghost,button.quiet,button.danger,button.danger-solid,.tb-btn,.pink-btn{white-space:nowrap;flex-shrink:0}
 a{color:inherit;text-decoration:none}
 img{display:block}
-svg{flex-shrink:0}
+/* icon() 生成的 svg 只带 viewBox、不带 width/height 属性:容器若没有给尺寸规则,
+   它会退回"替换元素默认尺寸"(约 150px 方块),把所在容器撑成一个奇怪的大矩形。
+   这里给一个 1em 兜底;各上下文已有的显式尺寸规则(button svg / .vi-stat svg 等)
+   选择器优先级更高,不受影响。 */
+svg{flex-shrink:0;width:1em;height:1em}
 :focus-visible{outline:2px solid var(--accent-bright);outline-offset:2px;border-radius:6px}
 ::-webkit-scrollbar{width:10px;height:8px}
 ::-webkit-scrollbar-thumb{background:var(--line);border-radius:5px;border:2px solid transparent;background-clip:content-box}
@@ -116,6 +120,8 @@ body.action-bar-open .content{padding-bottom:150px}
 .page-head h1{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;
   font-size:19px;font-weight:700;letter-spacing:.01em}
 .ph-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ph-add{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.ph-add .tb-input{width:360px;max-width:100%;border-radius:99px}
 .sub-info{display:flex;align-items:center;gap:14px;flex-wrap:wrap;color:var(--text-mute);font-size:12.5px;
   margin:0 0 16px;min-height:20px}
 .sub-info .si-actions{display:flex;gap:8px;margin-left:auto}
@@ -210,6 +216,11 @@ select{padding-right:26px;border-radius:8px;appearance:none;
   padding:1px 7px;border-radius:5px;vertical-align:1px}
 .dl-badge{display:inline-flex;margin-left:6px;font-size:10.5px;color:var(--green);background:var(--green-soft);
   padding:1px 7px;border-radius:5px;vertical-align:1px}
+/* 角标图标必须显式给尺寸:icon() 生成的 svg 只带 viewBox、不带 width/height 属性,
+   这一处漏掉尺寸规则时,勾选图标就退回"替换元素默认尺寸"(约 150px 方块),把
+   「已下载」角标撑成一个盖住标题行的浅绿色大矩形(2026-11-10 关注动态页实拍)。 */
+.dl-badge svg{width:11px;height:11px}
+.dl-badge.active{color:var(--blue);background:var(--blue-soft)}
 
 /* 列表模式 */
 .video-item.lv{display:flex;align-items:center;gap:13px;padding:9px 12px;border-radius:12px;background:transparent}
@@ -256,9 +267,16 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .uc-cover{position:absolute;inset:0}
 .uc-face{width:100%;height:100%;object-fit:cover;transition:transform .2s}
 .up-grid .up-card:hover .uc-face{transform:scale(1.04)}
-.uc-badge{position:absolute;top:8px;right:8px;font-size:10.5px;padding:1px 7px;border-radius:5px;
+.uc-badge{position:absolute;top:8px;right:8px;display:inline-flex;align-items:center;gap:3px;
+  font-size:10.5px;padding:1px 7px;border-radius:5px;
   background:var(--line);color:var(--text-mute);white-space:nowrap}
+.uc-badge svg{width:11px;height:11px}
 .uc-badge.on{color:#fff;background:var(--accent-bright)}
+/* 「已下载」:与「追更中」同一枚封面角标,语义色用实底绿——浅底绿(green-soft 只有
+   9% 不透明度)是给白卡面用的,压到封面上会和画面糊在一起看不清。 */
+.uc-badge.ok{color:#fff;background:var(--green-solid)}
+/* 「下载中」:同一枚角标,语义色用实底蓝(同上,浅底蓝压在封面上读不出来)。 */
+.uc-badge.dl{color:#fff;background:var(--blue-solid)}
 .uc-actions{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:6px;padding:7px 9px;
   background:linear-gradient(to top,rgba(10,12,15,.72),rgba(10,12,15,0));z-index:2}
 .uc-actions .ghost{background:rgba(255,255,255,.92);color:var(--text-main);border-color:transparent;
@@ -308,16 +326,29 @@ select{padding-right:26px;border-radius:8px;appearance:none;
   gap:6px;color:var(--text-mute);background:linear-gradient(135deg,var(--bg-soft),var(--line))}
 .fc-placeholder svg{width:26px;height:26px;opacity:.5}
 .fc-placeholder span{font-size:12px}
-.fav-card .fc-title,.fav-card .fc-sub{padding:0 13px}
-.fc-title{padding-top:11px;font-size:13.5px;font-weight:600;
+/* 卡片正文：标题与画质控件同一行。控件原先自占一行、前面还跟一枚类型小字
+   （「追更中」/「收藏夹」），「小字 + 28px 描边下拉」两个不等重的块并排，整行
+   像硬凑在一起（2026-11-10 实拍打回）。类型小字在这两页是纯冗余——追更合集页
+   整页都是合集、我的收藏页整页都是收藏夹；控件收进标题行，并改用标签语言：
+   浅底小圆角 20px + 自绘箭头，粉底=追更中、灰底=不下载，状态即控件本身。 */
+.fc-head{display:flex;align-items:center;gap:8px;padding:11px 13px 12px}
+.fc-title{flex:1;min-width:0;font-size:13.5px;font-weight:600;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.fc-sub{padding-top:4px;padding-bottom:12px;font-size:12px;color:var(--text-soft);
-  display:flex;align-items:center;gap:6px;flex-wrap:wrap}
-.fc-sub svg{width:14px;height:14px}
-.fc-sub .uc-auto{min-width:104px;flex:0 0 auto;margin-top:4px}
+.fc-head .uc-auto,.fav-folder .uc-auto{height:20px;padding:0 18px 0 7px;border:none;
+  border-radius:5px;font-size:11px;color:var(--text-mute);background-color:var(--bg-soft);
+  background-size:10px 10px;background-position:right 4px center;flex:0 0 auto;
+  transition:background-color .12s}
+.fc-head .uc-auto:hover,.fav-folder .uc-auto:hover{background-color:var(--bg-hover)}
+.fc-head .uc-auto.on,.fav-folder .uc-auto.on{color:var(--accent);background-color:var(--accent-soft)}
+.fc-head .uc-auto:disabled,.fav-folder .uc-auto:disabled{opacity:.55}
+/* 合集卡的「追更中」角标:与关注 UP 卡的「已关注」共用同一套 .uc-badge
+   (绝对定位钉在封面右上角,粉底白字=在追更);封面右下角仍是「N 个视频」计数,
+   两个角互不干扰,各给一层 z-index 压住封面图。 */
+.fc-cover .uc-badge,.thumb-wrap .uc-badge{z-index:2}
 .fc-cover .fc-count{position:absolute;right:8px;bottom:8px;z-index:2;background:rgba(20,21,24,.72);color:#fff;
   font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:5px}
-.fav-folder .uc-auto{flex:0 0 auto;min-width:110px}
+/* 行式列表里控件固定成右侧一列，逐行扫画质时对得齐 */
+.fav-folder .uc-auto{min-width:96px}
 
 /* ---------- 空态 / 新内容提示 ---------- */
 .empty{text-align:center;color:var(--text-mute);font-size:13px;padding:44px 20px;
@@ -366,8 +397,7 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .back-top:hover{color:var(--accent);border-color:var(--accent-bright)}
 .back-top svg{width:16px;height:16px}
 
-/* ---------- 面板 / 工具行(关注 UP 添加行) ---------- */
-.panel{background:var(--card);border:1px solid var(--line);border-radius:12px;padding:14px 16px;margin-bottom:14px}
+/* ---------- 工具行(下载批量条等) ---------- */
 .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .toolbar.tight{padding:8px 0 4px;border:none;background:none}
 .tb-note{font-size:12px;color:var(--text-mute);margin-left:auto}

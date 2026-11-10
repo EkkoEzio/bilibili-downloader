@@ -420,6 +420,7 @@ const _itemExtras = {
   progressCard: null,
   warnHtml: () => '',
   isDownloaded: () => false,
+  downloadState: () => '',
   onChecksEmpty: null,
 };
 
@@ -451,8 +452,16 @@ export function renderLibList(pairs, container) {
     if (_itemExtras.isProgressCard(it)) {
       return _itemExtras.progressCard(it, isGrid, checkHtml, checkedCls);
     }
-    const badgeHtml = (state.mode !== 'downloads' && _itemExtras.isDownloaded(it.url))
-      ? `<span class="dl-badge">${icon('check')}已下载</span>` : '';
+    // 下载状态标记:已下载 / 下载中。网格卡挂封面右上角,与合集卡的「追更中」
+    // 共用同一枚角标(.uc-badge);行式列表的封面只有 150px 宽,挂角标会挤,
+    // 保持行内浅底小标签——两档状态在两种视图里都给,只是位置不同。
+    const dlState = state.mode !== 'downloads' ? _itemExtras.downloadState(it.url) : '';
+    const badgeHtml = dlState === 'done'
+      ? `<span class="dl-badge">${icon('check')}已下载</span>`
+      : (dlState === 'active' ? '<span class="dl-badge active">下载中</span>' : '');
+    const coverBadgeHtml = dlState === 'done'
+      ? `<span class="uc-badge ok">${icon('check')}已下载</span>`
+      : (dlState === 'active' ? '<span class="uc-badge dl">下载中</span>' : '');
     const pct = it.watched_pct || 0;
     const showProgress = it.duration && pct > 0 && pct < 100;
     const watchbar = showProgress
@@ -506,9 +515,9 @@ export function renderLibList(pairs, container) {
       ${checkHtml}
       <div class="${thumbCls}">
         <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
-        ${durHtml}${playHtml}
+        ${durHtml}${playHtml}${coverBadgeHtml}
       </div>
-      <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}${badgeHtml}</div>
+      <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}</div>
       <div class="vi-meta">${metaHtml}</div>
       ${watchbar}
       ${warnHtml}

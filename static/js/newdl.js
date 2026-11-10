@@ -5,7 +5,7 @@ import { escapeHtml, escapeAttr, formatDuration, pageFromUrl,
 import { goPage, isUrlDownloaded, itemBusinessId } from './lib.js';
 import { closeDrawer } from './drawer.js';
 import { announce, setBusy, withPending } from './confirm.js';
-import { subscribeProgress } from './pages/downloads.js?v=20261104a';
+import { subscribeProgress } from './pages/downloads.js?v=20261110g';
 import { QUALITY_OPTIONS } from './quality.js';
 
 let _singleUrl = '';
