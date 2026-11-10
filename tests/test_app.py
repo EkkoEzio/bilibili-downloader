@@ -901,7 +901,7 @@ def test_frontend_modal_uses_theme_vars():
     """共享原生确认框使用主题背景，深色模式下内容保持可读。"""
     html = _tpl()
     assert '<dialog class="confirm-dialog" id="confirm-dialog"' in html
-    css_start = html.find(".confirm-dialog {")
+    css_start = html.find(".confirm-dialog{")
     assert css_start > 0
     assert "var(--bg-card)" in html[css_start:css_start + 300], \
         "确认框应使用 var(--bg-card)"
@@ -950,19 +950,21 @@ def test_frontend_feed_and_subs_are_separate_pages():
     assert "local_ups" not in feed_js, "feed 页不应再承载订阅管理"
 
 
-def test_frontend_sidebar_pages():
-    """左侧菜单七个页面,顺序:首页推荐/关注动态/追更合集/我的收藏/稍后再看/
-    观看历史/下载记录;左下角设置在前、账号在后。"""
+def test_frontend_topbar_pages():
+    """顶栏八个页面,顺序:首页推荐/关注动态/关注 UP/追更合集/我的收藏/稍后再看/
+    观看历史/下载记录;右侧操作区设置在前、账号在后,新建下载常驻。"""
     html = _tpl()
+    assert 'class="topbar"' in html, "应使用顶栏导航(2026-11-10 终选 B 版)"
     tags = [f'data-page="{p}"' for p in
-            ("home", "feed", "seasons", "fav", "later", "history", "downloads")]
+            ("home", "feed", "subs", "seasons", "fav", "later", "history", "downloads")]
     pos = [html.find(t) for t in tags]
-    assert all(p >= 0 for p in pos), f"缺侧边栏页面:{[t for t, p in zip(tags, pos) if p < 0]}"
-    assert pos == sorted(pos), "侧边栏页面顺序不对"
-    for label in ("首页推荐", "关注动态", "追更合集", "我的收藏", "稍后再看", "观看历史", "下载记录"):
+    assert all(p >= 0 for p in pos), f"缺顶栏页面:{[t for t, p in zip(tags, pos) if p < 0]}"
+    assert pos == sorted(pos), "顶栏页面顺序不对"
+    for label in ("首页推荐", "关注动态", "关注 UP", "追更合集", "我的收藏", "稍后再看", "观看历史", "下载记录"):
         assert label in html
-    foot = html[html.find('class="sidebar-foot"'):]
-    assert "openDrawer('account')" in foot, "左下角应有账号入口"
+    right = html[html.find('class="tb-right"'):]
+    assert "openDrawer('account')" in right, "顶栏右侧应有账号入口"
+    assert "openDrawer('newdl')" in right, "顶栏右侧应有新建下载入口"
     assert "openDrawer('settings')" not in html, "设置已并回账号抽屉,不再单独入口"
 
 
@@ -2199,35 +2201,36 @@ def test_up_card_auto_is_single_merged_control():
         "未开启态应以「不下载」为当前选中项(而非误导性的「自动下载」占位)"
     assert "停止下载" not in feed_js, "选项文案统一为「不下载」"
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    assert "select.uc-auto.on" in css, "开启态控件应有强调色样式"
-    up_grid = [line.strip() for line in css.splitlines()
-               if line.strip().startswith(".up-grid")]
-    assert up_grid and "minmax(var(--card-min), 1fr)" in up_grid[0], \
-        "UP 卡须与视频卡一致(弹性铺满整行),固定宽度会在宽屏右侧空出一整列"
-    assert ".up-card .uc-actions > button { flex: 0 0 auto; width: 56px; }" in css, \
+    assert ".uc-auto" in css, "清晰度/自动下载合并控件应有样式"
+    assert ".uc-auto.on" in css and "background-color:var(--accent-soft)" in css, \
+        "开启态应有强调样式,且用 background-color 长属性(否则 shorthand 覆盖自绘箭头)"
+    assert ".up-card .uc-actions > button{flex:0 0 auto;width:64px;padding:0;justify-content:center;white-space:nowrap}" in css, \
         "关注/不关注按钮必须等宽,切换时不跳动"
-    assert "flex: 1 1 auto" in css, "下拉占满控件条剩余宽度"
+    assert "flex:1 1 auto" in css, "下拉占满控件条剩余宽度"
     # 原生 select 的三角钉死在右边框上,加宽/改 padding 都推不动;
     # 必须 appearance:none 自绘箭头,才能让箭头与右边框留出间距
-    assert "appearance: none" in css and "background-position: right 6px center" in css, \
+    assert "appearance:none" in css and "background-position:right 6px center" in css, \
         "下拉须自绘箭头(appearance:none + background-position),否则三角贴右边框"
-    assert "background-color: var(--info-soft)" in css, \
-        "开启态须用 background-color 长属性(追更态用信息蓝),否则 shorthand 会覆盖自绘箭头"
 
 
-def test_action_bar_rendered_at_top():
-    """批量操作条固定在顶部(覆盖 sticky 页头),不再放屏幕底部。
+def test_action_bar_bottom_pill():
+    """批量操作条为底部居中胶囊(终选 B 站 Next 设计)。
 
-    回归:勾选卡片后「下载选中」在屏幕底部,鼠标要从卡片区长途移动;
-    顶部条让按钮出现在勾选动作发生的同一区域。窄屏保留底部(拇指可达)。
+    出现时 .content 预留底部空间,不遮末排卡片;隐藏态用 transform 收起,
+    不占布局。此前的「顶部条」回归点由终选设计替代,如需回改请连同本测试。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    assert "top: 0" in css and "bottom: auto" not in css.split("@media")[0], \
-        "桌面操作条应固定在顶部"
-    assert ".action-bar-open .content { padding-bottom: 104px; }" not in css, \
-        "顶部条不遮内容,不再需要底部补偿"
-    mobile = css[css.find("@media (max-width: 860px)"):]
-    assert "bottom: 0" in mobile, "窄屏应保留底部操作条"
+    # 静态规则必须落在响应式断点之前(桌面与窄屏同用底部胶囊)
+    bar_at = css.index(".action-bar{")
+    mq_at = css.find("@media (max-width")
+    assert bar_at != -1 and (mq_at == -1 or bar_at < mq_at), \
+        "操作条规则不应塞进响应式断点内"
+    assert ".action-bar{position:fixed;left:50%;bottom:22px;" in css, \
+        "操作条应固定在底部居中(胶囊)"
+    assert ".action-bar.show{transform:translate(-50%,0);opacity:1;" in css, \
+        "勾选后应以 .show 浮现"
+    assert "body.action-bar-open .content{padding-bottom:150px}" in css, \
+        "出现操作条时内容区应预留底部空间,不遮末排卡片"
 
 
 # ---------- 合集/收藏夹自动下载订阅 ----------
@@ -2439,22 +2442,35 @@ def test_seasons_overview_orders_auto_first_then_time():
     assert '"mtime"' in src, "合集列表解析必须保留 mtime,否则组内无法按时间排序"
 
 
-def test_up_card_matches_video_card_footprint():
-    """UP 卡片与视频卡片同尺寸:同样的网格列宽 + 16:9 封面区。
+def test_up_card_poster_cover():
+    """UP 卡为海报式:16:9 封面,关注/清晰度控件条压在封面底部。
 
-    控件压在封面底部而不是另起一行,整卡高度与 .video-item 基本一致。
+    DOM 里 uc-actions 嵌在 uc-thumb 内;控件条必须绝对定位压底,否则会从
+    52px 封面里溢出、竖着堆在头像下方(2026-11-10 真实页回归)。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    grid = ("display: grid; grid-template-columns: repeat(auto-fill, "
-            "minmax(var(--card-min), 1fr)); gap: var(--card-gap);")
-    assert f".lib-grid {{ {grid} }}" in css, "视频网格列宽应保持"
-    assert f".up-grid {{ {grid} }}" in css, "UP 网格列宽必须与视频网格一致"
-    # 列宽下限收敛到 :root 令牌:两处各写一串数字时,改卡片大小必然漏一处
     assert "--card-min:" in css and "--card-gap:" in css, \
-        "卡片列宽/间距必须由 :root 令牌单点控制"
-    block = css[css.index(".up-card {"):css.index(".up-list {")]
-    assert "aspect-ratio: 16/9" in block, "封面区应与视频封面同为 16:9"
-    assert "position: absolute" in block, "控件条应压在封面底部,不额外占行"
+        "卡片列宽下限/间距必须由 :root 令牌单点控制"
+    grid_spec = "minmax(var(--card-min),1fr)"
+    for sel in (".lib-grid{", ".up-grid{"):
+        rules = [ln for ln in css.splitlines() if ln.replace(" ", "").startswith(sel)]
+        assert rules and grid_spec in rules[0], \
+            "所有内容网格必须共用同一弹性轨道:同一窗口跨页等宽,任何宽度不留空带"
+    assert "minmax(min(var(--card-min),100%)" not in css, \
+        "下限含百分比会让 auto-fill 退回 min-content 数列,列数塌缩成巨卡(2026-11-10 回归)"
+    assert "--card-max" not in css, \
+        "固定上限会被 auto-fill 按上限计列数,宽窗口留下接近一张卡宽的空带(2026-11-10 首页回归)"
+    assert 'page[data-page="fav"] .lib-grid' not in css, \
+        "收藏/合集总览已并入统一网格规格,不再需要独立覆盖"
+    assert css.count("max-height:220px") >= 3, \
+        "视频/UP/收藏封面限高必须统一为 220px"
+    block = css[css.index(".up-card{"):css.index(".uc-text{")]
+    assert "aspect-ratio:16/9" in block and "max-height:220px" in block, \
+        "封面区应为 16:9 且限高,单卡全宽时不至于巨高"
+    assert "position:absolute" in block, "控件条应绝对定位压在封面底部"
+    assert ".up-card .uc-actions > button{flex:0 0 auto;width:64px;padding:0;justify-content:center;white-space:nowrap}" in css, \
+        "关注/取消关注按钮必须等宽且单行"
+    assert ".up-list .up-card{flex-direction:row" in css, "列表模式应为行式"
 
 
 def test_content_area_fills_width_without_cap():
@@ -2465,7 +2481,8 @@ def test_content_area_fills_width_without_cap():
     迫变小。卡墙是浏览型内容,多宽的屏只是多一列,不需要阅读宽度限制。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    content = [line for line in css.splitlines() if line.startswith(".content {")]
+    content = [line for line in css.splitlines()
+               if line.replace(" ", "").startswith(".content{")]
     assert content, "应存在 .content 规则"
     assert "max-width" not in content[0], \
         "内容区不该设宽度上限:宽屏两侧会留出空带,卡片也跟着变小"

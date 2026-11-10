@@ -23,6 +23,20 @@ const AUTH_SOURCE_LABELS = {
   none: '未选择',
 };
 
+/* 顶栏先用上次会话的账号名渲染,状态请求回来前不闪「未登录」;
+   真实状态(含已退出)由 renderLoginStatus 校验后修正。 */
+try {
+  const last = JSON.parse(localStorage.getItem('bd_acct_last') || 'null');
+  if (last && last.uname) {
+    const sideText = document.getElementById('account-side-text');
+    const dot = document.getElementById('account-dot');
+    if (sideText && dot) {
+      sideText.textContent = last.uname;
+      dot.className = 'dot ok';
+    }
+  }
+} catch {}
+
 function invalidateLoginStatus() {
   _statusSequence++;
   const controller = _statusController;
@@ -113,6 +127,7 @@ function renderLoginStatus(status, networkError = '') {
   if (loggedIn) {
     const vip = r.vip ? ' · 大会员' : '';
     const uname = r.uname || '已登录账号';
+    try { localStorage.setItem('bd_acct_last', JSON.stringify({ uname })); } catch {}
     sideText.textContent = uname;
     dot.className = 'dot ok';
     acctName.textContent = uname + vip;
@@ -120,6 +135,7 @@ function renderLoginStatus(status, networkError = '') {
     logoutBtn.style.display = '';
     tabsWrap.style.display = 'none';
   } else {
+    try { localStorage.removeItem('bd_acct_last'); } catch {}
     sideText.textContent = networkError ? '状态未知' : '未登录';
     dot.className = 'dot warn';
     acctName.textContent = networkError ? '无法确认登录状态' : '未登录';

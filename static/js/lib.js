@@ -364,7 +364,12 @@ export async function cachedLoad(opts) {
       if (isAbortError(error)) return;
     }
 
-    if (shown === null && opts.showLoading && current()) opts.showLoading();
+    if (shown === null && current()) {
+      /* 无缓存可显示:先铺骨架占位卡(消除首屏空白数秒);页面自带加载态的
+         (传了 showLoading)仍用自己的 */
+      if (opts.showLoading) opts.showLoading();
+      else renderListSkeleton();
+    }
     const freshResponse = await getJSON(apiUrl, { signal: controller.signal });
     if (!current()) return;
     if (!freshResponse.ok) {
@@ -394,6 +399,19 @@ export async function cachedLoad(opts) {
     const active = _bgInFlight.get(cacheKey);
     if (active && active.generation === generation) _bgInFlight.delete(cacheKey);
   }
+}
+
+/* ---------- 首屏骨架:无缓存数据时先铺占位卡,数据到达后被整体替换 ---------- */
+export function renderListSkeleton() {
+  const d = libDom();
+  if (!d || !d.list) return;
+  const isGrid = state.view === 'grid';
+  const n = Math.max(4, Math.min(curChunk(), 24));
+  d.list.className = 'lib-list' + (isGrid ? ' lib-grid' : '');
+  const card = isGrid
+    ? '<div class="video-item sk" aria-hidden="true"><div class="sk-thumb sk-block"></div><div class="sk-line sk-block"></div><div class="sk-line w2 sk-block"></div></div>'
+    : '<div class="video-item lv sk" aria-hidden="true"><div class="sk-thumb sk-block"></div><div class="lv-body"><div class="sk-line sk-block"></div><div class="sk-line w2 sk-block"></div></div></div>';
+  d.list.innerHTML = card.repeat(n);
 }
 
 /* ---------- 列表项渲染（标准视频卡） ---------- */
@@ -516,7 +534,7 @@ export function toggleLibView() {
   state.shown = 0;
   const ctrl = page();
   if (ctrl.onViewToggle) ctrl.onViewToggle();
-  applyLibFilter();
+  renderPage();
 }
 
 /* ---------- 搜索过滤 ---------- */
@@ -526,7 +544,13 @@ export function getLibSearchQuery() {
   return el ? el.value.trim().toLowerCase() : '';
 }
 
-export function applyLibFilter() { renderPage(); }
+/* 搜索防抖:每个按键都全量重渲染,大列表连续输入会卡;静默 150ms 后只渲染一次。
+   视图切换要即时反馈,走 renderPage() 不走这里。 */
+let _filterTimer = null;
+export function applyLibFilter() {
+  clearTimeout(_filterTimer);
+  _filterTimer = setTimeout(renderPage, 150);
+}
 
 /* ---------- 勾选与批量操作 ---------- */
 function findVisibleCheckbox(libId) {
