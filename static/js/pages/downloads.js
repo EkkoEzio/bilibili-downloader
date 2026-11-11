@@ -83,7 +83,12 @@ function downloadState(url) {
 }
 
 function hasVisibleChecks() {
-  return document.querySelectorAll('.page.active input[data-libid]:checked').length > 0;
+  /* 必须同时看 state.checked:换页回下载页时列表里残留上一轮的旧卡片,
+     checkbox 的 checked 属性还在(goPage 只清状态、不清目标页 DOM),
+     只按 DOM 判断会把幽灵勾选当成「用户正在选择」,整体重绘被永久搁置,
+     卡片勾选态/操作条/计数三态从此不同步(2026-11-11 实测复现)。 */
+  return state.checked.size > 0
+    && document.querySelectorAll('.page.active input[data-libid]:checked').length > 0;
 }
 
 function updateBadge(tasks) {
@@ -141,14 +146,6 @@ function taskNeedsCardRebuild(previous, next) {
     !== JSON.stringify(next[field] ?? null));
 }
 
-function updateDownloadsMeta() {
-  if (state.mode !== 'downloads') return;
-  const done = state.items.filter(item => item.status === 'done').length;
-  const active = state.items.filter(item => TASK_ACTIVE.includes(item.status)).length;
-  const d = libDom();
-  if (d.meta) d.meta.textContent = `已下载 ${done} 条` + (active ? ` · 进行中 ${active}` : '');
-}
-
 /* 将任务快照投影到 UI。progress/speed/eta 变化只更新卡片；新增、删除、状态
    或排序字段变化才整体重绘。有可见勾选时延后重绘，但 Map 已按稳定 ID 更新，
    因此批量操作仍精确指向原任务。 */
@@ -160,7 +157,6 @@ function commitTaskCollection(tasks, options = {}) {
   }
 
   replaceItems(orderedTaskItems(tasks));
-  updateDownloadsMeta();
   const forceRender = options.forceRender === true;
   if (forceRender && hasVisibleChecks()) {
     _dirty = true;
@@ -450,7 +446,7 @@ export async function cancelTask(taskId, button = null) {
 function taskWarnHtml(it) {
   const taskArg = inlineStringArg(it.task_id);
   if (it.rename_conflict) {
-    return `<div class="dp-err">名称冲突：已有同名文件
+    return `<div class="dp-err dp-err-actions">名称冲突：已有同名文件
       <button class="ghost" onclick="resolveTaskConflict(${taskArg},'rename_with_index',this)">加 (1) 改名</button>
       <button class="ghost" onclick="resolveTaskConflict(${taskArg},'open_existing',this)">打开现有文件</button>
       <button class="ghost" onclick="resolveTaskConflict(${taskArg},'cancel',this)">忽略</button></div>`;
@@ -699,4 +695,13 @@ registerPage('downloads', {
   actionBar: 'delete',
   emptyRetry: false,
   emptyHint: (q) => q ? '没有匹配结果（试试其他关键词）' : '还没有下载记录，点右上角「新建下载」开始',
+  /* 统计口径唯一由 metaText 提供,不再旁路直写 meta 行:旧 updateDownloadsMeta
+     先写「已下载 N 条」,renderDefaultList 随后覆盖成「共 N 条」,SSE 增量路径
+     又写回——同一位置两种文案来回跳(2026-11-11 复现)。 */
+  metaText: (q, pairs) => {
+    if (q) return `共 ${state.items.length} 条 · 匹配 ${pairs.length}`;
+    const done = state.items.filter(item => item.status === 'done').length;
+    const active = state.items.filter(item => TASK_ACTIVE.includes(item.status)).length;
+    return `已下载 ${done} 条` + (active ? ` · 进行中 ${active}` : '');
+  },
 });

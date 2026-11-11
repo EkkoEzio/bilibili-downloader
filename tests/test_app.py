@@ -1073,7 +1073,7 @@ def test_frontend_uplist_drawer_removed():
     assert "管理 UP 清单" not in html
     assert 'id="up-check-btn"' in html, "订阅页应有「立即检查」按钮"
     assert 'id="up-add-input"' in html
-    assert "up-card mgr" in html, "UP 卡片应带清晰度/移除控件"
+    assert "upAutoControlHtml" in html, "UP 卡片应带清晰度/移除控件"
 
 
 def test_frontend_unified_toolbar_everywhere():

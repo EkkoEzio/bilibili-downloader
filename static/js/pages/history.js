@@ -67,7 +67,7 @@ async function fetchHistoryPage(generation, controller) {
     if (isAbortError(error) || !historyRequestIsCurrent(generation, controller)) return false;
     if (nextPage === 1) {
       libDom().list.innerHTML =
-        `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="loadHistory()">${icon('refresh')} 重新加载</button></div>`;
+        `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="loadHistory()">${icon('refresh')} 重试</button></div>`;
       _histHasMore = false;
     } else {
       // 翻页失败:保留已渲染的首页内容,不把整列表换成错误占位;

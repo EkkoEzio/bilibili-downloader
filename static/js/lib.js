@@ -438,6 +438,9 @@ export function renderLibList(pairs, container) {
     } else {
       container.innerHTML = `<div class="empty">${hint}<br><button class="ghost" data-lib-retry>${icon('refresh')} 重新加载</button></div>`;
     }
+    // 空态分支没有可勾选 DOM,不会经过末尾的 updateLibCount;在这里补一次,
+    // 保证换页/清空后操作条与计数总是和 state.checked 对齐。
+    updateLibCount();
     return;
   }
   const isGrid = state.view === 'grid';
@@ -619,7 +622,11 @@ export function updateActionBar() {
   const onLibPage = !!ctrl
     && (ctrl.actionBarVisible ? ctrl.actionBarVisible() : true)
     && !!document.querySelector(`.page.active[data-page="${state.mode}"]`);
-  const n = document.querySelectorAll('.page.active input[data-libid]:checked').length;
+  /* 勾选口径 = state.checked(唯一事实源)∩ 当前 DOM。goPage 清空后,目标页
+     残留的旧卡片可能还带着 checked 属性(幽灵勾选),纯 DOM 计数会把操作条
+     错误地留在屏上——勾选态/操作条/计数三态不同步(2026-11-11 复现)的根因之一。 */
+  const n = [...document.querySelectorAll('.page.active input[data-libid]:checked')]
+    .filter((cb) => state.checked.has(String(cb.dataset.libid || ''))).length;
   const visible = !!onLibPage && n > 0;
   bar.classList.toggle('show', visible);
   document.body.classList.toggle('action-bar-open', visible);

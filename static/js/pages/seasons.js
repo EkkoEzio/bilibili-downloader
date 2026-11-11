@@ -140,6 +140,8 @@ function showOverview() {
   document.getElementById('season-back-btn').style.display = 'none';
   document.getElementById('season-page-title').textContent = '追更合集';
   document.getElementById('season-page-title').classList.add('sr-only');
+  const search = document.querySelector('.page[data-page="seasons"] .lib-search');
+  if (search) search.placeholder = '搜索合集 / 标题 / UP 主';
   document.getElementById('meta-seasons').textContent =
     _seasons.length ? `共 ${_seasons.length} 个追更中的合集` : '';
 }
@@ -269,6 +271,8 @@ export async function seasonEnter(sid) {
   replaceItems([]);
   state.checked.clear();
   state.shown = 0;
+  const search = document.querySelector('.page[data-page="seasons"] .lib-search');
+  if (search) search.placeholder = '搜索标题 / UP 主';
   document.getElementById('season-overview').style.display = 'none';
   document.getElementById('list-seasons').style.display = '';
   document.getElementById('season-back-btn').style.display = '';

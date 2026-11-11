@@ -5,7 +5,7 @@ import { escapeHtml, escapeAttr, formatDuration, pageFromUrl,
 import { goPage, isUrlDownloaded, itemBusinessId } from './lib.js';
 import { closeDrawer } from './drawer.js';
 import { announce, setBusy, withPending } from './confirm.js';
-import { subscribeProgress } from './pages/downloads.js?v=20261110g';
+import { subscribeProgress } from './pages/downloads.js?v=20261111a';
 import { QUALITY_OPTIONS } from './quality.js';
 
 let _singleUrl = '';
@@ -116,6 +116,7 @@ function renderParseResult(info, url, loggedIn) {
     warnHtml = '<div class="warn">未登录，可能只能下载公开画质。如需 1080P+/4K 大会员画质，请先登录。</div>';
   }
   if (info.is_multi_part && info.parts && info.parts.length > 0) {
+    const thumbnail = safeHttpUrl(info.thumbnail, { httpsOnly: true });
     const partOptions = info.parts.map(p => {
       const page = nonNegativeInt(p.page) || 1;
       return `<option value="${page}">P${page} · ${escapeHtml(p.title)} (${formatDuration(p.duration)})</option>`;
@@ -123,8 +124,9 @@ function renderParseResult(info, url, loggedIn) {
     box.innerHTML = `
       ${warnHtml}
       <div class="video-card">
+        <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'">
         <div class="video-info">
-          <div class="vt">${escapeHtml(info.title)} <span style="color:var(--accent);font-size:12.5px;">（共 ${info.parts.length} P）</span></div>
+          <div class="vt">${escapeHtml(info.title)} <span class="vt-part">（共 ${info.parts.length} P）</span></div>
           <div class="vm">UP主：${escapeHtml(info.uploader || '-')}</div>
           <div class="btn-row"><select id="part-select" aria-label="选择分 P"></select></div>
           <div id="part-formats" class="mt-10"><div class="hint"><span class="spinner"></span>加载清晰度...</div></div>

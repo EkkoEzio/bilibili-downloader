@@ -7,7 +7,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>bilibili download</title>
-<link rel="stylesheet" href="/static/css/main.css?v=20261110g">
+<link rel="stylesheet" href="/static/css/main.css?v=20261111a">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -58,7 +58,7 @@
       </button>
     </nav>
     <div class="tb-right">
-      <button class="tb-btn" onclick="openDrawer('newdl')">
+      <button class="primary tb-btn" onclick="openDrawer('newdl')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
         <span>新建下载</span>
       </button>
@@ -277,7 +277,7 @@
   <div class="drawer-panel" id="dpanel-account">
     <div class="drawer-head">
       <h2>账号</h2>
-      <div style="display:flex;align-items:center;gap:10px;">
+      <div class="drawer-head-actions">
         <span class="save-flash" id="save-flash" role="status" aria-live="polite"><svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg>已自动保存</span>
         <button class="quiet icon-only" type="button" data-drawer-close aria-label="关闭侧边面板" onclick="closeDrawer()">
           <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
@@ -307,33 +307,33 @@
         <div class="tab-panel active" id="panel-qrcode" role="tabpanel" aria-labelledby="tab-qrcode">
           <div id="qrcode-img" aria-live="polite"></div>
           <div id="qr-status" role="status" aria-live="polite" aria-atomic="true"></div>
-          <div class="btn-row" style="justify-content:center;margin-top:10px;">
+          <div class="btn-row mt-10 center">
             <button class="primary" id="qrcode-btn" onclick="showQrcode()">显示二维码</button>
           </div>
           <div class="hint" style="text-align:center;">用手机 B 站 App 扫码确认,一次登录长期有效。</div>
         </div>
 
         <div class="tab-panel" id="panel-browser" role="tabpanel" aria-labelledby="tab-browser" hidden>
-          <p style="font-size:13px;color:var(--text-soft);margin-bottom:12px;">直接读取你 Edge 浏览器中已有的 B 站登录态,无需再次登录。前提是你已在 Edge 里登录过 bilibili.com。</p>
-          <button class="primary" id="browser-login-btn" onclick="useBrowser()" style="width:100%;">使用 Edge 登录态</button>
+          <p class="panel-note">直接读取你 Edge 浏览器中已有的 B 站登录态,无需再次登录。前提是你已在 Edge 里登录过 bilibili.com。</p>
+          <button class="primary full" id="browser-login-btn" onclick="useBrowser()">使用 Edge 登录态</button>
         </div>
 
         <div class="tab-panel" id="panel-cookie" role="tabpanel" aria-labelledby="tab-cookie" hidden>
-          <textarea id="cookie-txt-input" aria-label="cookies.txt 内容" placeholder="粘贴 cookies.txt 内容(Netscape 格式,需含 SESSDATA)..." style="margin-bottom:10px;"></textarea>
-          <button class="primary" id="cookie-import-btn" onclick="uploadCookieTxt()" style="width:100%;">导入 cookies.txt</button>
+          <textarea id="cookie-txt-input" aria-label="cookies.txt 内容" placeholder="粘贴 cookies.txt 内容(Netscape 格式,需含 SESSDATA)..."></textarea>
+          <button class="primary full" id="cookie-import-btn" onclick="uploadCookieTxt()">导入 cookies.txt</button>
           <div class="hint">用浏览器扩展 "Get cookies.txt" 导出后粘贴到这里。</div>
         </div>
       </div>
 
       <!-- 全局设置(改动即生效) -->
       <div class="set-group">下载</div>
-      <div class="set-row" style="flex-direction:column;align-items:stretch;gap:6px;">
+      <div class="set-row set-row-column">
         <div class="set-main">
           <div class="set-name">下载目录</div>
           <div class="set-desc">路径含 ~ 自动展开,目录不存在会自动创建</div>
         </div>
-        <div style="display:flex;gap:8px;">
-          <input type="text" id="config-dir-input" aria-label="下载目录" style="flex:1;min-width:140px;" onchange="saveDir()">
+        <div class="set-dir">
+          <input type="text" id="config-dir-input" aria-label="下载目录" class="set-dir-input" onchange="saveDir()">
           <button class="ghost" onclick="resetConfigDir()">默认</button>
         </div>
       </div>
@@ -430,7 +430,7 @@
     </div>
     <div class="drawer-body">
       <textarea id="dl-input" aria-label="B 站视频、收藏夹、合集或 UP 主页链接" placeholder="粘贴链接,自动识别:&#10;· 单个视频链接 → 选清晰度下载&#10;· 多个链接(每行一个)/ 收藏夹 / 合集 / UP 主页链接 → 批量勾选下载"></textarea>
-      <div class="btn-row" style="margin-top:10px;">
+      <div class="btn-row mt-10">
         <button class="primary" id="parse-btn" onclick="smartParse()">解析</button>
       </div>
       <div id="parse-result" role="status" aria-live="polite" aria-atomic="true"></div>
@@ -453,6 +453,6 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/js/app.js?v=20261110g"></script>
+<script type="module" src="/static/js/app.js?v=20261111a"></script>
 </body>
 </html>

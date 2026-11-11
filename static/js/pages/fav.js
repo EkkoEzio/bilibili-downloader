@@ -3,7 +3,7 @@ import { registerPage, state, libDom, renderDefaultList, cachedLoad,
          getLibSearchQuery, replaceItems } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { collectionAutoControl, loadCollectionSubs,
-         collSubKey, collectionSub } from './seasons.js?v=20261110g';
+         collSubKey, collectionSub } from './seasons.js?v=20261111a';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
@@ -34,6 +34,8 @@ function showFolders() {
   document.getElementById('fav-search').style.display = '';
   document.getElementById('fav-page-title').textContent = '我的收藏';
   document.getElementById('fav-page-title').classList.add('sr-only');
+  const search = document.getElementById('fav-search');
+  if (search) search.placeholder = '搜索收藏夹 / 标题 / UP 主';
   document.getElementById('meta-fav').textContent =
     _favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '';
 }
@@ -120,12 +122,13 @@ const coverMarkup = (cover) => {
       ${image}`;
 };
 
-const _card = (cover, count, title, id) => {
+const _card = (cover, count, title, id, badge = '') => {
   const itemCount = nonNegativeInt(count);
   return `
   <div class="fav-card" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
     <div class="fc-cover">
       ${coverMarkup(cover)}
+      ${badge}
       <span class="fc-count">${itemCount} 个视频</span>
     </div>
     <div class="fc-head">
@@ -137,15 +140,18 @@ const _card = (cover, count, title, id) => {
 
 const folderCard = (f) => {
   const learnedCover = _favLearnedCovers.get(String(f.id)) || '';
+  /* 已订阅自动下载的收藏夹与追更合集卡共用同一枚「追更中」角标:
+     合集卡恒挂、收藏夹卡只在订阅后挂,两页状态语言一致。 */
+  const badge = collectionSub('fav', f.id) ? '<span class="uc-badge on">追更中</span>' : '';
   return _card(normalizedCover(f.cover) || learnedCover,
-               f.media_count, f.title || '(未命名)', f.id);
+               f.media_count, f.title || '(未命名)', f.id, badge);
 };
 
 function folderRow(f) {
   const itemCount = nonNegativeInt(f.media_count);
   return `
     <div class="fav-folder" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(f.id ?? ''))}">
-      <div class="fav-icon">${escapeHtml((f.title || '?').slice(0, 1))}</div>
+      <div class="fav-icon">${icon('folder')}</div>
       <div class="fav-main">
         <div class="fav-name">${escapeHtml(f.title)}</div>
         <div class="fav-count">${itemCount} 个视频</div>
@@ -162,6 +168,8 @@ function showList(title) {
   document.getElementById('fav-search').style.display = '';
   document.getElementById('fav-page-title').textContent = title;
   document.getElementById('fav-page-title').classList.remove('sr-only');
+  const search = document.getElementById('fav-search');
+  if (search) search.placeholder = '搜索标题 / UP 主';
 }
 
 export async function favEnter(fid) {

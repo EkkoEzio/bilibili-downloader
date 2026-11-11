@@ -170,7 +170,7 @@ function upCardHtml(u) {
     ? '<span class="uc-badge on">已关注</span>'
     : '<span class="uc-badge">未关注</span>';
   return `
-  <div class="up-card mgr">
+  <div class="up-card">
     <div class="uc-thumb">
       <div class="uc-cover">
         <img class="uc-face" src="${escapeAttr(u.face)}" alt="" onerror="this.style.visibility='hidden'">

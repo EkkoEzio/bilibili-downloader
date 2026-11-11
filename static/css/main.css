@@ -18,7 +18,7 @@
   --text-main:#18191c; --text-soft:#61666d; --text-mute:#9499a0;
   --ink:var(--text-main); --sub:var(--text-soft); --faint:var(--text-mute);
 
-  /* 双色系统:粉=行动/选中,蓝=信息/追更 */
+  /* 双色系统:粉=行动/选中/追更,蓝=信息(推荐理由/下载中) */
   --accent:#f25d8e; --accent-hover:#fb7299; --accent-bright:#fb7299;
   --accent-soft:rgba(251,114,153,.10);
   --blue:#00aeec; --blue-soft:rgba(0,174,236,.09); --blue-solid:#0b7ba5;
@@ -59,7 +59,7 @@ body.dark{color-scheme:dark}
 body{font-family:var(--font);font-size:14px;line-height:1.55;background:var(--bg);color:var(--text-main)}
 button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 button svg{width:14px;height:14px}
-button.primary,button.ghost,button.quiet,button.danger,button.danger-solid,.tb-btn,.pink-btn{white-space:nowrap;flex-shrink:0}
+button.primary,button.ghost,button.quiet,button.danger,button.danger-solid{white-space:nowrap;flex-shrink:0}
 a{color:inherit;text-decoration:none}
 img{display:block}
 /* icon() 生成的 svg 只带 viewBox、不带 width/height 属性:容器若没有给尺寸规则,
@@ -99,9 +99,8 @@ body.action-bar-open .content{padding-bottom:150px}
 .nav-badge{display:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);
   color:#fff;font-family:var(--mono);font-size:10px;line-height:16px;text-align:center;font-weight:600}
 .tb-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
-.tb-btn{display:flex;align-items:center;gap:6px;height:32px;padding:0 15px;border-radius:99px;
-  background:var(--accent);color:#fff;font-size:12.5px;font-weight:600;transition:background .12s}
-.tb-btn:hover{background:var(--accent-hover)}
+/* 顶栏「新建下载」复用 button.primary(index.html 写 class="primary tb-btn",
+   tb-btn 只保留窄窗响应式),同一颗按钮不再有两套样式 */
 .tb-ic{width:32px;height:32px;border:1px solid var(--line);border-radius:99px;display:grid;place-items:center;color:var(--text-soft)}
 .tb-ic:hover{color:var(--text-main);border-color:var(--text-mute)}
 .tb-acct{display:flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:1px solid var(--line);
@@ -256,13 +255,20 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .dp-err{margin-top:6px;font-size:11.5px;color:var(--red);background:var(--red-soft);border-radius:7px;padding:5px 9px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dp-meta button{margin-left:auto}
+/* 名称冲突的处理按钮收进错误条:用卡内紧凑档 28px,错误条允许换行;
+   3 个 32px 描边按钮在 nowrap 小条里会溢出/撑高 */
+.dp-err.dp-err-actions{white-space:normal;overflow:visible;text-overflow:clip}
+.dp-err-actions .ghost{height:28px;font-size:12px;padding:0 10px;margin:4px 6px 0 0}
 
 /* ---------- 关注 UP 卡(海报式:封面 16:9,控件条压在封面底部) ---------- */
 .up-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(var(--card-min),1fr));gap:var(--card-gap)}
 .up-list{display:flex;flex-direction:column;gap:8px}
-.up-card{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
-  border-radius:12px;overflow:hidden;transition:transform .16s,box-shadow .16s,border-color .16s}
-.up-grid .up-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10);border-color:var(--accent-bright)}
+/* 三种卡(视频/UP/收藏·合集)统一外壳:无边框白卡,层次靠明度与悬浮阴影;
+   行式 UP 卡与行式收藏夹行同用「上浮 1px + 浅影」的 hover */
+.up-card{display:flex;flex-direction:column;background:var(--card);
+  border-radius:12px;overflow:hidden;transition:transform .16s,box-shadow .16s}
+.up-grid .up-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10)}
+.up-list .up-card:hover{transform:translateY(-1px);box-shadow:var(--shadow-sm)}
 .uc-thumb{position:relative;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
 .uc-cover{position:absolute;inset:0}
 .uc-face{width:100%;height:100%;object-fit:cover;transition:transform .2s}
@@ -284,8 +290,13 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .uc-actions .ghost:hover{background:#fff}
 .uc-actions .primary{height:28px;font-size:12px;padding:0 12px}
 .up-card .uc-actions > button{flex:0 0 auto;width:64px;padding:0;justify-content:center;white-space:nowrap}
+/* .uc-auto 两档属有意差异:UP 卡压在封面上(uc-actions)用 28px 可点档;
+   合集/收藏卡在白底正文(fc-head)用 20px 浅底标签档。 */
 .uc-auto{height:28px;font-size:12px;flex:1 1 auto;min-width:0}
 .uc-auto.on{border-color:var(--accent);color:var(--accent);background-color:var(--accent-soft)}
+/* 压在封面上的开启态必须实底粉白字(同 .uc-badge.on 的理由:
+   浅底粉字会糊进彩色封面,读不清) */
+.up-grid .uc-actions .uc-auto.on{color:#fff;border-color:transparent;background-color:var(--accent-bright)}
 .uc-text{padding:11px 13px 13px}
 .uc-name{font-size:13.5px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .uc-name a:hover{color:var(--accent)}
@@ -304,22 +315,23 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .up-card .primary,.up-card .ghost{height:28px;font-size:12px}
 
 /* ---------- 收藏夹 / 合集卡 ---------- */
-.fav-folder{display:flex;align-items:center;gap:13px;background:var(--card);border:1px solid var(--line);
-  border-radius:12px;padding:13px 16px;cursor:pointer;transition:border-color .12s,transform .12s}
-.fav-folder:hover{border-color:var(--accent-bright);transform:translateY(-1px)}
-.fav-card{background:var(--card);border:1px solid var(--line);border-radius:12px;overflow:hidden;cursor:pointer;
-  transition:transform .15s,box-shadow .15s,border-color .15s}
-.fav-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10);border-color:var(--accent-bright)}
+.fav-folder{display:flex;align-items:center;gap:13px;background:var(--card);
+  border-radius:12px;padding:9px 12px;cursor:pointer;transition:transform .12s,box-shadow .12s}
+.fav-folder:hover{transform:translateY(-1px);box-shadow:var(--shadow-sm)}
+.fav-card{background:var(--card);border-radius:12px;overflow:hidden;cursor:pointer;
+  transition:transform .15s,box-shadow .15s}
+.fav-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10)}
 .fav-icon{width:40px;height:40px;border-radius:10px;background:var(--accent-soft);color:var(--accent);
   display:grid;place-items:center;flex-shrink:0}
 .fav-icon svg{width:18px;height:18px}
 .fav-main{flex:1;min-width:0}
-.fav-name{font-size:14px;font-weight:600}
+.fav-name{font-size:13.5px;font-weight:600}
 .fav-count{font-size:12px;color:var(--text-mute);margin-top:2px;font-family:var(--mono)}
 .fav-arrow{color:var(--text-mute);flex-shrink:0}
 .fav-arrow svg{width:15px;height:15px}
-.fav-tag{display:inline-flex;font-size:10.5px;color:var(--blue);background:var(--blue-soft);
-  padding:1px 7px;border-radius:5px;margin-left:8px;vertical-align:1px}
+/* 「追更中」行式标签与网格角标(.uc-badge.on)同一粉色语言,只换形态 */
+.fav-tag{display:inline-flex;font-size:10.5px;color:var(--accent);background:var(--accent-soft);
+  padding:1px 7px;border-radius:5px;margin-left:6px;vertical-align:1px}
 .fc-cover{position:relative;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
 .fc-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .fc-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
@@ -379,7 +391,7 @@ body.dark .sk .sk-block::after{background:linear-gradient(90deg,transparent,rgba
 .ab-inner{display:flex;align-items:center;gap:14px;height:50px;padding:0 12px 0 20px;
   background:#10141a;color:#e8eaee;border-radius:99px;box-shadow:0 14px 40px rgba(16,20,26,.35)}
 body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
-.ab-count{font-size:13px}
+.ab-count{font-size:13px;white-space:nowrap;flex-shrink:0}
 .ab-count b{color:#ff9cbd;font-size:16px;font-weight:600;font-family:var(--mono)}
 .ab-sep{width:1px;height:20px;background:rgba(255,255,255,.16)}
 .ab-group{display:flex;gap:4px}
@@ -424,6 +436,14 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .btn-row{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .btn-row .primary{flex:none}
 .mt-8{margin-top:8px}.mt-10{margin-top:10px}
+.btn-row.center{justify-content:center}
+.full{width:100%}
+.drawer-head-actions{display:flex;align-items:center;gap:10px}
+.panel-note{font-size:13px;color:var(--text-soft);margin-bottom:12px}
+.set-row-column{flex-direction:column;align-items:stretch;gap:6px}
+.set-dir{display:flex;gap:8px}
+.set-dir-input{flex:1;min-width:140px}
+#cookie-txt-input{margin-bottom:10px}
 .hint{font-size:12px;color:var(--text-mute);line-height:1.6;margin-top:8px}
 .warn{font-size:12.5px;color:var(--amber);background:var(--amber-soft);border-radius:9px;padding:8px 12px;
   margin-bottom:10px;line-height:1.6}
@@ -458,6 +478,7 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .set-name{font-size:13px;font-weight:500}
 .set-desc{font-size:11.5px;color:var(--faint);margin-top:2px;line-height:1.5}
 .set-ctl{flex-shrink:0}
+.set-ctl select{min-width:96px}
 .tgl{position:relative;display:inline-block;width:34px;height:19px}
 .tgl input{position:absolute;opacity:0;width:100%;height:100%;margin:0;cursor:pointer}
 .tgl i{position:absolute;inset:0;border-radius:99px;background:var(--line);transition:background .15s;pointer-events:none}
@@ -472,6 +493,7 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .video-info{flex:1;min-width:0}
 .vt{font-size:14px;font-weight:600;line-height:1.5}
 .vm{font-size:12px;color:var(--text-mute);margin-top:4px}
+.vt-part{color:var(--accent);font-size:12.5px}
 .batch-head{font-size:13px;font-weight:700;margin-top:12px}
 .batch-scroll{max-height:260px;overflow-y:auto;border:1px solid var(--line-soft);border-radius:10px;
   margin-top:8px;background:var(--bg)}
