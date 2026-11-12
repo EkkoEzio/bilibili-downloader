@@ -7,18 +7,13 @@ import { registerPage, state, libDom, cachedLoad, getLibSearchQuery,
          upCardChunk, dismissFresh, refreshLib, maybeFillScreen, replaceItems,
          cancelCachedLoads } from '../lib.js';
 import { postJSON, postEmpty } from '../net.js';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, safeDecimalId, safeHttpUrl, nonNegativeInt,
          formatDay } from '../util.js';
-import { QUALITY_OPTIONS, QUALITY_CARD_LABELS } from '../quality.js';
+import { _qualityOptionsHtml } from './seasons.js?v=20261111b';
 import { loadAutoRefreshStatus } from '../settings.js';
-import { announce, withPending } from '../confirm.js';
-
-function qualityOptionHtml(value, current) {
-  const label = QUALITY_CARD_LABELS.get(value) ?? String(value);
-  const selected = value === current ? ' selected' : '';
-  return `<option value="${escapeAttr(value)}"${selected}>${escapeHtml(label)}</option>`;
-}
+import { announce, toast, withPending } from '../confirm.js';
 
 let _mergedUps = [];
 let _mergedTotal = 0;
@@ -97,10 +92,10 @@ export async function loadSubscriptions(force = false) {
     showLoading: () => {
       const d = libDom();
       d.meta.textContent = '';
-      d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载关注与自动下载清单...</div>';
+      d.list.innerHTML = loadingStateHtml('加载关注与自动下载清单…');
     },
     showError: (msg) => {
-      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadSubscriptions()">${icon('refresh')} 重试</button></div>`;
+      libDom().list.innerHTML = emptyStateHtml(escapeHtml(msg || '加载失败'), { retry: 'loadSubscriptions()' });
     },
     apply: (b) => {
       _mergedUps = mergeUps(b.items || [], b.local_ups || []);
@@ -133,16 +128,14 @@ function upAutoControlHtml(u) {
   // 不会把占位文字「自动下载」误读成"正在下载"。
   // 「不下载」固定在第一项,与追更合集/收藏夹卡片上的开关保持同一排序。
   if (u.auto) {
-    const options = QUALITY_OPTIONS
-      .map(([value]) => qualityOptionHtml(value, u.quality || '')).join('');
+    const options = _qualityOptionsHtml(u.quality || '');
     return `<select class="uc-auto on" data-mid="${escapeAttr(mid)}"
       aria-label="${escapeAttr(label)}的自动下载清晰度"
       title="新投稿自动下载中;改选换清晰度,选「不下载」即停止"
       onchange="upAutoChanged(this)">
       <option value="__off">不下载</option>${options}</select>`;
   }
-  const plainOptions = QUALITY_OPTIONS
-    .map(([value]) => qualityOptionHtml(value, null)).join('');
+  const plainOptions = _qualityOptionsHtml(null);
   return `<select class="uc-auto" data-mid="${escapeAttr(mid)}"
     aria-label="${escapeAttr(label)}的自动下载清晰度"
     title="当前不自动下载;选清晰度即开启"
@@ -194,8 +187,8 @@ function renderUps() {
     (u.uname || '').toLowerCase().includes(q) || String(u.mid).includes(q));
   d.list.className = 'lib-list';
   if (ups.length === 0) {
-    d.list.innerHTML = `<div class="empty">${q ? '没有匹配结果（试试其他关键词）'
-      : '还没有关注的 UP。在上方粘贴 UP 主页链接添加自动下载，或到 B 站关注后刷新。'}</div>`;
+    d.list.innerHTML = emptyStateHtml(q ? '没有匹配结果（试试其他关键词）'
+      : '还没有关注的 UP。在上方粘贴 UP 主页链接添加自动下载，或到 B 站关注后刷新。');
   } else {
     if (!_mergedShown) _mergedShown = upCardChunk();
     const shown = q ? ups : ups.slice(0, _mergedShown);
@@ -273,7 +266,7 @@ export async function upAutoChanged(sel) {
     }
   } catch (error) {
     announce(error.message || '操作失败', true);
-    alert(error.message || '操作失败');
+    toast(error.message || '操作失败');
   } finally {
     sel.disabled = false;
     renderUps();
@@ -282,7 +275,7 @@ export async function upAutoChanged(sel) {
 
 export async function upToggleFollow(mid, followedNow, button = null) {
   const normalizedMid = safeDecimalId(mid);
-  if (!normalizedMid) { alert('UP ID 无效'); return; }
+  if (!normalizedMid) { toast('UP ID 无效'); return; }
   const action = followedNow ? 'unfollow' : 'follow';
   // 不弹确认:取关后卡片立即翻转为「关注」,反悔成本为零。
   try {
@@ -295,7 +288,7 @@ export async function upToggleFollow(mid, followedNow, button = null) {
     announce(followedNow ? '已取消关注' : '已关注');
   } catch (error) {
     announce(error.message || '操作失败', true);
-    alert(error.message || '操作失败');
+    toast(error.message || '操作失败');
   }
 }
 
@@ -303,7 +296,7 @@ export async function upAdd() {
   const input = document.getElementById('up-add-input');
   const button = document.getElementById('up-add-btn');
   const value = input.value.trim();
-  if (!value) { alert('请粘贴 UP 主页链接或 mid'); return; }
+  if (!value) { toast('请粘贴 UP 主页链接或 mid'); return; }
   try {
     await withPending(button, '添加中…', async () => {
       const r = await postJSON('/api/up-list/add', { input: value });
@@ -313,7 +306,7 @@ export async function upAdd() {
       // 强制刷新:本地清单变化后磁盘缓存里的列表已过期,不绕缓存看不到新卡片
       if (state.mode === 'subs') loadSubscriptions(true);
     });
-  } catch (error) { alert(error.message); }
+  } catch (error) { toast(error.message); }
 }
 
 export async function upCheckNow(btn) {
@@ -324,12 +317,12 @@ export async function upCheckNow(btn) {
         ? '已有检查在进行中，本次未启动新一轮。稍后队列会自动带回新任务。'
         : '已在后台开始检查，新视频会自动进入下载队列。';
       announce(message);
-      alert(message);
+      toast(message);
     });
     window.setTimeout(loadAutoRefreshStatus, 300);
   } catch (error) {
     announce(error.message || '检查启动失败', true);
-    alert(error.message);
+    toast(error.message);
   }
 }
 

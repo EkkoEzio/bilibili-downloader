@@ -4,6 +4,64 @@
 
 ## [未发布]
 
+（暂无）
+
+## [v2.5.0] - 2026-11-12
+
+本版把整个前端切换为 Vercel / Geist 视觉体系，浅色与深色主题继续使用 B 站粉作为品牌强调色；同时把同角色的合集/收藏卡片、清晰度控件、状态角标、空态/加载态和页头工具栏各自收敛为一份共享实现。视频卡的播放/点赞字段改由共享解析器统一产出，深色三级文字与可操作控件按 4.5:1 对比度校正。以下第一节为本版新增的 Vercel 改版与组件统一，第二节起为与 v2.5.0 同批发布的第三轮复查修复。
+
+### 🎨 Vercel / Geist 视觉改版
+
+- **token 层**：浅色画布 `#fafafa`、白卡 hairline 描边（`--line:#ebebeb`）、Geist/Inter 字阶与 Geist Mono 技术标签；控件圆角 6px、卡片圆角 12px、主按钮 100px 胶囊、极淡叠加阴影，全部收敛到 `:root`。
+- **深色主题**：`body.dark` 使用 Vercel 灰阶（`#000` 画布 / `#111` 卡 / `#1a1a1a` 浅底），强调色保持 B 站粉（`#ff719e` 系），信息蓝改 Vercel Link Blue；三级文字 `--text-mute` 由 `#666` 提升到 `#8a8a8a`，在画布、卡片和控件浅底上均达到 WCAG AA 4.5:1。
+- **宽窗口不再留空带**：所有内容网格继续共用 `minmax(var(--card-min),1fr)` 弹性轨道，未引入 `--card-max`；`.fc-head .uc-auto` 等可操作控件改用正文次级色而不是三级色。
+
+### 🧩 组件统一为一份实现
+
+- **合集/收藏卡片**：网格与行式分别由 `lib.js` 的 `collectionCard()` / `collectionRow()` 唯一生成；`seasons.js` 与 `fav.js` 只保留进入详情、角标与自动下载控件等业务差异。共享卡片保留 `div[role=button]`、Enter/Space 处理与子控件事件隔离。
+- **清晰度/自动下载控件**：`subscriptions.js` 复用 `seasons.js` 导出的 `_qualityOptionsHtml()`，删除本地重复生成器；UP 卡保留自己的 `data-mid` 与 `upAutoChanged`。
+- **状态角标**：`.uc-badge` / `.fav-tag` / `.dl-badge` / `.rcmd-badge` / `.status-tag` 共用一处尺寸、圆角与间距规则，颜色仍由各自语义类决定，原有类名与业务标记全部保留。
+- **空态/加载态**：`lib.js` 新增 `emptyStateHtml()` / `loadingStateHtml()`，接入首页、关注动态、稍后再看、观看历史、关注 UP、收藏、合集、下载记录等页面。
+- **页头工具栏**：抽成 `templates/_page_toolbar.html` 的 `lib_toolbar()` Jinja 宏，8 个页面统一调用；关注 UP 的「刷新(绕过缓存)」提示保留。
+
+### 🔍 数据口径
+
+- **播放/点赞统一产出**：`bilibili_api.py` 新增 `_stat_counts()`，在共享 `_video_item()` 中兼容 `stat`、`cnt_info` 与顶层 `play`，统一产出 `stat_view` / `stat_like`；首页推荐改用同一入口，消除第二份视频卡字段来源。上游没有点赞字段时留空不显示，不额外逐视频请求。
+- **时长归一**：`_duration_seconds()` 兼容数值秒数与 `MM:SS` / `HH:MM:SS` 串，首页与关注动态共用同一口径。
+
+### ✅ 测试与审查
+
+- 全量测试 **412 passed**；合集/收藏卡的结构与键盘断言按共享函数分别锁定，并用「故意破坏 → 失败、还原 → 通过」双向验证。
+- 新增深色可读性契约测试：按 CSS 实际引用计算对比度，覆盖卡片控件与 `--bg` / `--card` / `--bg-soft` 三种表面的三级文字。
+- 独立代码审查未发现 Critical；深色对比度与共享卡测试弱化两项 Important 已修复。
+
+### 🐛 显示层真 bug
+
+- **确认弹窗贴左上角**：全局 `*{margin:0}` 覆盖了原生 `<dialog>` 的 UA `margin:auto`，`showModal()` 弹窗不再居中。补 `.confirm-dialog{margin:auto}`。
+- **「获取到新内容」提示条从不显示**：样式表静息态是 `display:none`，而 `showFreshHint` 只把内联 `display` 置空（等于回到 `none`）。改为显式写 `flex`。
+- **「已自动保存」轻提示从不显示**：`settings.js` 加的是 `.show` 类，样式表只有 `opacity:0` 的静息态。补 `.save-flash.show{opacity:1}`。
+- **行式 UP 卡控件整列消失**：`uc-actions` 嵌在 52px 圆头像盒里，行式的 `position:static` 被 `overflow:hidden` 裁掉、再被绝对定位的头像图盖住，关注/取关/改清晰度都点不到。行式让 `uc-thumb` 变 `display:contents`，控件回到行的 flex 布局（顺序改为 头像 → 文本 → 控件）。
+
+### 🎨 跨页统一
+
+- **封面右侧白带**：`aspect-ratio:16/9` 的传递尺寸在 `max-height:220px` 生效时把宽度反压回 220×16/9≈391px，列宽 >391px 的窗口下每张卡封面右侧留 40–60px 白带（UP 卡的角标与底部控件条也随之内缩、不贴卡缘）。三个封面容器（`.thumb-wrap` / `.fc-cover` / `.uc-thumb`）显式补 `width:100%`。
+- **行式收藏夹看不出「追更中」**：网格卡有角标、行式什么都不挂。行式补同款 `.fav-tag`（仅订阅时），与合集行式行一致。
+- **总览搜索占位符过度承诺**：收藏夹/合集总览只按名称过滤，占位符却写「搜索收藏夹 / 标题 / UP 主」。收窄为「搜索收藏夹名称 / 搜索合集名称」，详情态保持「搜索标题 / UP 主」。
+- **关注动态整页没有时长角标**：后端 `_video_item` 只读数值 `duration`，而 space 投稿 vlist 只给 `length`（「MM:SS」）串。新增 `_duration_seconds()` 统一归一（数值优先、兼容秒数与时间串），首页与关注动态共用同一份卡片口径。
+- **行式 hover 三套语言**：视频行只变底色，UP/收藏行上浮 1px。视频行并入「上浮 1px + 浅影」。
+- **行式内边距 12/14 并存**：`.up-list .up-card` 由 14px 归 12px，与视频行、收藏夹行一致（v2.4.1 宣称统一时漏了这条）。
+
+### 🧹 清理与口径
+
+- **原生 `alert` → 自绘 toast**：35 处阻塞弹窗改为底部非阻塞轻提示（`confirm.js` 新增 `toast()`，`z-index:90` 保证抽屉打开时也可见）。无障碍播报仍走 `announce()`，不重复读。
+- **重复入口**：下载记录页头撤掉与顶栏同动作的「新建下载」主按钮（顶栏是唯一入口）。
+- **统计口径词**：下载记录统计行「总下载」改「总计」，与同屏 meta 的「已下载 N 条」区分。
+- **日期口径统一**：视频卡的绝对日期由「9/12」改与 UP 卡一致的「9月12日」（相对时间不变）。
+- **加载态统一**：关注动态首载文案补 spinner，全站统一为「spinner + 文案」。
+- **文案省略号统一**：加载/解析文案的 `...` 改为 `…`（与按钮忙碌标签一致）。
+- `.uc-auto` 档位注释补全：按「背景语境」分档（封面=28px 实底 / 白底正文=20px 浅底标签 / UP 行式与同排 28px 按钮成对）。
+- 静态资源版本号 `20261111a` → `20261111b`。
+
 ## [v2.4.1] - 2026-11-11
 
 对 v2.4.0 顶栏版的全面复查与修复：两轮排查（代码层全量清点 + 真机逐页走查）确认的 20 项问题在本版修掉，3 项判定为有意设计保留并写进 CSS 注释。
@@ -707,6 +765,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.5.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.5.0
 [v2.4.1]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.4.1
 [v2.4.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.4.0
 [v2.3.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.3.0

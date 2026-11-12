@@ -2,10 +2,11 @@
 import { registerPage, state, libDom, renderPage, setItemExtras, LIB_PAGES,
          goPage, replaceItems, selectedVisibleItems } from '../lib.js';
 import { getJSON, postJSON, postEmpty, isAbortError } from '../net.js';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, formatBytes, bvFromUrl, dlKey, pageFromUrl,
          safeHttpUrl, safeDecimalId } from '../util.js';
-import { announce, confirmAction, withPending } from '../confirm.js';
+import { announce, confirmAction, toast, withPending } from '../confirm.js';
 
 const TASK_ACTIVE = ['queued', 'downloading', 'merging', 'cancelling', 'retrying'];
 const TASK_STATUS_CN = {
@@ -216,7 +217,7 @@ export async function loadDownloads(prefetchedTasks) {
     if (isAbortError(error) || !downloadLoadIsCurrent(generation, controller)
         || state.mode !== 'downloads') return;
     const d = libDom();
-    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="loadDownloads()">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = emptyStateHtml(escapeHtml(error.message || '加载失败'), { retry: 'loadDownloads()' });
   } finally {
     if (downloadLoadIsCurrent(generation, controller)) _loadController = null;
   }
@@ -438,7 +439,7 @@ export async function cancelTask(taskId, button = null) {
     announce('已发送取消请求');
   } catch (error) {
     announce(error.message || '取消失败', true);
-    alert(error.message || '取消失败');
+    toast(error.message || '取消失败');
   }
 }
 
@@ -476,7 +477,7 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   const live = status === 'downloading'
     ? `<span class="dp-pct">${pct}%</span><span class="dp-spd">${spd}</span>`
       + (eta ? `<span class="dp-eta">剩余 ${eta}s</span>` : '')
-    : (status === 'merging' ? '<span class="dp-eta">正在合并音视频...</span>' : '');
+    : (status === 'merging' ? '<span class="dp-eta">正在合并音视频…</span>' : '');
   const metaInner = `<span class="status-tag ${status}">${TASK_STATUS_CN[status] || status}</span>${live}`
     + (it.label ? `<span class="q-label">[${escapeHtml(it.label)}]</span>` : '');
   const taskArg = inlineStringArg(it.task_id);
@@ -533,7 +534,7 @@ function deleteResultMessage(response, deleteFile) {
 export async function delSelected(deleteFile) {
   // 在打开模态确认前冻结稳定任务 ID；后续刷新或排序不能改变本次操作对象。
   const ids = selectedVisibleItems().map(item => item.task_id).filter(Boolean);
-  if (ids.length === 0) { alert('请先勾选要删除的任务'); return; }
+  if (ids.length === 0) { toast('请先勾选要删除的任务'); return; }
   const accepted = await confirmAction({
     title: deleteFile ? '删除记录和本地文件？' : '删除所选记录？',
     message: deleteFile
@@ -554,10 +555,10 @@ export async function delSelected(deleteFile) {
     state.checked.clear();
     await loadDownloads();
     announce(message, !!response.partial);
-    alert(message);
+    toast(message);
   } catch (error) {
     announce(error.message || '删除失败', true);
-    alert(error.message || '删除失败');
+    toast(error.message || '删除失败');
   }
 }
 
@@ -581,10 +582,10 @@ export async function clearAllRecords() {
     state.checked.clear();
     await loadDownloads();
     announce(message);
-    alert(message);
+    toast(message);
   } catch (error) {
     announce(error.message || '清除失败', true);
-    alert(error.message || '清除失败');
+    toast(error.message || '清除失败');
   }
 }
 
@@ -608,10 +609,10 @@ export async function clearInvalidRecords() {
     state.checked.clear();
     await loadDownloads();
     announce(message);
-    alert(message);
+    toast(message);
   } catch (error) {
     announce(error.message || '清理失败', true);
-    alert(error.message || '清理失败');
+    toast(error.message || '清理失败');
   }
 }
 
@@ -620,9 +621,9 @@ export async function revealTask(taskId) {
   try {
     taskId = encodeURIComponent(String(taskId));
     const response = await postEmpty('/api/task/' + taskId + '/reveal');
-    if (!response.ok) alert('打开失败：' + (response.error || ''));
-    else if (!response.found) alert('没找到该视频的文件（可能已被删除或移动），已打开下载目录。');
-  } catch (error) { alert('打开失败：' + error.message); }
+    if (!response.ok) toast('打开失败：' + (response.error || ''));
+    else if (!response.found) toast('没找到该视频的文件（可能已被删除或移动），已打开下载目录。');
+  } catch (error) { toast('打开失败：' + error.message); }
 }
 
 export async function resolveTaskConflict(taskId, action, button = null) {
@@ -638,7 +639,7 @@ export async function resolveTaskConflict(taskId, action, button = null) {
     announce('名称冲突处理完成');
   } catch (error) {
     announce(error.message || '处理失败', true);
-    alert(error.message || '处理失败');
+    toast(error.message || '处理失败');
   }
 }
 
@@ -647,14 +648,16 @@ async function loadStats() {
     const response = await getJSON('/api/stats');
     if (!response.ok) return;
     const el = document.getElementById('dl-stats-line');
-    if (el) el.textContent = `总下载 ${response.total_count} 条 · ${formatBytes(response.total_bytes)} · 本月 ${response.month_count} · 今日 ${response.day_count}`;
+    /* 「总计」= 全部任务记录口径;列表 meta 的「已下载 N 条」是本页已完成数,
+       同屏并存两个「总/已下载」会读成同一件事(2026-11-11 复查)。 */
+    if (el) el.textContent = `总计 ${response.total_count} 条 · ${formatBytes(response.total_bytes)} · 本月 ${response.month_count} · 今日 ${response.day_count}`;
   } catch (error) { /* 统计失败不影响任务列表 */ }
 }
 
 /* ---------- 所有内容页共用的批量下载 ---------- */
 export async function libDownload() {
   const selected = selectedVisibleItems();
-  if (selected.length === 0) { alert('请至少勾选一项'); return; }
+  if (selected.length === 0) { toast('请至少勾选一项'); return; }
   const qualitySelect = document.querySelector('.lib-quality');
   const label = qualitySelect ? qualitySelect.value : '';
   let items = selected.map((it) => ({
@@ -664,14 +667,14 @@ export async function libDownload() {
   }));
   const skipped = items.filter(it => isDownloaded(it.url)).length;
   items = items.filter(it => !isDownloaded(it.url));
-  if (items.length === 0) { alert('所选项均已下载过'); return; }
+  if (items.length === 0) { toast('所选项均已下载过'); return; }
   try {
     const response = await postJSON('/api/batch/download', { items, label });
     if (!response.ok) throw new Error(response.error || '启动失败');
-    alert(`已加入 ${response.count} 个下载任务${skipped ? `（跳过 ${skipped} 个已下载）` : ''}`);
+    toast(`已加入 ${response.count} 个下载任务${skipped ? `（跳过 ${skipped} 个已下载）` : ''}`);
     response.task_ids.forEach(subscribeProgress);
     goPage('downloads');
-  } catch (error) { alert(error.message); }
+  } catch (error) { toast(error.message); }
 }
 
 setItemExtras({

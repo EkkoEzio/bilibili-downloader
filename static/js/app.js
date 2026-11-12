@@ -11,16 +11,16 @@ import * as drawer from './drawer.js';
 import * as login from './login.js';
 
 /* 页面模块:import 即向 lib 注册页控制器(顺序即顶栏页签顺序,仅可读性) */
-import * as home from './pages/home.js?v=20261111a';
-import * as downloads from './pages/downloads.js?v=20261111a';
+import * as home from './pages/home.js?v=20261111b';
+import * as downloads from './pages/downloads.js?v=20261111b';
 import * as history from './pages/history.js';
 import * as feed from './pages/feed.js';
-import * as subs from './pages/subscriptions.js?v=20261111a';
-import * as seasons from './pages/seasons.js?v=20261111a';
-import * as fav from './pages/fav.js?v=20261111a';
+import * as subs from './pages/subscriptions.js?v=20261111b';
+import * as seasons from './pages/seasons.js?v=20261111b';
+import * as fav from './pages/fav.js?v=20261111b';
 import * as later from './pages/later.js';
 
-import * as newdl from './newdl.js?v=20261111a';
+import * as newdl from './newdl.js?v=20261111b';
 
 /* ---------- 全局桥(内联 onclick 兼容) ---------- */
 Object.assign(window, {

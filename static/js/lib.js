@@ -17,7 +17,7 @@
    - onViewToggle()     列表/网格切换时的额外复位 */
 import { icon } from './icons.js';
 import { escapeHtml, escapeAttr, sig, formatDuration, formatTime,
-         safeHttpUrl, safeDecimalId, bvFromUrl, pageFromUrl } from './util.js';
+         safeHttpUrl, safeDecimalId, bvFromUrl, pageFromUrl, nonNegativeInt } from './util.js';
 import { getJSON, isAbortError } from './net.js';
 
 /* ---------- 共享状态（所有标准列表页共用） ---------- */
@@ -309,7 +309,9 @@ export function showFreshHint(pageName, applyFn) {
   bar.innerHTML = `<span class="fh-text">获取到新内容</span>
     <button class="primary" onclick="applyFresh('${pageName}')">查看最新</button>
     <button class="quiet" onclick="dismissFresh('${pageName}')">暂不</button>`;
-  bar.style.display = '';
+  // 必须显式写 flex:样式表里 .fresh-hint{display:none} 是静息态,
+  // 置空内联样式等于回到 none,提示条从未显示过(2026-11-11 实测)。
+  bar.style.display = 'flex';
 }
 
 export function applyFresh(pageName) {
@@ -414,6 +416,23 @@ export function renderListSkeleton() {
   d.list.innerHTML = card.repeat(n);
 }
 
+/* ---------- 空态 / 加载态（唯一实现） ----------
+   各页面只传文案与重试动作；class、图标和按钮结构统一在这里。 */
+export function emptyStateHtml(message, { retry = '', retryId = '', dataLibRetry = false } = {}) {
+  let attrs = '';
+  if (retry) attrs += ` onclick="${retry}"`;
+  if (retryId) attrs += ` data-id="${escapeAttr(retryId)}"`;
+  if (dataLibRetry) attrs += ' data-lib-retry';
+  const retryHtml = (retry || dataLibRetry)
+    ? `<br><button class="ghost"${attrs}>${icon('refresh')} 重试</button>`
+    : '';
+  return `<div class="empty">${message}${retryHtml}</div>`;
+}
+
+export function loadingStateHtml(text) {
+  return `<div class="empty"><span class="spinner"></span>${escapeHtml(text)}</div>`;
+}
+
 /* ---------- 列表项渲染（标准视频卡） ---------- */
 const _itemExtras = {
   isProgressCard: () => false,
@@ -434,9 +453,9 @@ export function renderLibList(pairs, container) {
     const hint = ctrl.emptyHint ? ctrl.emptyHint(q)
       : (q ? '没有匹配结果（试试其他关键词）' : '暂无内容（可能 B 站限流或账号无数据）');
     if (ctrl.emptyRetry === false) {
-      container.innerHTML = `<div class="empty">${hint}</div>`;
+      container.innerHTML = emptyStateHtml(hint);
     } else {
-      container.innerHTML = `<div class="empty">${hint}<br><button class="ghost" data-lib-retry>${icon('refresh')} 重新加载</button></div>`;
+      container.innerHTML = emptyStateHtml(hint, { dataLibRetry: true });
     }
     // 空态分支没有可勾选 DOM,不会经过末尾的 updateLibCount;在这里补一次,
     // 保证换页/清空后操作条与计数总是和 state.checked 对齐。
@@ -480,8 +499,9 @@ export function renderLibList(pairs, container) {
     // 原来四段平铺 + flex-wrap,UP 名字一长就把「点赞」挤到第二行,
     // 同一行卡片因此一高一矮;现在身份区可截断、统计区固定不换行。
     const statParts = [];
-    if (it.stat_view) statParts.push(`<span class="vi-stat">${icon('play')} ${escapeHtml(it.stat_view)}</span>`);
-    if (it.stat_like) statParts.push(`<span class="vi-stat">${icon('like')} ${escapeHtml(it.stat_like)}</span>`);
+    // 播放走强调色药丸、点赞走中性药丸:任何页面都是同一副样子
+    if (it.stat_view) statParts.push(`<span class="vi-stat v-view">${icon('play')} ${escapeHtml(it.stat_view)}</span>`);
+    if (it.stat_like) statParts.push(`<span class="vi-stat v-like">${icon('like')} ${escapeHtml(it.stat_like)}</span>`);
     const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>`
       + (statParts.length ? `<span class="vi-stats">${statParts.join('')}</span>` : '');
     const rcmdBadge = (state.mode === 'home' && it.rcmd_reason)
@@ -527,6 +547,46 @@ export function renderLibList(pairs, container) {
     </div>`;
   }).join('');
   updateLibCount();
+}
+
+/* ---------- 合集/收藏夹卡片（唯一实现） ----------
+   seasons.js 与 fav.js 只传业务差异（进入函数、角标、自动下载控件），
+   封面结构、计数、标题行与键盘操作统一在这里，避免两份实现再次漂移。 */
+export function collectionCard({ id, title, count, cover = '', badge = '',
+                                 onEnter = 'seasonEnter', autoHtml = '' }) {
+  const itemCount = nonNegativeInt(count);
+  const safeCover = safeHttpUrl(cover, { httpsOnly: true });
+  const image = safeCover
+    ? `<img src="${escapeAttr(safeCover)}" alt="" onerror="this.hidden=true" loading="lazy">`
+    : '';
+  return `
+  <div class="fav-card" role="button" tabindex="0" onclick="${onEnter}(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();${onEnter}(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
+    <div class="fc-cover">
+      <span class="fc-placeholder" aria-hidden="true">${icon('bilibili')}<span>暂无封面</span></span>
+      ${image}
+      ${badge}
+      <span class="fc-count">${itemCount} 个视频</span>
+    </div>
+    <div class="fc-head">
+      <div class="fc-title" title="${escapeAttr(title || '')}">${escapeHtml(title || '(未命名)')}</div>
+      ${autoHtml}
+    </div>
+  </div>`;
+}
+
+export function collectionRow({ id, title, count, badge = '', onEnter = 'seasonEnter',
+                                autoHtml = '', iconName = 'layers' }) {
+  const itemCount = nonNegativeInt(count);
+  return `
+    <div class="fav-folder" role="button" tabindex="0" onclick="${onEnter}(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();${onEnter}(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
+      <div class="fav-icon">${icon(iconName)}</div>
+      <div class="fav-main">
+        <div class="fav-name">${escapeHtml(title || '(未命名)')}${badge}</div>
+        <div class="fav-count">${itemCount} 个视频</div>
+      </div>
+      ${autoHtml}
+      <span class="fav-arrow">${icon('chevron')}</span>
+    </div>`;
 }
 
 /* ---------- 列表/网格视图切换 ---------- */

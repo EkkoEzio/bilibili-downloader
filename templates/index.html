@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+{% from "_page_toolbar.html" import lib_toolbar %}
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -7,7 +8,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>bilibili download</title>
-<link rel="stylesheet" href="/static/css/main.css?v=20261111a">
+<link rel="stylesheet" href="/static/css/main.css?v=20261111b">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -80,13 +81,7 @@
       <div class="page active" data-page="home">
         <div class="page-head">
           <h1 class="sr-only">首页推荐</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="loadHomeFeed()" title="换一批">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-          </div>
+          {{ lib_toolbar('搜索标题 / UP 主', 'loadHomeFeed()', '换一批') }}
         </div>
         <div class="sub-info" id="meta-home"></div>
         <div id="list-home" class="lib-list"></div>
@@ -96,17 +91,7 @@
       <div class="page" data-page="downloads">
         <div class="page-head">
           <h1 class="sr-only">下载记录</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="loadDownloads()" title="刷新">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-            <button class="primary" onclick="openDrawer('newdl')">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-              新建下载
-            </button>
-          </div>
+          {{ lib_toolbar('搜索标题 / UP 主', 'loadDownloads()') }}
         </div>
         <div class="sub-info">
           <span id="dl-stats-line"></span><span id="meta-downloads"></span>
@@ -122,13 +107,7 @@
       <div class="page" data-page="history">
         <div class="page-head">
           <h1 class="sr-only">观看历史</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="refreshLib()" title="刷新">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-          </div>
+          {{ lib_toolbar('搜索标题 / UP 主', 'refreshLib()') }}
         </div>
         <div class="sub-info" id="meta-history"></div>
         <div id="list-history" class="lib-list"></div>
@@ -138,13 +117,7 @@
       <div class="page" data-page="feed">
         <div class="page-head">
           <h1 class="sr-only">关注动态</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="refreshLib()" title="刷新">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-          </div>
+          {{ lib_toolbar('搜索标题 / UP 主', 'refreshLib()') }}
         </div>
         <div class="sub-info" id="meta-feed"></div>
         <div id="list-feed" class="lib-list"></div>
@@ -154,13 +127,7 @@
       <div class="page" data-page="subs">
         <div class="page-head">
           <h1 class="sr-only">关注 UP</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索 UP 名称 / mid" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="refreshSubs()" title="刷新(绕过缓存)">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-          </div>
+          {{ lib_toolbar('搜索 UP 名称 / mid', 'refreshSubs()', '刷新(绕过缓存)') }}
           <div class="ph-add" aria-label="添加 UP 订阅">
             <input type="text" id="up-add-input" class="tb-input" aria-label="UP 主页链接或 mid" placeholder="粘贴 UP 主页链接或 mid;加入后新投稿自动进入下载队列">
             <button class="primary" id="up-add-btn" onclick="upAdd()">添加</button>
@@ -182,13 +149,7 @@
             返回
           </button>
           <h1 id="season-page-title" class="sr-only">追更合集</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索合集 / 标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="seasonRefresh()" title="刷新">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-          </div>
+          {{ lib_toolbar('搜索合集名称', 'seasonRefresh()') }}
         </div>
         <div class="sub-info" id="meta-seasons"></div>
         <div id="season-overview"></div>
@@ -203,13 +164,7 @@
             返回
           </button>
           <h1 id="fav-page-title" class="sr-only">我的收藏</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" id="fav-search" placeholder="搜索收藏夹 / 标题 / UP 主" oninput="applyLibFilter()" style="display:none;">
-            <button class="ghost icon-only" onclick="favRefresh()" title="刷新">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图" id="fav-view-btn"></button>
-          </div>
+          {{ lib_toolbar('搜索收藏夹名称', 'favRefresh()', search_id='fav-search', search_style='display:none;', view_id='fav-view-btn') }}
         </div>
         <div class="sub-info" id="meta-fav"></div>
         <div id="fav-folder-list"></div>
@@ -220,13 +175,7 @@
       <div class="page" data-page="later">
         <div class="page-head">
           <h1 class="sr-only">稍后再看</h1>
-          <div class="ph-right">
-            <input type="text" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索标题 / UP 主" oninput="applyLibFilter()">
-            <button class="ghost icon-only" onclick="refreshLib()" title="刷新">
-              <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-            </button>
-            <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"></button>
-          </div>
+          {{ lib_toolbar('搜索标题 / UP 主', 'refreshLib()') }}
         </div>
         <div class="sub-info" id="meta-later"></div>
         <div id="list-later" class="lib-list"></div>
@@ -453,6 +402,6 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/js/app.js?v=20261111a"></script>
+<script type="module" src="/static/js/app.js?v=20261111b"></script>
 </body>
 </html>

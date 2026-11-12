@@ -2,6 +2,7 @@
    UP 订阅管理(加 UP / 自动下载开关 / 取关回关)已独立到「关注 UP」页。 */
 import { registerPage, state, libDom, renderDefaultList, renderPage, cachedLoad,
          dismissFresh, replaceItems } from '../lib.js';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
 
@@ -15,10 +16,10 @@ export async function loadFollowBili() {
     showLoading: () => {
       const d = libDom();
       d.meta.textContent = '';
-      d.list.innerHTML = '<div class="empty">正在后台拉取关注 UP 的近期投稿（串行防限流，约需数十秒），完成后自动展示。</div>';
+      d.list.innerHTML = loadingStateHtml('正在后台拉取关注 UP 的近期投稿（串行防限流，约需数十秒），完成后自动展示。');
     },
     showError: (msg) => {
-      libDom().list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadFollowBili()">${icon('refresh')} 重试</button></div>`;
+      libDom().list.innerHTML = emptyStateHtml(escapeHtml(msg || '加载失败'), { retry: 'loadFollowBili()' });
     },
     apply: (b) => {
       replaceItems(b.items || []);

@@ -12,6 +12,7 @@ import { registerPage, state, libDom, renderPage, appendItems, replaceItems,
          getLibSearchQuery, defaultChunk, cancelCachedLoads, showFreshHint,
          dismissFresh } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
+import { emptyStateHtml, loadingStateHtml as loadingHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
 import { announce } from '../confirm.js';
@@ -118,10 +119,6 @@ function retryDelayMs(error) {
   return RETRY_DELAY_MS;
 }
 
-function loadingHtml(text) {
-  return `<div class="empty"><span class="spinner"></span>${escapeHtml(text)}</div>`;
-}
-
 /* 第一页现拉成功后的上屏。有缓存且用户已勾选条目时不打断勾选，
    改走「获取到新内容」提示条（与关注动态同一交互）；否则无缝替换。 */
 function applyFirstPage(items, restored, isCurrent) {
@@ -153,7 +150,7 @@ export async function loadHomeFeed() {
   const d = libDom();
   const current = () => requestIsCurrent(generation, controller);
   d.meta.textContent = '';
-  d.list.innerHTML = loadingHtml('正在加载首页推荐...');
+  d.list.innerHTML = loadingHtml('正在加载首页推荐…');
   dismissFresh('home');
   try {
     // 缓存优先:上次的首页先上屏,后面现拉成功再无缝替换。
@@ -204,7 +201,7 @@ export async function loadHomeFeed() {
       if (attempt >= AUTO_RETRIES || waitMs > RETRY_GIVE_UP_MS) break;
       if (!restored) {
         d.list.innerHTML = loadingHtml(
-          `正在加载首页推荐...（第 ${attempt + 1}/${AUTO_RETRIES} 次重试）`);
+          `正在加载首页推荐…（第 ${attempt + 1}/${AUTO_RETRIES} 次重试）`);
       }
       await delay(waitMs, controller.signal);
     }
@@ -214,7 +211,7 @@ export async function loadHomeFeed() {
       announce(lastError ? '推荐流刷新失败，先展示之前的内容'
                          : 'B 站暂时没给新推荐，先展示之前的内容');
     } else if (lastError) {
-      d.list.innerHTML = `<div class="empty">${escapeHtml(lastError.message || '加载失败')}<br><button class="ghost" onclick="loadHomeFeed()">${icon('refresh')} 重试</button></div>`;
+      d.list.innerHTML = emptyStateHtml(escapeHtml(lastError.message || '加载失败'), { retry: 'loadHomeFeed()' });
     } else {
       replaceItems([]);
       renderPage();  // 落回标准空态:空态文案 + 重新加载按钮

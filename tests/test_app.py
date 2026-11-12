@@ -777,10 +777,15 @@ def _tpl():
     「整个前端」。not in 断言同样覆盖全部文件,语义更严格(哪里都不该出现)。"""
     from pathlib import Path
     base = Path(__file__).resolve().parent.parent
-    parts = [base / "templates" / "index.html",
-             base / "static" / "css" / "main.css",
+    # 页头工具栏抽成 Jinja 组件后，断言仍针对最终渲染出的整页，
+    # 不把宏调用当成缺失的 DOM。
+    import app as app_module
+    with app_module.app.test_request_context():
+        from flask import render_template
+        template_html = render_template("index.html")
+    parts = [base / "static" / "css" / "main.css",
              *sorted((base / "static" / "js").rglob("*.js"))]
-    return "\n".join(p.read_text(encoding="utf-8") for p in parts)
+    return template_html + "\n" + "\n".join(p.read_text(encoding="utf-8") for p in parts)
 
 
 def test_frontend_split_into_static_files():
@@ -1077,12 +1082,15 @@ def test_frontend_uplist_drawer_removed():
 
 
 def test_frontend_unified_toolbar_everywhere():
-    """六个页面统一:搜索 + 刷新 + 视图切换;收藏夹首屏也支持搜索。"""
+    """八个页面统一:搜索 + 刷新 + 视图切换;收藏夹首屏也支持搜索。"""
     html = _tpl()
-    assert html.count("lib-search") >= 6
-    assert html.count("view-btn") >= 6
-    assert 'onclick="loadDownloads()"' in html, "下载记录也应有刷新按钮"
-    assert "搜索收藏夹 / 标题 / UP 主" in html
+    assert html.count('class="search-input lib-search"') == 8
+    assert html.count('class="ghost icon-only view-btn"') == 8
+    for handler in ("loadHomeFeed()", "loadDownloads()", "refreshLib()",
+                    "refreshSubs()", "seasonRefresh()", "favRefresh()"):
+        assert f'onclick="{handler}"' in html, f"缺少刷新入口:{handler}"
+    # 总览只按名称过滤,占位符不再承诺 UP 主/标题(2026-11-11 复查)
+    assert "搜索收藏夹名称" in html
 
 
 def test_launcher_reports_port_conflict_and_only_cleans_own_child():
@@ -1521,7 +1529,7 @@ def test_batch_download_enqueues_remaining_parts_end_to_end(client, monkeypatch,
           → 断言 count == 4、分 P 分布恰好是 {2,3,4,5}
 
     未修复时链条在第二段就断:`is_downloaded` 只比 BV 号,P1 的 done 任务让
-    P2–P5 全部命中 → 过滤后 items 为空 → 前端 `alert('所选项均已下载过')`,
+    P2–P5 全部命中 → 过滤后 items 为空 → 前端 `toast('所选项均已下载过')`,
     请求压根发不出去,count 恒为 0。
 
     两处打桩,都只为断网,不改被测逻辑:
@@ -1684,7 +1692,7 @@ def test_frontend_downloaded_consumers_preserved():
             f"{name} 应统计被跳过的已下载条目数(用户要看到「跳过 N 个已下载」)"
         assert f"items.filter(it => !{pred}(it.url))" in src, \
             f"{name} 的批量提交必须过滤掉已下载条目(3.13),否则重复下载同一文件"
-        assert "alert('所选项均已下载过')" in src, \
+        assert "toast('所选项均已下载过')" in src, \
             f"{name} 应在全部条目都已下载时明确提示,而不是静默提交空列表"
         assert "跳过 ${skipped} 个已下载" in src, \
             f"{name} 应在成功提示里回报跳过数量"
@@ -2649,12 +2657,18 @@ def test_collection_cards_are_not_buttons():
     HTML 规范禁止交互元素嵌套,浏览器会忽略内层 select 的点击;
     回归:原实现是 <button class="fav-card"> 里塞 select。
     """
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     for page in ("seasons.js", "fav.js"):
         src = (_js_dir() / "pages" / page).read_text(encoding="utf-8")
         for marker in ('<button type="button" class="fav-card"',
                        '<button type="button" class="fav-folder"'):
             assert marker not in src, f"{page} 仍用 button 包裹卡片: {marker}"
-        assert 'role="button"' in src, f"{page} 卡片应改用 div[role=button]"
+    # 真正的 DOM 在共享函数里:两种卡必须各自满足,不能用另一种卡的标记凑数。
+    for function_name, class_name in (("collectionCard", "fav-card"),
+                                      ("collectionRow", "fav-folder")):
+        body = _js_func_body(lib_js, function_name)
+        assert f'<div class="{class_name}" role="button" tabindex="0"' in body, \
+            f"{function_name} 必须使用 div[role=button][tabindex=0],不能嵌套 select 进 button"
 
 
 def test_collection_card_control_shares_title_row():
@@ -2668,17 +2682,20 @@ def test_collection_card_control_shares_title_row():
     """
     seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
     fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     for name, src in (("seasons.js", seasons_js), ("fav.js", fav_js)):
-        assert "fc-head" in src, f"{name} 的卡片正文应为「标题 + 控件」一行"
-        assert "fc-sub" not in src, f"{name} 不应再有独占一行的控件行"
+        assert "collectionCard" in src or "collectionRow" in src, \
+            f"{name} 应复用 lib.js 的共享合集卡片"
         assert "collectionAutoControl" in src, f"{name} 的标题行应带画质控件"
+    assert "fc-head" in lib_js, "共享卡片正文应为「标题 + 控件」一行"
+    assert "fc-sub" not in lib_js, "共享卡片不应再有独占一行的控件行"
     # 「追更中」= 封面右上角角标,复用关注 UP 卡那一套(不是标题行内小标签)
     card = seasons_js[seasons_js.index("const seasonCard"):]
     card = card[:card.index("function seasonRow")]
     assert '<span class="uc-badge on">追更中</span>' in card, \
         "「追更中」应为封面角标,复用关注 UP 卡的 .uc-badge"
-    cover = card[card.index('class="fc-cover"'):card.index('class="fc-head"')]
-    assert "uc-badge" in cover, "角标必须放在封面容器内才能钉到右上角"
+    cover = lib_js[lib_js.index('class="fc-cover"'):lib_js.index('class="fc-head"')]
+    assert "${badge}" in cover, "共享卡片必须把状态角标插进封面容器"
     assert "fc-tag" not in seasons_js, "不要标题行内的「追更中」小标签"
     assert '<span class="fav-tag">追更中</span>' in seasons_js, \
         "行式列表没有封面可挂角标,保留原有的「追更中」小标签"
@@ -2695,6 +2712,51 @@ def test_collection_card_control_shares_title_row():
     assert "border:none" in chip and "height:20px" in chip, \
         "卡内画质控件应改浅底标签样式(无描边、20px)"
     assert "background-color:var(--bg-soft)" in chip, "静息态靠浅底表达,不靠描边"
+
+
+def _css_rgb(block, token):
+    """读取 CSS 块里的六位色值,供真实对比度断言使用。"""
+    import re
+    value = re.search(re.escape(token) + r":(#[0-9a-fA-F]{6})", block).group(1)
+    return tuple(int(value[i:i + 2], 16) / 255 for i in (1, 3, 5))
+
+
+def _css_contrast(block, foreground, background):
+    def luminance(color):
+        linear = [v / 12.92 if v <= 0.04045 else ((v + 0.055) / 1.055) ** 2.4
+                  for v in color]
+        return 0.2126 * linear[0] + 0.7152 * linear[1] + 0.0722 * linear[2]
+
+    text_l = luminance(_css_rgb(block, foreground))
+    bg_l = luminance(_css_rgb(block, background))
+    return (max(text_l, bg_l) + 0.05) / (min(text_l, bg_l) + 0.05)
+
+
+def test_dark_collection_quality_control_has_readable_contrast():
+    """深色下「不下载」仍是可操作控件,不能退成难以辨认的装饰文字。
+
+    这里直接按 CSS 实际引用计算 WCAG 对比度,而不是锁定某个变量名,
+    允许以后换成其他同样可读的 Geist 色阶。
+    """
+    import re
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    dark = css.split("body.dark{", 1)[1].split("}", 1)[0]
+    chip = css.split(".fc-head .uc-auto,.fav-folder .uc-auto{", 1)[1].split("}", 1)[0]
+    color_name = re.search(r"(?<!-)color:var\((--[\w-]+)\)", chip).group(1)
+    bg_name = re.search(r"background-color:var\((--[\w-]+)\)", chip).group(1)
+    contrast = _css_contrast(dark, color_name, bg_name)
+    assert contrast >= 4.5, \
+        f"深色合集画质控件文字对比度仅 {contrast:.2f}:1({color_name} / {bg_name})"
+
+
+def test_dark_muted_text_has_readable_contrast_on_all_surfaces():
+    """三级文字仍承载 UP 签名、时间和任务 ETA,在所有深色表面都要可读。"""
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    dark = css.split("body.dark{", 1)[1].split("}", 1)[0]
+    for surface in ("--bg", "--card", "--bg-soft"):
+        contrast = _css_contrast(dark, "--text-mute", surface)
+        assert contrast >= 4.5, \
+            f"深色 --text-mute 在 {surface} 上仅 {contrast:.2f}:1"
 
 
 # ---------- 复查补充:跨页状态与元素 id 一致性 ----------
@@ -2761,10 +2823,23 @@ def test_collection_card_keydown_ignores_child_controls():
     回归:select 聚焦时按 Enter 会冒泡到卡片 keydown → 直接进入合集,
     而不是打开下拉。
     """
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    for function_name in ("collectionCard", "collectionRow"):
+        body = _js_func_body(lib_js, function_name)
+        assert 'onkeydown="' in body, f"{function_name} 丢失了键盘处理"
+        handler = body.split('onkeydown="', 1)[1].split('"', 1)[0]
+        assert handler.startswith("if(event.target!==this)return;"), \
+            f"{function_name} 必须先隔离子控件事件"
+        assert "event.key==='Enter'||event.key===' '" in handler, \
+            f"{function_name} 必须同时支持 Enter 与 Space"
+        assert "event.preventDefault()" in handler, \
+            f"{function_name} 必须阻止 Space 滚动等默认行为"
+        assert "${onEnter}(this.dataset.id)" in handler, \
+            f"{function_name} 键盘事件必须进入对应详情"
     for page in ("seasons.js", "fav.js"):
         src = (_js_dir() / "pages" / page).read_text(encoding="utf-8")
-        assert "event.target!==this" in src, \
-            f"{page} 的 keydown 应先判断事件源,否则子控件按键会误触发进入"
+        assert "collectionCard" in src or "collectionRow" in src, \
+            f"{page} 应复用共享卡片的键盘处理"
 
 
 def test_collection_add_does_not_swallow_rate_limit():
@@ -2822,6 +2897,8 @@ def test_subs_refresh_bypasses_cache():
     assert "force=1" in subs_js, "应支持 force 参数绕过缓存"
     assert "loadSubscriptions(true)" in subs_js, "加 UP 后应强制刷新"
     assert 'onclick="refreshSubs()"' in html, "订阅页刷新按钮应走强制刷新"
+    assert 'onclick="refreshSubs()" title="刷新(绕过缓存)"' in html, \
+        "按钮提示应明确这里会绕过缓存,不能只显示普通「刷新」"
 
 
 def test_subs_force_refresh_applies_data_directly():
@@ -2856,6 +2933,151 @@ def test_collection_reset_seen_route(client, monkeypatch):
     r = client.post("/api/collection/reset-seen",
                     json={"kind": "season", "id": 123})
     assert r.status_code == 200 and r.get_json()["ok"] is True
+
+
+# ---------- 2026-11-11 第三轮复查:显示层、反馈通道与数据口径 ----------
+
+def test_fresh_hint_visible_state_overrides_default_hidden():
+    """「获取到新内容」提示条必须能真的显示出来。
+
+    回归:样式表里 .fresh-hint{display:none} 是静息态,而 showFreshHint 只把内联
+    display 清空,等于回到 none —— 五个缓存优先页的提示条从未出现过。
+    """
+    html = _tpl()
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert ".fresh-hint{display:none" in html, "静息态仍隐藏,靠内联样式打开"
+    assert "bar.style.display = 'flex'" in lib_js, \
+        "显示时必须显式写 flex,置空会被静息态覆盖"
+
+
+def test_save_flash_has_visible_state():
+    """「已自动保存」轻提示必须有显示态样式。
+
+    回归:settings.js 加的是 .show 类,样式表只有 opacity:0 的静息态,
+    提示永远不可见。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".save-flash{display:inline-flex" in css
+    assert ".save-flash.show{opacity:1}" in css, "缺显示态 → 提示永远不出现"
+
+
+def test_confirm_dialog_is_centered_by_margin_auto():
+    """确认弹窗必须居中:全局 *{margin:0} 覆盖了原生 dialog 的 UA margin:auto。
+
+    回归:showModal() 弹窗贴到视口左上角(2026-11-11 实测截图)。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    block = css[css.index(".confirm-dialog{"):]
+    block = block[:block.index("}")]
+    assert "margin:auto" in block, "必须有 margin:auto,否则弹窗贴左上角"
+
+
+def test_cover_boxes_declare_explicit_width():
+    """16:9 封面容器必须显式 width:100%。
+
+    回归:aspect-ratio 的传递尺寸在 max-height:220px 生效时会把宽度反压回
+    220×16/9≈391px,列宽 >391px 的窗口(约 2 列宽)下封面右侧留白带。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    for sel in (".thumb-wrap{", ".fc-cover{", ".uc-thumb{"):
+        rule = css[css.index(sel):]
+        rule = rule[:rule.index("}")]
+        assert "width:100%" in rule, f"{sel} 缺显式 width:100%(封面右侧会留白带)"
+
+
+def test_up_list_controls_escape_avatar_clip():
+    """行式 UP 卡的关注/清晰度控件必须可见,不能留在 52px 圆头像盒里被裁。
+
+    回归:DOM 里 uc-actions 嵌在 uc-thumb 内,行式把控件设成 position:static,
+    被圆盒 overflow:hidden 裁掉、再被绝对定位的头像图盖住,控件整列消失
+    (2026-11-11 实测)。修法:行式让 uc-thumb 变 display:contents。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".up-list .uc-thumb{display:contents}" in css, \
+        "行式必须去掉 uc-thumb 自身盒子,子项才参与行的 flex 布局"
+    cover = css[css.index(".up-list .uc-cover{"):]
+    cover = cover[:cover.index("}")]
+    assert "position:static" in cover and "52px" in cover, \
+        "头像盒改由 uc-cover 承担(52px 圆形)"
+    assert ".up-list .uc-actions{order:2" in css and ".up-list .uc-text{order:1" in css, \
+        "顺序应为 头像 → 文本 → 控件"
+
+
+def test_fav_row_shows_subscription_tag():
+    """行式收藏夹行也必须能看出「追更中」。
+
+    回归:网格卡有 .uc-badge.on、行式什么都不挂,同一页两视图订阅状态可见性
+    不一致(2026-11-11 复查)。
+    """
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    body = _js_func_body(fav_js, "folderRow")
+    assert "collectionSub('fav', f.id)" in body, "行式标记应以订阅状态为条件"
+    assert '<span class="fav-tag">追更中</span>' in body, \
+        "订阅后应挂与合集行同款的「追更中」小标签"
+
+
+def test_no_native_alert_left_in_frontend():
+    """可见反馈统一走非阻塞 toast,不再用阻塞的原生 alert。
+
+    2026-11-11 复查:35 处 alert 与自绘 UI 风格断裂,还与 announce 双通道。
+    """
+    html = _tpl()
+    names = ["lib.js", "confirm.js", "settings.js", "login.js", "newdl.js",
+             "theme.js", "drawer.js", "net.js", "util.js", "icons.js",
+             "pages/home.js", "pages/downloads.js", "pages/seasons.js",
+             "pages/subscriptions.js", "pages/fav.js", "pages/feed.js",
+             "pages/history.js", "pages/later.js"]
+    for name in names:
+        src = (_js_dir() / name).read_text(encoding="utf-8")
+        assert "alert(" not in src, f"{name} 仍有原生 alert 调用"
+    assert "export function toast(" in html, "confirm.js 应提供 toast"
+    assert ".toast{" in html and ".toast.show{" in html, "toast 样式应存在"
+
+
+def test_overview_search_placeholder_matches_implementation():
+    """总览搜索只按名称过滤,占位符不许承诺 UP 主/标题。"""
+    html = _tpl()
+    assert "搜索收藏夹名称" in html and "搜索合集名称" in html
+    assert "搜索收藏夹 / 标题 / UP 主" not in html
+    assert "搜索合集 / 标题 / UP 主" not in html
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    assert "搜索收藏夹名称" in fav_js and "搜索合集名称" in seasons_js, \
+        "进出详情时切换占位符的那份文案也要同步"
+    assert "搜索标题 / UP 主" in fav_js and "搜索标题 / UP 主" in seasons_js, \
+        "详情态仍应承诺标题/UP 主(那里确实按这两个字段过滤)"
+
+
+def test_frontend_assets_bumped_for_fix_batch():
+    """改过的静态资源版本号必须前进,避免浏览器吃旧副本。"""
+    html = _tpl()
+    assert "main.css?v=20261111b" in html and "app.js?v=20261111b" in html
+    assert "20261111a" not in html, "旧版本号不应残留"
+
+
+def test_downloads_head_has_single_new_download_entry():
+    """下载记录页头不再重复一颗「新建下载」(顶栏已有唯一入口)。"""
+    html = _tpl()
+    page = html[html.index('data-page="downloads"'):html.index('data-page="history"')]
+    assert "openDrawer('newdl')" not in page, "页头不应再有新建下载按钮"
+
+
+def test_duration_seconds_parses_bilibili_length_string():
+    """时长归一:数值 duration 优先,只有 length 时间串时解析它。
+
+    回归:关注动态走 space 投稿 vlist,条目只有 length("MM:SS"),_video_item 只读
+    duration → 整页没有时长角标(首页有、关注动态全没有)。
+    """
+    import bilibili_api as bapi
+    assert bapi._duration_seconds({"duration": 300}) == 300
+    assert bapi._duration_seconds({"duration": "300"}) == 300
+    assert bapi._duration_seconds({"length": "12:34"}) == 754
+    assert bapi._duration_seconds({"length": "1:02:03"}) == 3723
+    assert bapi._duration_seconds({"length": 300}) == 300
+    assert bapi._duration_seconds({"length": ""}) == 0
+    assert bapi._duration_seconds({}) == 0
+    assert "_duration_seconds(it)" in __import__("inspect").getsource(bapi._video_item), \
+        "_video_item 的时长必须走统一归一"
 
 
 # ---------- 本轮走查修复(2026-11-01):force 参数 / 二维码容量 / 空基线 / 401 ----------

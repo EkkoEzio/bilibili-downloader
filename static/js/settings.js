@@ -1,6 +1,7 @@
 /* 设置（账号抽屉下半部分）：改动即生效，无保存按钮。 */
 import { getJSON, postJSON } from './net.js';
 import { applyTheme } from './theme.js';
+import { toast } from './confirm.js';
 
 export let DL_DIR = '~/Downloads/bilibili';
 let _statusTimer = null;
@@ -94,7 +95,7 @@ export async function saveConfigField(patch) {
     flashSaved();
     if ('auto_refresh_minutes' in patch) loadAutoRefreshStatus();
     return r;
-  } catch (e) { alert('保存失败: ' + e.message); }
+  } catch (e) { toast('保存失败: ' + e.message); }
 }
 
 export function saveChk(name, el) {

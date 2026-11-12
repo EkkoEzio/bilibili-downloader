@@ -1,5 +1,6 @@
 /* 稍后再看：快数据源，缓存优先 + 后台无感替换。 */
 import { registerPage, state, libDom, renderPage, cachedLoad, replaceItems } from '../lib.js';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
 
@@ -14,11 +15,11 @@ export async function loadWatchlater() {
     showLoading: () => {
       const d = libDom();
       d.meta.textContent = '';
-      d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载稍后再看...</div>';
+      d.list.innerHTML = loadingStateHtml('加载稍后再看…');
     },
     showError: (msg) => {
       const d = libDom();
-      d.list.innerHTML = `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadWatchlater()">${icon('refresh')} 重试</button></div>`;
+      d.list.innerHTML = emptyStateHtml(escapeHtml(msg || '加载失败'), { retry: 'loadWatchlater()' });
     },
     apply: (b) => {
       replaceItems(b.items || []);

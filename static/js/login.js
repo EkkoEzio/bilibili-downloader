@@ -1,7 +1,7 @@
 /* 登录：状态刷新、扫码轮询、浏览器切换、cookies.txt 导入。 */
 import { getJSON, postText, postEmpty, isAbortError } from './net.js';
 import { icon } from './icons.js';
-import { announce, confirmAction, withPending } from './confirm.js';
+import { announce, confirmAction, toast, withPending } from './confirm.js';
 
 const STATUS_SUPERSEDED = Symbol('login-status-superseded');
 const MUTATION_SUPERSEDED = Symbol('auth-mutation-superseded');
@@ -206,7 +206,7 @@ export async function logout() {
   } catch (error) {
     if (!authMutationIsCurrent(mutationSequence)) return MUTATION_SUPERSEDED;
     announce(error.message || '退出失败', true);
-    alert(error.message || '退出失败');
+    toast(error.message || '退出失败');
   }
 }
 
@@ -241,7 +241,7 @@ export async function showQrcode() {
   const imgBox = document.getElementById('qrcode-img');
   const statusBox = document.getElementById('qr-status');
   const button = document.getElementById('qrcode-btn');
-  imgBox.innerHTML = '<div class="empty"><span class="spinner"></span>生成中...</div>';
+  imgBox.innerHTML = '<div class="empty"><span class="spinner"></span>生成中…</div>';
   statusBox.textContent = '';
   try {
     await withPending(button, '生成中…', async () => {
@@ -289,7 +289,7 @@ async function pollLogin(key, generation) {
       statusBox.textContent = '二维码已失效，请重新生成';
       stopQrPolling();
     } else {
-      statusBox.textContent = '等待扫码...';
+      statusBox.textContent = '等待扫码…';
       shouldContinue = true;
     }
   } catch (error) {
@@ -332,13 +332,13 @@ export async function useBrowser() {
   } catch (error) {
     if (!authMutationIsCurrent(mutationSequence)) return MUTATION_SUPERSEDED;
     announce('Edge 登录态切换失败：' + error.message, true);
-    alert('切换失败：' + error.message);
+    toast('切换失败：' + error.message);
   }
 }
 
 export async function uploadCookieTxt() {
   const text = document.getElementById('cookie-txt-input').value.trim();
-  if (!text) { alert('请粘贴 cookies.txt 内容'); return; }
+  if (!text) { toast('请粘贴 cookies.txt 内容'); return; }
   stopQrPolling();
   const mutationSequence = beginAuthMutation();
   const button = document.getElementById('cookie-import-btn');
@@ -360,7 +360,7 @@ export async function uploadCookieTxt() {
   } catch (error) {
     if (!authMutationIsCurrent(mutationSequence)) return MUTATION_SUPERSEDED;
     announce('cookies.txt 导入失败：' + error.message, true);
-    alert('导入失败：' + error.message);
+    toast('导入失败：' + error.message);
   }
 }
 

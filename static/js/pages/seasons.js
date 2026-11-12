@@ -1,17 +1,19 @@
 /* 追更合集：两级视图——顶层「我追的合集」卡片 / 进入后合集内视频列表。 */
 import { registerPage, state, libDom, renderDefaultList, cachedLoad,
-         getLibSearchQuery, replaceItems, refreshLib, renderPage } from '../lib.js';
+         getLibSearchQuery, replaceItems, refreshLib, renderPage,
+         collectionCard, collectionRow } from '../lib.js';
 import { getJSON, postJSON, isAbortError } from '../net.js';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 import { QUALITY_OPTIONS, QUALITY_CARD_LABELS } from '../quality.js';
-import { announce } from '../confirm.js';
+import { announce, toast } from '../confirm.js';
 
 let _seasons = [];
 /* 合集自动下载订阅状态:kind+id -> {quality} | null(未订阅) */
 let _collSubs = new Map();
 
-function _qualityOptionsHtml(cur) {
+export function _qualityOptionsHtml(cur) {
   // cur 为 null 表示「未订阅」:此时不能给任何画质项打 selected。
   // 否则它会和「不下载」同时 selected,浏览器只认最后一个,控件显示成
   // 「最高画质」而实际没有订阅;用户再选一次「最高画质」不产生 change
@@ -110,7 +112,7 @@ export async function collectionAutoChanged(sel) {
     }
   } catch (error) {
     announce(error.message || '操作失败', true);
-    alert(error.message || '操作失败');
+    toast(error.message || '操作失败');
   } finally {
     sel.disabled = false;
     if (state.mode === fromPage) renderPage();
@@ -141,7 +143,7 @@ function showOverview() {
   document.getElementById('season-page-title').textContent = '追更合集';
   document.getElementById('season-page-title').classList.add('sr-only');
   const search = document.querySelector('.page[data-page="seasons"] .lib-search');
-  if (search) search.placeholder = '搜索合集 / 标题 / UP 主';
+  if (search) search.placeholder = '搜索合集名称';
   document.getElementById('meta-seasons').textContent =
     _seasons.length ? `共 ${_seasons.length} 个追更中的合集` : '';
 }
@@ -173,11 +175,10 @@ export async function loadSeasons() {
     stillValid: () => state.mode === 'seasons' && !_seasonsCurrent,
     showLoading: () => {
       document.getElementById('season-overview').innerHTML =
-        '<div class="empty"><span class="spinner"></span>加载追更合集...</div>';
+        loadingStateHtml('加载追更合集…');
     },
     showError: (msg) => {
-      document.getElementById('season-overview').innerHTML =
-        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="loadSeasons()">${icon('refresh')} 重试</button></div>`;
+      document.getElementById('season-overview').innerHTML = emptyStateHtml(escapeHtml(msg || '加载失败'), { retry: 'loadSeasons()' });
     },
     apply: (b) => {
       _seasons = b.seasons || [];
@@ -211,7 +212,7 @@ function renderOverview() {
       : (all.length ? `共 ${all.length} 个追更中的合集` : '');
   }
   if (list.length === 0) {
-    box.innerHTML = `<div class="empty">${q ? '没有匹配结果（试试其他关键词）' : '还没有追的合集。在 B 站视频页点「追合集」后，会出现在这里。'}</div>`;
+    box.innerHTML = emptyStateHtml(q ? '没有匹配结果（试试其他关键词）' : '还没有追的合集。在 B 站视频页点「追合集」后，会出现在这里。');
     return;
   }
   box.innerHTML = state.view === 'grid'
@@ -227,37 +228,22 @@ const seasonCard = (s) => {
   const cover = normalizedCover && !isBilibiliDefaultCover(normalizedCover)
     ? normalizedCover
     : '';
-  const image = cover
-    ? `<img src="${escapeAttr(cover)}" alt="" onerror="this.hidden=true" loading="lazy">`
-    : '';
-  const itemCount = nonNegativeInt(s.media_count);
-  return `
-  <div class="fav-card" role="button" tabindex="0" onclick="seasonEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();seasonEnter(this.dataset.id)}" data-id="${escapeAttr(String(s.id ?? ''))}">
-    <div class="fc-cover">
-      <span class="fc-placeholder" aria-hidden="true">${icon('bilibili')}<span>暂无封面</span></span>
-      ${image}
-      <span class="uc-badge on">追更中</span>
-      <span class="fc-count">${itemCount} 个视频</span>
-    </div>
-    <div class="fc-head">
-      <div class="fc-title" title="${escapeAttr(s.title || '')}">${escapeHtml(s.title || '(未命名)')}</div>
-      ${collectionAutoControl('season', s.id, s.title || '该合集', s.title || '')}
-    </div>
-  </div>`;
+  return collectionCard({
+    id: s.id, title: s.title || '', count: s.media_count, cover,
+    badge: '<span class="uc-badge on">追更中</span>',
+    onEnter: 'seasonEnter',
+    autoHtml: collectionAutoControl('season', s.id, s.title || '该合集', s.title || ''),
+  });
 };
 
 function seasonRow(s) {
-  const itemCount = nonNegativeInt(s.media_count);
-  return `
-    <div class="fav-folder" role="button" tabindex="0" onclick="seasonEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();seasonEnter(this.dataset.id)}" data-id="${escapeAttr(String(s.id ?? ''))}">
-      <div class="fav-icon">${icon('layers')}</div>
-      <div class="fav-main">
-        <div class="fav-name">${escapeHtml(s.title)}<span class="fav-tag">追更中</span></div>
-        <div class="fav-count">${itemCount} 个视频</div>
-      </div>
-      ${collectionAutoControl('season', s.id, s.title || '该合集', s.title || '')}
-      <span class="fav-arrow">${icon('chevron')}</span>
-    </div>`;
+  return collectionRow({
+    id: s.id, title: s.title, count: s.media_count,
+    badge: '<span class="fav-tag">追更中</span>',
+    onEnter: 'seasonEnter',
+    autoHtml: collectionAutoControl('season', s.id, s.title || '该合集', s.title || ''),
+    iconName: 'layers',
+  });
 }
 
 export async function seasonEnter(sid) {
@@ -280,7 +266,7 @@ export async function seasonEnter(sid) {
   document.getElementById('season-page-title').classList.remove('sr-only');
   const d = libDom();
   d.meta.textContent = '';
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载合集内容...</div>';
+  d.list.innerHTML = loadingStateHtml('加载合集内容…');
   try {
     const r = await getJSON(`/api/season-content?season_id=${encodeURIComponent(String(sid))}`, {
       signal: controller.signal,
@@ -292,7 +278,7 @@ export async function seasonEnter(sid) {
     d.meta.textContent = `共 ${state.items.length} 条`;
   } catch (error) {
     if (isAbortError(error) || !seasonRequestIsCurrent(generation, controller, sid)) return;
-    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="seasonEnter(this.dataset.id)" data-id="${escapeAttr(String(sid))}">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = emptyStateHtml(escapeHtml(error.message || '加载失败'), { retry: 'seasonEnter(this.dataset.id)', retryId: String(sid) });
   }
 }
 

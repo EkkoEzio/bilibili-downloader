@@ -17,7 +17,9 @@ export function formatTime(ts) {
   if (diff < 3600) return Math.floor(diff / 60) + '分钟前';
   if (diff < 86400) return Math.floor(diff / 3600) + '小时前';
   if (diff < 604800) return Math.floor(diff / 86400) + '天前';
-  return (d.getMonth() + 1) + '/' + d.getDate();
+  // 绝对日期与 formatDay 统一口径(「9月12日」而非「9/12」):
+  // 同一屏里视频卡与 UP 卡两套日期写法是跨页不一致(2026-11-11 复查)。
+  return formatDay(ts);
 }
 
 /* 卡片上的「哪一天」:今年内给「M月D日」,跨年补上年份。

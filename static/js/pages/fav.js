@@ -1,9 +1,10 @@
 /* 我的收藏：两级视图——顶层收藏夹卡片 / 进入后夹内视频列表。 */
 import { registerPage, state, libDom, renderDefaultList, cachedLoad,
-         getLibSearchQuery, replaceItems } from '../lib.js';
+         getLibSearchQuery, replaceItems, collectionCard, collectionRow } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { collectionAutoControl, loadCollectionSubs,
-         collSubKey, collectionSub } from './seasons.js?v=20261111a';
+         collSubKey, collectionSub } from './seasons.js?v=20261111b';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, nonNegativeInt, safeHttpUrl } from '../util.js';
 
@@ -35,7 +36,7 @@ function showFolders() {
   document.getElementById('fav-page-title').textContent = '我的收藏';
   document.getElementById('fav-page-title').classList.add('sr-only');
   const search = document.getElementById('fav-search');
-  if (search) search.placeholder = '搜索收藏夹 / 标题 / UP 主';
+  if (search) search.placeholder = '搜索收藏夹名称';
   document.getElementById('meta-fav').textContent =
     _favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '';
 }
@@ -54,11 +55,10 @@ export async function favLoadFolders() {
     stillValid: () => state.mode === 'fav' && !_favCurrent,
     showLoading: () => {
       document.getElementById('fav-folder-list').innerHTML =
-        '<div class="empty"><span class="spinner"></span>加载收藏夹列表...</div>';
+        loadingStateHtml('加载收藏夹列表…');
     },
     showError: (msg) => {
-      document.getElementById('fav-folder-list').innerHTML =
-        `<div class="empty">${escapeHtml(msg || '加载失败')}<br><button class="ghost" onclick="favLoadFolders()">${icon('refresh')} 重试</button></div>`;
+      document.getElementById('fav-folder-list').innerHTML = emptyStateHtml(escapeHtml(msg || '加载失败'), { retry: 'favLoadFolders()' });
     },
     apply: (b) => {
       _favFolders = b.folders || [];
@@ -102,7 +102,7 @@ function renderFolders() {
       : (all.length ? `共 ${all.length} 个收藏夹` : '');
   }
   if (list.length === 0) {
-    box.innerHTML = `<div class="empty">${q ? '没有匹配的收藏夹（试试其他关键词）' : '暂无收藏夹'}</div>`;
+    box.innerHTML = emptyStateHtml(q ? '没有匹配的收藏夹（试试其他关键词）' : '暂无收藏夹');
     return;
   }
   box.innerHTML = state.view === 'grid'
@@ -112,53 +112,29 @@ function renderFolders() {
 
 const normalizedCover = (value) => safeHttpUrl(value, { httpsOnly: true });
 
-const coverMarkup = (cover) => {
-  const coverUrl = normalizedCover(cover);
-  const image = coverUrl
-    ? `<img src="${escapeAttr(coverUrl)}" alt="" onerror="this.hidden=true" loading="lazy">`
-    : '';
-  return `
-      <span class="fc-placeholder" aria-hidden="true">${icon('bilibili')}<span>暂无封面</span></span>
-      ${image}`;
-};
-
-const _card = (cover, count, title, id, badge = '') => {
-  const itemCount = nonNegativeInt(count);
-  return `
-  <div class="fav-card" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
-    <div class="fc-cover">
-      ${coverMarkup(cover)}
-      ${badge}
-      <span class="fc-count">${itemCount} 个视频</span>
-    </div>
-    <div class="fc-head">
-      <div class="fc-title" title="${escapeAttr(title)}">${escapeHtml(title)}</div>
-      ${collectionAutoControl('fav', id, title || '该收藏夹', title || '')}
-    </div>
-  </div>`;
-};
-
 const folderCard = (f) => {
   const learnedCover = _favLearnedCovers.get(String(f.id)) || '';
   /* 已订阅自动下载的收藏夹与追更合集卡共用同一枚「追更中」角标:
      合集卡恒挂、收藏夹卡只在订阅后挂,两页状态语言一致。 */
   const badge = collectionSub('fav', f.id) ? '<span class="uc-badge on">追更中</span>' : '';
-  return _card(normalizedCover(f.cover) || learnedCover,
-               f.media_count, f.title || '(未命名)', f.id, badge);
+  return collectionCard({
+    id: f.id, title: f.title || '', count: f.media_count,
+    cover: normalizedCover(f.cover) || learnedCover, badge,
+    onEnter: 'favEnter',
+    autoHtml: collectionAutoControl('fav', f.id, f.title || '该收藏夹', f.title || ''),
+  });
 };
 
 function folderRow(f) {
-  const itemCount = nonNegativeInt(f.media_count);
-  return `
-    <div class="fav-folder" role="button" tabindex="0" onclick="favEnter(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();favEnter(this.dataset.id)}" data-id="${escapeAttr(String(f.id ?? ''))}">
-      <div class="fav-icon">${icon('folder')}</div>
-      <div class="fav-main">
-        <div class="fav-name">${escapeHtml(f.title)}</div>
-        <div class="fav-count">${itemCount} 个视频</div>
-      </div>
-      ${collectionAutoControl('fav', f.id, f.title || '该收藏夹', f.title || '')}
-      <span class="fav-arrow">${icon('chevron')}</span>
-    </div>`;
+  /* 与网格卡的 .uc-badge.on、合集行式行的 .fav-tag 同一枚状态标记:
+     行式没有封面可挂角标,标签形式在两个视图之间保持订阅状态可见。 */
+  const badge = collectionSub('fav', f.id) ? '<span class="fav-tag">追更中</span>' : '';
+  return collectionRow({
+    id: f.id, title: f.title, count: f.media_count, badge,
+    onEnter: 'favEnter',
+    autoHtml: collectionAutoControl('fav', f.id, f.title || '该收藏夹', f.title || ''),
+    iconName: 'folder',
+  });
 }
 
 function showList(title) {
@@ -186,7 +162,7 @@ export async function favEnter(fid) {
   showList(folder.title);
   const d = libDom();
   d.meta.textContent = '';
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>加载收藏夹内容...</div>';
+  d.list.innerHTML = loadingStateHtml('加载收藏夹内容…');
   try {
     const r = await getJSON(`/api/fav-content?media_id=${encodeURIComponent(String(fid))}`, {
       signal: controller.signal,
@@ -203,7 +179,7 @@ export async function favEnter(fid) {
     d.meta.textContent = `共 ${state.items.length} 条`;
   } catch (error) {
     if (isAbortError(error) || !favRequestIsCurrent(generation, controller, fid)) return;
-    d.list.innerHTML = `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="favEnter(this.dataset.id)" data-id="${escapeAttr(String(fid))}">${icon('refresh')} 重试</button></div>`;
+    d.list.innerHTML = emptyStateHtml(escapeHtml(error.message || '加载失败'), { retry: 'favEnter(this.dataset.id)', retryId: String(fid) });
   }
 }
 

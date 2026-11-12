@@ -132,6 +132,55 @@ def _my_mid(cj) -> Optional[int]:
         return None
 
 
+def _duration_seconds(it: dict) -> int:
+    """条目时长(秒)。优先数值 duration;只有 "MM:SS" 的 length 串时解析它。
+
+    关注动态走 space 投稿 vlist,条目里只有 length 字符串、没有数值 duration,
+    不解析就会整页缺时长角标(2026-11-11 复查:首页有、关注动态全没有)。
+    length 也可能是秒数(不同接口口径不一),所以先按数值解析再退回时间串。
+    """
+    raw = it.get("duration")
+    if raw not in (None, ""):
+        try:
+            seconds = int(float(raw))
+            if seconds > 0:
+                return seconds
+        except (TypeError, ValueError):
+            pass
+    parts = str(it.get("length") or "").strip().split(":")
+    if not 1 <= len(parts) <= 3:
+        return 0
+    try:
+        total = 0
+        for part in parts:
+            total = total * 60 + int(part)
+    except (TypeError, ValueError):
+        return 0
+    return total if total > 0 else 0
+
+
+def _stat_counts(it: dict) -> tuple[str, str]:
+    """播放数与点赞数的中文短格式,各接口口径不一致,这里统一兜底。
+
+    B 站不同列表接口把计数放在不同容器里:投稿流、历史、稍后再看放在 stat,
+    收藏夹资源放在 cnt_info;而且有的接口(稍后再看、合集内容)只给播放、
+    没有点赞。取不到一律返回空串,前端按字段有无决定是否显示该指标 ——
+    这样各页面共用同一套卡片字段,差异只体现在数据本身,不再体现在卡片外观。
+    """
+    def pick(*values):
+        for value in values:
+            if value not in (None, ""):
+                return value
+        return None
+
+    stat = it.get("stat") if isinstance(it.get("stat"), dict) else {}
+    cnt = it.get("cnt_info") if isinstance(it.get("cnt_info"), dict) else {}
+    view = pick(stat.get("view"), stat.get("play"), cnt.get("play"), cnt.get("view"),
+                it.get("play"), it.get("view"))
+    like = pick(stat.get("like"), cnt.get("like"), it.get("like"))
+    return _format_count(view), _format_count(like)
+
+
 def _video_item(it: dict, *, owner_key="owner", name_key="name", pic_key="pic",
                 view_at_key="view_at", mark_invalid=False, **extra) -> dict:
     """把 B 站各接口的原始条目归一化成前端统一的视频卡字段。"""
@@ -140,14 +189,18 @@ def _video_item(it: dict, *, owner_key="owner", name_key="name", pic_key="pic",
     title = it.get("title") or ""
     if mark_invalid and it.get("attr"):
         title = title or "已失效视频"
+    stat_view, stat_like = _stat_counts(it)
     item = {
         "bvid": bvid,
         "title": title,
         "uploader": (owner.get(name_key) or "") if owner_key else (it.get(name_key) or ""),
         "uploader_mid": owner.get("mid") if owner_key else None,
         "thumbnail": (it.get(pic_key) or "").replace("http:", "https:"),
-        "duration": it.get("duration") or 0,
+        "duration": _duration_seconds(it),
         "url": f"https://www.bilibili.com/video/{bvid}" if bvid else "",
+        # 播放/点赞:所有视频列表页共用同一口径,取不到就是空串
+        "stat_view": stat_view,
+        "stat_like": stat_like,
     }
     if view_at_key:
         item["view_at"] = it.get(view_at_key, 0) or 0
@@ -667,26 +720,14 @@ def fetch_home_feed(fresh_idx: int = 1, ps: int = 12, *, context=None) -> list[d
         bvid = it.get("bvid") or ""
         if not bvid:
             continue
-        stat = it.get("stat") or {}
         rcmd = it.get("rcmd_reason") or {}
         reason = ""
         if rcmd.get("reason_type") == 1:
             reason = "已关注"
         elif str(rcmd.get("content") or "").strip():
             reason = str(rcmd["content"]).strip()
-        out.append({
-            "bvid": bvid,
-            "title": it.get("title") or "",
-            "uploader": (it.get("owner") or {}).get("name", ""),
-            "uploader_mid": (it.get("owner") or {}).get("mid"),
-            "thumbnail": (it.get("pic") or "").replace("http:", "https:"),
-            "duration": it.get("duration") or 0,
-            "url": f"https://www.bilibili.com/video/{bvid}",
-            "view_at": it.get("pubdate") or 0,
-            "rcmd_reason": reason,
-            "stat_view": _format_count(stat.get("view")),
-            "stat_like": _format_count(stat.get("like")),
-        })
+        # 与其它列表页共用同一套条目归一化:视频卡字段只有一处真相源
+        out.append(_video_item(it, view_at_key="pubdate", rcmd_reason=reason))
     return out
 
 

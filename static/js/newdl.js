@@ -4,8 +4,8 @@ import { escapeHtml, escapeAttr, formatDuration, pageFromUrl,
          safeHttpUrl, nonNegativeInt } from './util.js';
 import { goPage, isUrlDownloaded, itemBusinessId } from './lib.js';
 import { closeDrawer } from './drawer.js';
-import { announce, setBusy, withPending } from './confirm.js';
-import { subscribeProgress } from './pages/downloads.js?v=20261111a';
+import { announce, setBusy, toast, withPending } from './confirm.js';
+import { subscribeProgress } from './pages/downloads.js?v=20261111b';
 import { QUALITY_OPTIONS } from './quality.js';
 
 let _singleUrl = '';
@@ -73,7 +73,7 @@ export async function smartParse() {
   const text = document.getElementById('dl-input').value.trim();
   if (!text) {
     announce('请先粘贴 B 站链接', true);
-    alert('请粘贴链接');
+    toast('请粘贴链接');
     return;
   }
   const lines = text.split('\n').map(s => s.trim()).filter(Boolean);
@@ -87,7 +87,7 @@ async function parseVideo(url) {
   const btn = document.getElementById('parse-btn');
   const box = document.getElementById('parse-result');
   setBusy(btn, true, '解析中…');
-  box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中...</div>';
+  box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中…</div>';
   document.getElementById('batch-result').innerHTML = '';
   _singleUrl = '';
   _singleInfo = null;
@@ -129,7 +129,7 @@ function renderParseResult(info, url, loggedIn) {
           <div class="vt">${escapeHtml(info.title)} <span class="vt-part">（共 ${info.parts.length} P）</span></div>
           <div class="vm">UP主：${escapeHtml(info.uploader || '-')}</div>
           <div class="btn-row"><select id="part-select" aria-label="选择分 P"></select></div>
-          <div id="part-formats" class="mt-10"><div class="hint"><span class="spinner"></span>加载清晰度...</div></div>
+          <div id="part-formats" class="mt-10"><div class="hint"><span class="spinner"></span>加载清晰度…</div></div>
         </div>
       </div>`;
     const sel = document.getElementById('part-select');
@@ -164,7 +164,7 @@ async function loadPartFormats() {
   const page = select.value;
   const box = document.getElementById('part-formats');
   const { generation, controller } = beginPartRequest();
-  box.innerHTML = '<div class="hint"><span class="spinner"></span>加载清晰度...</div>';
+  box.innerHTML = '<div class="hint"><span class="spinner"></span>加载清晰度…</div>';
   try {
     const r = await postJSON('/api/parse-part', { url, page: parseInt(page) }, {
       signal: controller.signal,
@@ -236,7 +236,7 @@ export async function startDownload(button = null) {
       message += '，请在「下载记录」查看该任务';
     }
     announce(message, true);
-    alert(message);
+    toast(message);
   }
 }
 
@@ -246,7 +246,7 @@ async function batchParse(lines) {
   const btn = document.getElementById('parse-btn');
   setBusy(btn, true, '解析中…');
   document.getElementById('parse-result').innerHTML = '';
-  box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中...（收藏夹/合集可能需要一点时间）</div>';
+  box.innerHTML = '<div class="empty"><span class="spinner"></span>解析中…（收藏夹/合集可能需要一点时间）</div>';
   _singleUrl = '';
   _singleInfo = null;
   replaceBatchItems([]);
@@ -320,7 +320,7 @@ export async function batchDownload(button = null) {
   const checked = [...document.querySelectorAll('input[data-bid]:checked')];
   if (checked.length === 0) {
     announce('请至少勾选一项', true);
-    alert('请至少勾选一项');
+    toast('请至少勾选一项');
     return;
   }
   const label = document.getElementById('batch-quality')?.value || '';
@@ -335,7 +335,7 @@ export async function batchDownload(button = null) {
   items = items.filter(it => !isUrlDownloaded(it.url));
   if (items.length === 0) {
     announce('所选项均已下载过');
-    alert('所选项均已下载过');
+    toast('所选项均已下载过');
     return;
   }
   const submitButton = button || document.getElementById('batch-download-btn');
@@ -347,12 +347,12 @@ export async function batchDownload(button = null) {
     });
     const message = `已加入 ${r.count} 个下载任务${skipped ? `（跳过 ${skipped} 个已下载）` : ''}`;
     announce(message);
-    alert(message);
+    toast(message);
     r.task_ids.forEach(subscribeProgress);
   } catch (error) {
     const message = error.message || '启动失败';
     announce(message, true);
-    alert(message);
+    toast(message);
   }
 }
 

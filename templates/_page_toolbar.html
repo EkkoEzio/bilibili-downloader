@@ -1,0 +1,12 @@
+{% macro lib_toolbar(placeholder, refresh, refresh_title='刷新', search_id='', search_style='', view_id='') %}
+<div class="ph-right">
+  <input type="text" class="search-input lib-search" aria-label="搜索当前页面"
+    {%- if search_id %} id="{{ search_id }}"{% endif %} placeholder="{{ placeholder }}" oninput="applyLibFilter()"
+    {%- if search_style %} style="{{ search_style }}"{% endif %}>
+  <button class="ghost icon-only" onclick="{{ refresh }}" title="{{ refresh_title }}">
+    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+  </button>
+  <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"
+    {%- if view_id %} id="{{ view_id }}"{% endif %}></button>
+</div>
+{% endmacro %}

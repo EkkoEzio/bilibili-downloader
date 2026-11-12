@@ -92,6 +92,24 @@ export function announce(message, assertive = false) {
   window.requestAnimationFrame(() => { region.textContent = String(message || ''); });
 }
 
+/* 非阻塞轻提示:可见反馈通道(替代原生 alert 的阻塞弹窗)。无障碍播报仍走
+   announce(),这里刻意不挂 aria-live,避免同一句话被读屏播两遍。 */
+let _toastEl = null;
+let _toastTimer = null;
+
+export function toast(message) {
+  if (!_toastEl) {
+    _toastEl = document.createElement('div');
+    _toastEl.className = 'toast';
+    _toastEl.setAttribute('role', 'presentation');
+    document.body.appendChild(_toastEl);
+  }
+  _toastEl.textContent = String(message ?? '');
+  _toastEl.classList.add('show');
+  clearTimeout(_toastTimer);
+  _toastTimer = setTimeout(() => _toastEl && _toastEl.classList.remove('show'), 3000);
+}
+
 const dialog = document.getElementById('confirm-dialog');
 if (dialog) {
   dialog.addEventListener('close', () => settle(dialog.returnValue === 'confirm'));

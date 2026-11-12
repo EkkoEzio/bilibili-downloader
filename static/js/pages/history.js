@@ -2,6 +2,7 @@
 import { registerPage, state, libDom, renderPage, getLibSearchQuery, curChunk,
          replaceItems, appendItems } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
+import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
 import { announce } from '../confirm.js';
@@ -34,7 +35,7 @@ export async function loadHistory() {
   _histLoading = true;
 
   const d = libDom();
-  d.list.innerHTML = '<div class="empty"><span class="spinner"></span>正在获取...</div>';
+  d.list.innerHTML = loadingStateHtml('正在获取…');
   d.meta.textContent = '';
   replaceItems([]);
   state.shown = 0;
@@ -66,8 +67,7 @@ async function fetchHistoryPage(generation, controller) {
   } catch (error) {
     if (isAbortError(error) || !historyRequestIsCurrent(generation, controller)) return false;
     if (nextPage === 1) {
-      libDom().list.innerHTML =
-        `<div class="empty">${escapeHtml(error.message || '加载失败')}<br><button class="ghost" onclick="loadHistory()">${icon('refresh')} 重试</button></div>`;
+      libDom().list.innerHTML = emptyStateHtml(escapeHtml(error.message || '加载失败'), { retry: 'loadHistory()' });
       _histHasMore = false;
     } else {
       // 翻页失败:保留已渲染的首页内容,不把整列表换成错误占位;

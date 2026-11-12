@@ -1,54 +1,54 @@
 /* ============================================================
-   bilibili 下载 · 视觉系统 v3「B 站 Next · 顶栏版」
+   bilibili 下载 · 视觉系统 v4「Vercel · Geist」
    ------------------------------------------------------------
-   身份:不离弃 B 站脸 —— 粉只做行动(#fb7299 系),蓝只做信息(#00aeec 系),
-        其余全部中性;层次靠留白与明度,不靠描边。
-   骨架:顶栏(品牌+8 页签+账号/设置/新建下载) + 满宽内容区;.content 滚动。
-   约束:JS 层零改动 —— 本文件覆盖 index.html 静态结构与 lib.js / 各页面
-        JS 生成的全部类名;--card-min / --card-gap 是 lib.js 首屏条数的
-        计算事实源,必须保留在 :root。
+   设计语言:近白画布(canvas-soft) + 纯白卡 + hairline 分隔 + 极淡叠加阴影;
+        Geist/Inter 字阶、技术标签等宽、主 CTA 胶囊、控件 6px 小圆角。
+   品牌约束:强调色继续 B站粉(#fb7299 系),浅/深主题都不换;信息色采用
+        Vercel Link Blue;成功/警示/错误仍保留独立语义色。
+   结构约束:--card-min / --card-gap 仍是 lib.js 首屏条数的事实源;
+        .uc-badge / .uc-auto / .confirm-dialog 等测试锁定选择器原文保留。
    ============================================================ */
 
 :root{
-  /* 画布与表面 */
-  --bg:#f6f7f8; --card:#ffffff; --bg-card:#ffffff; --bg-soft:#f1f2f3; --bg-hover:#e9ebee;
-  --line:#eceef0; --line-soft:#f2f3f5;
+  /* Vercel 表面阶梯:canvas-soft → canvas → canvas-soft-2 */
+  --bg:#fafafa; --card:#ffffff; --bg-card:#ffffff; --bg-soft:#f5f5f5; --bg-hover:#f0f0f0;
+  --line:#ebebeb; --line-soft:#f0f0f0;
 
-  /* 文本(B 站三级灰) */
-  --text-main:#18191c; --text-soft:#61666d; --text-mute:#9499a0;
+  /* Geist 文本:ink / body / mute */
+  --text-main:#171717; --text-soft:#4d4d4d; --text-mute:#888888;
   --ink:var(--text-main); --sub:var(--text-soft); --faint:var(--text-mute);
 
-  /* 双色系统:粉=行动/选中/追更,蓝=信息(推荐理由/下载中) */
+  /* 品牌强调色保持 B站粉;信息色用 Vercel Link Blue */
   --accent:#f25d8e; --accent-hover:#fb7299; --accent-bright:#fb7299;
-  --accent-soft:rgba(251,114,153,.10);
-  --blue:#00aeec; --blue-soft:rgba(0,174,236,.09); --blue-solid:#0b7ba5;
+  --accent-soft:rgba(251,114,153,.12);
+  --blue:#0070f3; --blue-soft:#d3e5ff; --blue-solid:#0761d1;
 
   /* 语义色 */
-  --green:#1e8a3c; --green-soft:rgba(30,138,60,.09); --green-solid:#1e8a3c;
-  --red:#c62828; --red-soft:rgba(198,40,40,.07);
-  --red-solid:#c62828; --amber:#9a6700; --amber-soft:rgba(154,103,0,.10);
+  --green:#1e8a3c; --green-soft:rgba(30,138,60,.10); --green-solid:#1e8a3c;
+  --red:#ee0000; --red-soft:#f7d4d6;
+  --red-solid:#c50000; --amber:#ab570a; --amber-soft:#ffefcf;
 
   /* lib.js 首屏条数计算的事实源,勿删;也是全部内容网格的列宽下限 */
-  --card-min:320px; --card-gap:14px;
+  --card-min:320px; --card-gap:16px;
 
-  /* 控件与形状 */
-  --ctl-h:32px; --radius:10px; --radius-ctl:8px;
-  --shadow-sm:0 1px 2px rgba(21,22,27,.05);
-  --shadow-md:0 12px 32px rgba(21,22,27,.14);
+  /* 控件与形状:Vercel lg=12 / sm=6,主 CTA 100px 胶囊 */
+  --ctl-h:32px; --radius:12px; --radius-ctl:6px;
+  --shadow-sm:0 1px 1px rgba(0,0,0,.02),0 2px 2px rgba(0,0,0,.04);
+  --shadow-md:0 10px 15px -3px rgba(0,0,0,.10),0 4px 6px -4px rgba(0,0,0,.10);
 
-  --font:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
-  --mono:"SF Mono",Menlo,Consolas,monospace;
+  --font:"Geist",Inter,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
+  --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
 }
 body.dark{
-  --bg:#17171c; --card:#222327; --bg-card:#222327; --bg-soft:#2b2c31; --bg-hover:#34353b;
-  --line:#2c2e34; --line-soft:#26282e;
-  --text-main:#eceef1; --text-soft:#b2b7c0; --text-mute:#9ba1ac;
+  --bg:#000000; --card:#111111; --bg-card:#111111; --bg-soft:#1a1a1a; --bg-hover:#262626;
+  --line:#333333; --line-soft:#1f1f1f;
+  --text-main:#ffffff; --text-soft:#a1a1a1; --text-mute:#8a8a8a;
   --accent:#ff719e; --accent-hover:#ff8bb2; --accent-bright:#fb7299;
-  --accent-soft:rgba(251,114,153,.14);
-  --blue:#23ade5; --blue-soft:rgba(35,173,229,.13); --blue-solid:#12799e;
-  --green:#7fce92; --green-soft:rgba(127,206,146,.10); --green-solid:#2f7d4a;
-  --red:#f09898; --red-soft:rgba(240,152,152,.10);
-  --red-solid:#b53939; --amber:#ffd166; --amber-soft:rgba(255,209,102,.10);
+  --accent-soft:rgba(251,114,153,.16);
+  --blue:#4d9dff; --blue-soft:rgba(77,157,255,.16); --blue-solid:#0761d1;
+  --green:#7fce92; --green-soft:rgba(127,206,146,.14); --green-solid:#2f7d4a;
+  --red:#ff8080; --red-soft:rgba(238,0,0,.16);
+  --red-solid:#c50000; --amber:#ffc76b; --amber-soft:rgba(245,166,35,.16);
   --shadow-md:0 12px 32px rgba(0,0,0,.5);
 }
 
@@ -56,7 +56,7 @@ body.dark{
 *{box-sizing:border-box;margin:0;padding:0}
 html{-webkit-font-smoothing:antialiased;color-scheme:light}
 body.dark{color-scheme:dark}
-body{font-family:var(--font);font-size:14px;line-height:1.55;background:var(--bg);color:var(--text-main)}
+body{font-family:var(--font);font-size:14px;line-height:1.5;background:var(--bg);color:var(--text-main)}
 button{font:inherit;color:inherit;background:none;border:none;cursor:pointer}
 button svg{width:14px;height:14px}
 button.primary,button.ghost,button.quiet,button.danger,button.danger-solid{white-space:nowrap;flex-shrink:0}
@@ -86,25 +86,25 @@ body.action-bar-open .content{padding-bottom:150px}
 /* ---------- 顶栏 ---------- */
 .topbar{flex-shrink:0;display:flex;align-items:center;gap:16px;height:56px;padding:0 22px;
   background:var(--card);border-bottom:1px solid var(--line);position:relative;z-index:30}
-.brand{display:flex;align-items:center;gap:9px;color:var(--accent-bright);font-weight:700;font-size:15px;flex-shrink:0}
-.brand .logo{width:30px;height:30px;border-radius:9px;background:var(--accent-bright);color:#fff;display:grid;place-items:center}
+.brand{display:flex;align-items:center;gap:9px;color:var(--accent-bright);font-weight:600;font-size:15px;flex-shrink:0}
+.brand .logo{width:30px;height:30px;border-radius:6px;background:var(--accent-bright);color:#fff;display:grid;place-items:center}
 .brand .logo svg{width:17px;height:17px}
 #nav{display:flex;align-items:center;gap:2px;flex:1;min-width:0;overflow-x:auto;scrollbar-width:none}
 #nav::-webkit-scrollbar{display:none}
-.nav-item{display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:8px;
-  color:var(--text-soft);font-size:13.5px;white-space:nowrap;position:relative;transition:color .12s,background .12s}
+.nav-item{display:flex;align-items:center;gap:7px;padding:7px 12px;border-radius:6px;
+  color:var(--text-soft);font-size:13.5px;font-weight:400;letter-spacing:-.28px;white-space:nowrap;position:relative;transition:color .12s,background .12s}
 .nav-item svg{width:16px;height:16px}
 .nav-item:hover{color:var(--text-main);background:var(--bg)}
-.nav-item.active{color:var(--accent);font-weight:600;background:var(--accent-soft)}
+.nav-item.active{color:var(--accent);font-weight:500;background:var(--accent-soft)}
 .nav-badge{display:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);
   color:#fff;font-family:var(--mono);font-size:10px;line-height:16px;text-align:center;font-weight:600}
 .tb-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
 /* 顶栏「新建下载」复用 button.primary(index.html 写 class="primary tb-btn",
    tb-btn 只保留窄窗响应式),同一颗按钮不再有两套样式 */
-.tb-ic{width:32px;height:32px;border:1px solid var(--line);border-radius:99px;display:grid;place-items:center;color:var(--text-soft)}
+.tb-ic{width:32px;height:32px;border:1px solid var(--line);border-radius:6px;display:grid;place-items:center;color:var(--text-soft)}
 .tb-ic:hover{color:var(--text-main);border-color:var(--text-mute)}
 .tb-acct{display:flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:1px solid var(--line);
-  border-radius:99px;color:var(--text-soft);font-size:12.5px;max-width:180px}
+  border-radius:6px;color:var(--text-soft);font-size:12.5px;max-width:180px}
 .tb-acct:hover{border-color:var(--accent-bright);color:var(--text-main)}
 .tb-acct #account-side-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--text-mute);flex-shrink:0}
@@ -117,30 +117,30 @@ body.action-bar-open .content{padding-bottom:150px}
 .page-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
 /* 页标题由 sr-only 提升为可见(演示版同款) */
 .page-head h1{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;
-  font-size:19px;font-weight:700;letter-spacing:.01em}
+  font-size:20px;font-weight:600;letter-spacing:-.6px}
 .ph-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ph-add{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ph-add .tb-input{width:360px;max-width:100%;border-radius:99px}
+.ph-add .tb-input{width:360px;max-width:100%;border-radius:6px}
 .sub-info{display:flex;align-items:center;gap:14px;flex-wrap:wrap;color:var(--text-mute);font-size:12.5px;
   margin:0 0 16px;min-height:20px}
 .sub-info .si-actions{display:flex;gap:8px;margin-left:auto}
-button.primary{display:inline-flex;align-items:center;gap:6px;height:var(--ctl-h);padding:0 15px;border-radius:99px;
-  background:var(--accent);color:#fff;font-size:12.5px;font-weight:600;transition:background .12s}
+button.primary{display:inline-flex;align-items:center;gap:6px;height:var(--ctl-h);padding:0 15px;border-radius:100px;
+  background:var(--accent);color:#fff;font-size:13px;font-weight:500;transition:background .12s}
 button.primary:hover{background:var(--accent-hover)}
-button.ghost{display:inline-flex;align-items:center;gap:6px;height:var(--ctl-h);padding:0 13px;border-radius:8px;
-  border:1px solid var(--line);color:var(--text-soft);font-size:12.5px;background:var(--card);transition:all .12s}
+button.ghost{display:inline-flex;align-items:center;gap:6px;height:var(--ctl-h);padding:0 13px;border-radius:6px;
+  border:1px solid var(--line);color:var(--text-soft);font-size:13px;font-weight:500;background:var(--card);transition:all .12s}
 button.ghost:hover{color:var(--text-main);border-color:var(--text-mute)}
 button.ghost.icon-only{width:var(--ctl-h);padding:0;justify-content:center}
 button.ghost svg{width:14px;height:14px}
-button.quiet{display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:7px;
+button.quiet{display:inline-flex;align-items:center;height:28px;padding:0 10px;border-radius:6px;
   color:var(--text-soft);font-size:12px}
 button.quiet:hover{background:var(--bg);color:var(--text-main)}
 button.quiet.icon-only{width:28px;padding:0;justify-content:center}
 button.quiet.icon-only svg{width:14px;height:14px}
-button.danger{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:7px;
+button.danger{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:6px;
   border:1px solid var(--red);color:var(--red);font-size:12px;background:var(--card);transition:all .12s}
 button.danger:hover{background:var(--red-soft)}
-button.danger-solid{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:7px;
+button.danger-solid{display:inline-flex;align-items:center;height:28px;padding:0 12px;border-radius:6px;
   background:var(--red-solid);color:#fff;font-size:12px;font-weight:600}
 button.danger-solid:hover{filter:brightness(1.08)}
 .spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--line);border-top-color:var(--accent);
@@ -149,12 +149,12 @@ button.danger-solid:hover{filter:brightness(1.08)}
 
 /* 页头搜索:紧贴标题,不再横跨全宽 */
 .search-input,.tb-input,select,.modal-input{
-  height:var(--ctl-h);padding:0 12px;border:1px solid var(--line);border-radius:99px;
+  height:var(--ctl-h);padding:0 12px;border:1px solid var(--line);border-radius:6px;
   background:var(--card);color:var(--text-main);font-size:12.5px;outline:none;transition:border-color .12s}
 .search-input{width:230px}
-.tb-input{width:min(460px,100%);border-radius:8px}
+.tb-input{width:min(460px,100%);border-radius:6px}
 .search-input:focus,.tb-input:focus,select:focus{border-color:var(--accent)}
-select{padding-right:26px;border-radius:8px;appearance:none;
+select{padding-right:26px;border-radius:6px;appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239499a0' stroke-width='2.4' stroke-linecap='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 6px center}
 .lib-quality{min-width:120px}
@@ -170,15 +170,17 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .row-list{display:flex;flex-direction:column;gap:8px}
 
 /* ---------- 视频卡(网格) ---------- */
-.video-item{position:relative;background:var(--card);border-radius:12px;overflow:hidden;
+.video-item{position:relative;background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;
   transition:transform .16s ease,box-shadow .16s ease}
-.lib-grid .video-item:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10)}
+.lib-grid .video-item:hover{transform:translateY(-3px);box-shadow:0 1px 1px rgba(0,0,0,.03),0 4px 8px rgba(0,0,0,.05)}
 .video-item.checked{outline:2px solid var(--accent-bright);outline-offset:1px}
 .video-item.checked::after{content:"";position:absolute;top:10px;left:10px;z-index:5;width:22px;height:22px;
   border-radius:50%;background:var(--accent-bright)}
 .video-item.checked::before{content:"";position:absolute;top:16px;left:15px;z-index:6;width:10px;height:5px;
   border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg);border-radius:1px}
-.thumb-wrap{position:relative;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
+/* 显式 width:100% 必须给:aspect-ratio 的传递尺寸在 max-height 生效时会把宽度反压回
+   220×16/9≈391px,列宽 >391px 的窗口(约 2 列宽)下封面右侧留白带(2026-11-11 实拍)。 */
+.thumb-wrap{position:relative;width:100%;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
 .lib-grid .thumb-wrap{border-radius:0}
 .thumb-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .2s}
 .lib-grid .video-item:hover .thumb-wrap img{transform:scale(1.04)}
@@ -192,7 +194,7 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .lib-grid .dp-meta{padding:6px 13px 0}
 .lib-grid .dp-err{margin:6px 13px 0}
 .thumb-dur{position:absolute;right:8px;bottom:8px;background:rgba(20,21,24,.72);color:#fff;
-  font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:5px;z-index:2}
+  font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px;z-index:2}
 .vi-play{position:absolute;right:8px;bottom:8px;width:28px;height:28px;border-radius:50%;
   background:var(--accent);color:#fff;display:grid;place-items:center;box-shadow:0 3px 10px rgba(251,114,153,.4);z-index:2}
 .vi-play svg{width:12px;height:12px}
@@ -206,8 +208,10 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .vi-meta{display:flex;align-items:center;justify-content:space-between;gap:8px}
 .vi-ident{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-soft);font-size:12px}
 .vi-ident a:hover{color:var(--accent)}
-.vi-stats{display:flex;gap:10px;flex-shrink:0;color:var(--faint);font-size:11px;font-family:var(--mono)}
-.vi-stat{display:inline-flex;align-items:center;gap:3px}
+.vi-stats{display:flex;gap:5px;flex-shrink:0;font-size:11px;font-weight:600;font-family:var(--mono)}
+.vi-stat{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;
+  background:var(--bg-soft);color:var(--text-soft)}
+.vi-stat.v-view{background:var(--accent-soft);color:var(--accent)}
 .vi-stat svg{width:11px;height:11px}
 .vi-watchbar{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
 .vi-watchbar i{display:block;height:100%;background:var(--accent-bright);border-radius:2px}
@@ -221,9 +225,16 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .dl-badge svg{width:11px;height:11px}
 .dl-badge.active{color:var(--blue);background:var(--blue-soft)}
 
+/* 状态角标统一为同一个组件的五种业务别名：合集追更、UP 关注、视频下载、
+   推荐理由与任务状态。尺寸/字重/圆角/间距只有这一处，颜色由各自语义类决定。 */
+.uc-badge,.fav-tag,.dl-badge,.rcmd-badge,.status-tag{
+  display:inline-flex;align-items:center;gap:3px;font-size:10.5px;line-height:1.6;
+  padding:1px 7px;border-radius:4px;white-space:nowrap;
+}
+
 /* 列表模式 */
-.video-item.lv{display:flex;align-items:center;gap:13px;padding:9px 12px;border-radius:12px;background:transparent}
-.video-item.lv:hover{background:var(--card);box-shadow:var(--shadow-sm)}
+.video-item.lv{display:flex;align-items:center;gap:13px;padding:9px 12px;border-radius:var(--radius-ctl);background:transparent;border-color:transparent}
+.video-item.lv:hover{background:var(--card);box-shadow:var(--shadow-sm);transform:translateY(-1px)}
 .video-item.lv .thumb-wrap{width:150px;flex-shrink:0;border-radius:8px}
 .video-item.lv .lv-body{flex:1;min-width:0}
 .video-item.lv .vi-title{padding:0;font-weight:500}
@@ -238,7 +249,7 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .video-item.checked .vi-check-hit::before{background:var(--accent-bright);border-color:var(--accent-bright)}
 
 /* ---------- 下载任务进度(状态标签 + 进度条) ---------- */
-.status-tag{display:inline-flex;font-size:10.5px;padding:1px 7px;border-radius:5px;
+.status-tag{display:inline-flex;font-size:10.5px;padding:1px 7px;border-radius:4px;
   color:var(--faint);background:var(--bg-soft)}
 .status-tag.downloading{color:var(--blue);background:var(--blue-soft)}
 .status-tag.merging{color:var(--blue);background:var(--blue-soft)}
@@ -252,7 +263,7 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .dp-spd{color:var(--text-soft)}
 .dp-eta{color:var(--text-mute)}
 .q-label{color:var(--text-mute)}
-.dp-err{margin-top:6px;font-size:11.5px;color:var(--red);background:var(--red-soft);border-radius:7px;padding:5px 9px;
+.dp-err{margin-top:6px;font-size:11.5px;color:var(--red);background:var(--red-soft);border-radius:6px;padding:5px 9px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dp-meta button{margin-left:auto}
 /* 名称冲突的处理按钮收进错误条:用卡内紧凑档 28px,错误条允许换行;
@@ -265,16 +276,16 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .up-list{display:flex;flex-direction:column;gap:8px}
 /* 三种卡(视频/UP/收藏·合集)统一外壳:无边框白卡,层次靠明度与悬浮阴影;
    行式 UP 卡与行式收藏夹行同用「上浮 1px + 浅影」的 hover */
-.up-card{display:flex;flex-direction:column;background:var(--card);
-  border-radius:12px;overflow:hidden;transition:transform .16s,box-shadow .16s}
-.up-grid .up-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10)}
+.up-card{display:flex;flex-direction:column;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--radius);overflow:hidden;transition:transform .16s,box-shadow .16s}
+.up-grid .up-card:hover{transform:translateY(-3px);box-shadow:0 1px 1px rgba(0,0,0,.03),0 4px 8px rgba(0,0,0,.05)}
 .up-list .up-card:hover{transform:translateY(-1px);box-shadow:var(--shadow-sm)}
-.uc-thumb{position:relative;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
+.uc-thumb{position:relative;width:100%;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
 .uc-cover{position:absolute;inset:0}
 .uc-face{width:100%;height:100%;object-fit:cover;transition:transform .2s}
 .up-grid .up-card:hover .uc-face{transform:scale(1.04)}
 .uc-badge{position:absolute;top:8px;right:8px;display:inline-flex;align-items:center;gap:3px;
-  font-size:10.5px;padding:1px 7px;border-radius:5px;
+  font-size:10.5px;padding:1px 7px;border-radius:4px;
   background:var(--line);color:var(--text-mute);white-space:nowrap}
 .uc-badge svg{width:11px;height:11px}
 .uc-badge.on{color:#fff;background:var(--accent-bright)}
@@ -290,8 +301,10 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .uc-actions .ghost:hover{background:#fff}
 .uc-actions .primary{height:28px;font-size:12px;padding:0 12px}
 .up-card .uc-actions > button{flex:0 0 auto;width:64px;padding:0;justify-content:center;white-space:nowrap}
-/* .uc-auto 两档属有意差异:UP 卡压在封面上(uc-actions)用 28px 可点档;
-   合集/收藏卡在白底正文(fc-head)用 20px 浅底标签档。 */
+/* .uc-auto 两档属有意差异,按「背景语境」分档而不是按页面:压在封面上的
+   (up-grid 的 uc-actions)用 28px 可点档 + 实底开启态(浅底压彩图上读不清);
+   白底正文里「控件即状态」的合集/收藏行(fc-head / fav-folder)用 20px 浅底标签档。
+   UP 行式列表的控件与同排 28px「关注」按钮成对,归 28px 档、开启态走白底浅粉。 */
 .uc-auto{height:28px;font-size:12px;flex:1 1 auto;min-width:0}
 .uc-auto.on{border-color:var(--accent);color:var(--accent);background-color:var(--accent-soft)}
 /* 压在封面上的开启态必须实底粉白字(同 .uc-badge.on 的理由:
@@ -304,24 +317,27 @@ select{padding-right:26px;border-radius:8px;appearance:none;
   display:-webkit-box;-webkit-line-clamp:1;-webkit-box-orient:vertical;overflow:hidden}
 .uc-meta{display:flex;gap:12px;font-size:11px;color:var(--faint);font-family:var(--mono);margin-top:5px;flex-wrap:wrap}
 /* 列表模式:头像行 + 右侧控件 */
-.up-list .up-card{flex-direction:row;align-items:center;gap:13px;padding:9px 14px}
-.up-list .uc-thumb{width:52px;height:52px;aspect-ratio:auto;border-radius:50%;flex-shrink:0}
-.up-list .uc-cover{border-radius:50%}
+.up-list .up-card{flex-direction:row;align-items:center;gap:13px;padding:9px 12px}
+/* display:contents 去掉 uc-thumb 自身的 52px 圆盒:静态的 uc-actions 留在盒内会被
+   overflow:hidden 裁掉、再被绝对定位的头像图盖住,整个控件列在列表视图消失
+   (2026-11-11 实测)。子项直接参与行的 flex 布局,order 修正为 头像 → 文本 → 控件。 */
+.up-list .uc-thumb{display:contents}
+.up-list .uc-cover{position:static;width:52px;height:52px;flex-shrink:0;border-radius:50%;overflow:hidden}
 .up-list .uc-face{border-radius:50%}
 .up-list .uc-badge{display:none}
-.up-list .uc-actions{position:static;left:auto;right:auto;bottom:auto;margin-left:auto;flex-shrink:0;
+.up-list .uc-actions{order:2;position:static;left:auto;right:auto;bottom:auto;margin-left:auto;flex-shrink:0;
   background:none;padding:0}
-.up-list .uc-text{padding:0;flex:1;min-width:0}
+.up-list .uc-text{order:1;padding:0;flex:1;min-width:0}
 .up-card .primary,.up-card .ghost{height:28px;font-size:12px}
 
 /* ---------- 收藏夹 / 合集卡 ---------- */
-.fav-folder{display:flex;align-items:center;gap:13px;background:var(--card);
-  border-radius:12px;padding:9px 12px;cursor:pointer;transition:transform .12s,box-shadow .12s}
+.fav-folder{display:flex;align-items:center;gap:13px;background:var(--card);border:1px solid var(--line);
+  border-radius:var(--radius);padding:9px 12px;cursor:pointer;transition:transform .12s,box-shadow .12s}
 .fav-folder:hover{transform:translateY(-1px);box-shadow:var(--shadow-sm)}
-.fav-card{background:var(--card);border-radius:12px;overflow:hidden;cursor:pointer;
+.fav-card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);overflow:hidden;cursor:pointer;
   transition:transform .15s,box-shadow .15s}
-.fav-card:hover{transform:translateY(-3px);box-shadow:0 10px 28px rgba(24,25,28,.10)}
-.fav-icon{width:40px;height:40px;border-radius:10px;background:var(--accent-soft);color:var(--accent);
+.fav-card:hover{transform:translateY(-3px);box-shadow:0 1px 1px rgba(0,0,0,.03),0 4px 8px rgba(0,0,0,.05)}
+.fav-icon{width:40px;height:40px;border-radius:6px;background:var(--accent-soft);color:var(--accent);
   display:grid;place-items:center;flex-shrink:0}
 .fav-icon svg{width:18px;height:18px}
 .fav-main{flex:1;min-width:0}
@@ -331,8 +347,8 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .fav-arrow svg{width:15px;height:15px}
 /* 「追更中」行式标签与网格角标(.uc-badge.on)同一粉色语言,只换形态 */
 .fav-tag{display:inline-flex;font-size:10.5px;color:var(--accent);background:var(--accent-soft);
-  padding:1px 7px;border-radius:5px;margin-left:6px;vertical-align:1px}
-.fc-cover{position:relative;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
+  padding:1px 7px;border-radius:4px;margin-left:6px;vertical-align:1px}
+.fc-cover{position:relative;width:100%;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
 .fc-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .fc-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:6px;color:var(--text-mute);background:linear-gradient(135deg,var(--bg-soft),var(--line))}
@@ -347,7 +363,7 @@ select{padding-right:26px;border-radius:8px;appearance:none;
 .fc-title{flex:1;min-width:0;font-size:13.5px;font-weight:600;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
 .fc-head .uc-auto,.fav-folder .uc-auto{height:20px;padding:0 18px 0 7px;border:none;
-  border-radius:5px;font-size:11px;color:var(--text-mute);background-color:var(--bg-soft);
+  border-radius:5px;font-size:11px;color:var(--text-soft);background-color:var(--bg-soft);
   background-size:10px 10px;background-position:right 4px center;flex:0 0 auto;
   transition:background-color .12s}
 .fc-head .uc-auto:hover,.fav-folder .uc-auto:hover{background-color:var(--bg-hover)}
@@ -358,13 +374,17 @@ select{padding-right:26px;border-radius:8px;appearance:none;
    两个角互不干扰,各给一层 z-index 压住封面图。 */
 .fc-cover .uc-badge,.thumb-wrap .uc-badge{z-index:2}
 .fc-cover .fc-count{position:absolute;right:8px;bottom:8px;z-index:2;background:rgba(20,21,24,.72);color:#fff;
-  font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:5px}
+  font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
 /* 行式列表里控件固定成右侧一列，逐行扫画质时对得齐 */
 .fav-folder .uc-auto{min-width:96px}
 
+/* Vercel 的技术标签一律走等宽字体:时长、计数、播放/点赞、任务元信息。
+   这是本套规范与 B 站原生界面最直观的差异。 */
+.thumb-dur,.fc-count,.fav-count,.uc-meta,.dp-meta,.vi-stats,.auto-refresh-status,.bc-meta,.nav-badge{font-family:var(--mono)}
+
 /* ---------- 空态 / 新内容提示 ---------- */
-.empty{text-align:center;color:var(--text-mute);font-size:13px;padding:44px 20px;
-  border:1.5px dashed var(--line);border-radius:14px;line-height:2}
+.empty{text-align:center;color:var(--text-mute);font-size:13px;padding:34px 20px;
+  border:1px dashed var(--line);border-radius:var(--radius);line-height:1.8}
 .empty .ghost{margin-top:6px}
 .fresh-hint{display:none;align-items:center;gap:10px;margin:-8px 0 16px;padding:9px 14px;
   background:var(--blue-soft);border-radius:10px;font-size:12.5px;color:var(--blue)}
@@ -409,6 +429,16 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .back-top:hover{color:var(--accent);border-color:var(--accent-bright)}
 .back-top svg{width:16px;height:16px}
 
+/* ---------- 轻提示(替代原生 alert) ---------- */
+/* 原生 alert 是阻塞弹窗,与自绘 UI 断裂;改为底部居中浮层,与操作条同一视觉语言。
+   z-index 90 高于抽屉(81):设置保存失败等提示在抽屉打开时也必须可见。 */
+.toast{position:fixed;left:50%;bottom:88px;z-index:90;max-width:min(560px,92vw);
+  padding:10px 16px;border-radius:10px;background:#10141a;color:#e8eaee;font-size:12.5px;
+  line-height:1.6;white-space:pre-line;box-shadow:0 14px 40px rgba(16,20,26,.35);
+  transform:translate(-50%,12px);opacity:0;pointer-events:none;transition:transform .2s ease,opacity .2s ease}
+.toast.show{transform:translate(-50%,0);opacity:1}
+body.dark .toast{background:#0c0e12;border:1px solid var(--line)}
+
 /* ---------- 工具行(下载批量条等) ---------- */
 .toolbar{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .toolbar.tight{padding:8px 0 4px;border:none;background:none}
@@ -428,7 +458,7 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .drawer-panel.active{display:flex}
 .drawer-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:18px 20px 14px;
   border-bottom:1px solid var(--line-soft);flex-shrink:0}
-.drawer-head h2{font-size:16px;font-weight:700}
+.drawer-head h2{font-size:16px;font-weight:600;letter-spacing:-.3px}
 .drawer-body{flex:1;overflow-y:auto;padding:16px 20px 30px}
 .drawer-body>textarea{width:100%;min-height:110px;border:1px solid var(--line);border-radius:10px;
   background:var(--bg);color:var(--text-main);padding:11px 13px;font-size:13px;outline:none;resize:vertical}
@@ -449,6 +479,9 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
   margin-bottom:10px;line-height:1.6}
 .save-flash{display:inline-flex;align-items:center;gap:5px;font-size:11.5px;color:var(--green);opacity:0;transition:opacity .2s}
 .save-flash svg{width:13px;height:13px}
+/* 漏了这条:settings.js 加的是 .show 类,只有 opacity:0 的静息态没有显示态,
+   「已自动保存」永远不出现(2026-11-11 实测)。 */
+.save-flash.show{opacity:1}
 
 /* 账号卡 */
 .acct-card{display:flex;align-items:center;gap:13px;background:var(--bg);border-radius:12px;padding:14px;margin-bottom:16px}
@@ -470,7 +503,7 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 #qr-status svg{width:14px;height:14px;color:var(--green);vertical-align:-2px}
 
 /* 设置组 */
-.set-group{font-size:11px;color:var(--faint);letter-spacing:.14em;font-weight:700;margin:20px 0 4px}
+.set-group{font-family:var(--mono);font-size:11px;color:var(--faint);letter-spacing:.08em;font-weight:500;margin:20px 0 4px}
 .set-row{display:flex;align-items:center;justify-content:space-between;gap:14px;padding:12px 0;
   border-bottom:1px solid var(--line-soft)}
 .set-row:last-of-type{border-bottom:none}
@@ -507,7 +540,9 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 body.drawer-open{overflow:hidden}
 
 /* ==================== 确认对话框 ==================== */
-.confirm-dialog{border:none;border-radius:16px;background:var(--bg-card);color:var(--text-main);
+/* margin:auto 必须显式写:全局 *{margin:0} 覆盖掉原生 dialog 的 UA margin:auto,
+   showModal() 弹窗会贴到视口左上角,不再居中(2026-11-11 实测)。 */
+.confirm-dialog{border:none;margin:auto;border-radius:var(--radius);background:var(--bg-card);color:var(--text-main);
   padding:22px 24px;max-width:400px;box-shadow:0 30px 80px rgba(16,20,26,.4)}
 .confirm-dialog::backdrop{background:rgba(16,20,26,.45);backdrop-filter:blur(2px)}
 .confirm-dialog h2{font-size:16px;font-weight:700;margin-bottom:8px}
