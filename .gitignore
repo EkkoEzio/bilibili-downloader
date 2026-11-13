@@ -5,3 +5,5 @@ data/
 .DS_Store
 .pytest_cache/
 downloads/
+gui-test-screenshots/
+design-demos/
