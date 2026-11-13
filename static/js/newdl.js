@@ -74,6 +74,8 @@ export async function smartParse() {
   if (!text) {
     announce('请先粘贴 B 站链接', true);
     toast('请粘贴链接');
+    document.getElementById('parse-result').innerHTML = '';
+    document.getElementById('batch-result').innerHTML = '';
     return;
   }
   const lines = text.split('\n').map(s => s.trim()).filter(Boolean);

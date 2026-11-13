@@ -989,6 +989,21 @@ def test_frontend_single_download_entry():
     assert "smartParse" in html, "应有统一的解析入口(自动判断单个/批量)"
 
 
+def test_frontend_empty_parse_clears_stale_result():
+    """空输入点解析时必须清空上次的解析结果,避免残留错误提示误导用户。
+
+    2026-11-13 实测:先输入无效 BV 产生「服务器处理失败」,再清空输入点解析,
+    smartParse 的 !text 分支只 toast 不清 parse-result,用户看到空输入+残留错误,
+    会以为又失败了。修复后空输入同时清空 parse-result 和 batch-result。"""
+    newdl_js = (_js_dir() / "newdl.js").read_text(encoding="utf-8")
+    # smartParse 的空输入分支必须同时清空两个结果容器
+    assert "parse-result" in newdl_js and "batch-result" in newdl_js, \
+        "smartParse 应引用两个结果容器"
+    empty_branch = newdl_js[newdl_js.index("if (!text)"):newdl_js.index("if (!text)") + 300]
+    assert "parse-result" in empty_branch, "空输入分支应清空 parse-result"
+    assert "batch-result" in empty_branch, "空输入分支应清空 batch-result"
+
+
 def test_frontend_unified_toolbar():
     """各列表页工具栏结构统一(搜索+视图切换同位置)。"""
     html = _tpl()
