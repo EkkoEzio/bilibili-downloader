@@ -201,13 +201,12 @@
 - 浏览器发送 Origin、Referer 或 Sec-Fetch-Site 时必须严格同源；三者都缺失时允许本机脚本和测试客户端。
 - Cookie 导入体及全局请求体受大小限制；二维码图片只允许 B 站护照 HTTPS 域名。
 
-### R18 聚合 SSE 与兼容入口
+### R18 聚合 SSE
 
 - 前端下载页只创建一个 `/api/tasks/events` 聚合 EventSource。
 - 聚合流首包为 `snapshot`，之后按 `task_id` 发送带连续 revision 的 `patch`，空闲时发送 heartbeat；客户端发现 revision 断层时必须重建快照。
 - EventSource 断开后按退避重连，并可降级为轮询；不得为每个任务建立一条长期 SSE。
-- `/api/progress/<task_id>` 暂保留一个兼容周期，仅发送单任务完整快照并在终态结束。
-- 聚合流和兼容流共享单进程 SSE 容量；槽满时返回 503 `sse_capacity_exceeded`。
+- 聚合流使用单进程 SSE 容量；槽满时返回 503 `sse_capacity_exceeded`。
 
 ---
 

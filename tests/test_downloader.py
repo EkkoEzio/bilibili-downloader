@@ -99,13 +99,6 @@ def test_task_state_sets_single_source():
     assert "done" in taskstore.TERMINAL
 
 
-def test_sse_stops_on_all_terminal_states():
-    """SSE 必须在任何终态收流,而不是只判 done/failed(取消/中断会一直推)。"""
-    src = (Path(__file__).resolve().parent.parent / "app.py").read_text(encoding="utf-8")
-    assert "taskstore.TERMINAL" in src, "SSE 应复用 taskstore.TERMINAL,不要手写状态"
-    assert 'in ("done", "failed")' not in src, "不应再有只判 done/failed 的收流条件"
-
-
 # ---------- 取消立即生效 / persist 节流 / 读取拷贝 ----------
 
 def test_progress_hook_raises_when_cancel_flag_set():

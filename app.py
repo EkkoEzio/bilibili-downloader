@@ -1184,34 +1184,6 @@ def task_events():
     return response
 
 
-@app.route("/api/progress/<task_id>")
-def progress(task_id):
-    """兼容一个周期的单任务 SSE；与聚合流共享连接容量。"""
-    release_slot = _reserve_sse_slot()
-
-    def gen():
-        try:
-            while True:
-                task = downloader.get_task(task_id)
-                if not task:
-                    yield "event: end\ndata: {}\n\n"
-                    break
-                yield f"data: {json.dumps(task, ensure_ascii=False)}\n\n"
-                if task["status"] in taskstore.TERMINAL:
-                    break
-                time.sleep(1)
-        finally:
-            release_slot()
-
-    try:
-        response = Response(stream_with_context(gen()), mimetype="text/event-stream")
-    except Exception:
-        release_slot()
-        raise
-    response.call_on_close(release_slot)
-    return response
-
-
 @app.route("/api/tasks")
 def tasks():
     return jsonify({"ok": True, "tasks": downloader.list_tasks()})
