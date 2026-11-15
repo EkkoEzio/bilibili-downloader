@@ -4,6 +4,20 @@
 
 ## [未发布]
 
+## [v2.5.1] - 2026-11-16
+
+### ✨ 新增
+
+- **yt-dlp 解析冒烟脚本**：新增 `scripts/ytdlp_smoke.py`，走生产解析入口（`parsing.parse_video`）对公开视频做只读解析并校验标题/清晰度产出。升级 yt-dlp 前后各跑一次即可确认 B 站解析未断，不再依赖人工点页面。
+
+### 🔧 维护
+
+- **yt-dlp 升级 2026.7.4 → 2026.10.26**：此前落后上游 3 个 release（08.19 / 10.21 / 10.26），解析器「网站一改版就断」，长期落后意味着 B 站下次改版时修复不会自愈。升级前后各跑一次 scripts/ytdlp_smoke.py 均通过（真实解析出标题 + 5 档清晰度），全量测试保持全绿；解析入口无 API 变化。
+
+### 🧹 移除
+
+- **单任务 SSE 兼容入口 `/api/progress/<task_id>`**：v2.3.0 引入聚合流时声明保留一个兼容周期；此后 v2.4 / v2.5 两个发布周期前端始终只用聚合流且有测试锁定，兼容期已过。删除后 SSE 连接容量只服务聚合流，REQUIREMENTS R18 同步收口。
+
 ### 🐞 修复
 
 - **新建下载：空输入点解析时残留上一次的错误提示**：先输入无效链接（例如写错的 BV 号）解析失败后，再清空输入框点「解析」，结果区仍留着上一次的「服务器处理失败，请查看应用日志」，用户会误以为这次又失败。`smartParse` 的空输入分支现在同时清空 `parse-result` 与 `batch-result`（原先只弹一个 toast）。
@@ -767,6 +781,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.5.1]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.5.1
 [v2.5.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.5.0
 [v2.4.1]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.4.1
 [v2.4.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.4.0
