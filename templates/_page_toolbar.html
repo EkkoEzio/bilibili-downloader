@@ -1,8 +1,12 @@
 {% macro lib_toolbar(placeholder, refresh, refresh_title='刷新', search_id='', search_style='', view_id='') %}
 <div class="ph-right">
-  <input type="text" class="search-input lib-search" aria-label="搜索当前页面"
-    {%- if search_id %} id="{{ search_id }}"{% endif %} placeholder="{{ placeholder }}" oninput="applyLibFilter()"
-    {%- if search_style %} style="{{ search_style }}"{% endif %}>
+  <div class="search-wrap">
+    <svg class="search-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+    <input type="text" class="search-input lib-search" aria-label="搜索当前页面"
+      {%- if search_id %} id="{{ search_id }}"{% endif %} placeholder="{{ placeholder }}" oninput="applyLibFilter()"
+      {%- if search_style %} style="{{ search_style }}"{% endif %}>
+    <button class="search-clear" type="button" hidden aria-label="清除">×</button>
+  </div>
   <button class="ghost icon-only" onclick="{{ refresh }}" title="{{ refresh_title }}">
     <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
   </button>

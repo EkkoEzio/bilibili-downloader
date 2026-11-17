@@ -5,6 +5,7 @@
 但不得污染当前缓存，也不会作为当前认证上下文的成功响应返回。
 """
 import logging
+import re
 import threading
 import time
 from typing import Optional
@@ -28,6 +29,9 @@ from request_governor import UpstreamRateLimitError, governed_get, governor
 NAV_API = "https://api.bilibili.com/x/web-interface/nav"
 log = logging.getLogger("bd.bilibili_api")
 
+# 顶层 requests.api.get 的原始实现:测试把它替换成桩时,_get 要让路给桩。
+_requests_get = requests.get
+
 
 class NotLoggedInError(RuntimeError):
     """预期内的未登录状态（cookiejar 缺失），不是未知异常。
@@ -42,9 +46,18 @@ class NotLoggedInError(RuntimeError):
 _ORIGINAL_GET_COOKIEJAR = get_cookiejar
 
 
+# 带 keep-alive 连接池的会话:每次调用复用 TCP/TLS 连接,对 B 站可省
+# 约 0.05–0.15s 握手(2026-11-17 实测冷连接 0.10–0.19s vs 复用 0.04–0.10s)。
+# cookies/headers 仍逐调用显式传入,会话级状态不参与;urllib3 连接池线程安全。
+_UPSTREAM_SESSION = requests.Session()
+
+
 def _get(url: str, *, kind: str = "default", **kwargs):
     """通过统一请求治理器调用当前 requests.get（保留测试替换能力）。"""
-    return governed_get(requests.get, url, kind=kind, **kwargs)
+    # 测试通过 monkeypatch.setattr(bilibili_api.requests, "get", ...) 替换
+    # 顶层 requests.get;此时放过替换(测试不该走真连接池),生产才走会话。
+    getter = requests.get if requests.get is not _requests_get else _UPSTREAM_SESSION.get
+    return governed_get(getter, url, kind=kind, **kwargs)
 
 
 def _safe_json(resp):
@@ -383,6 +396,16 @@ _followings_cache = {"items": [], "total": 0, "ts": 0.0, "context": None}
 # 数据域锁只保护内存 check/commit，慢网络请求一律锁外。
 _fetch_lock = threading.Lock()
 _followings_refresh_lock = threading.Lock()
+
+
+def _invalidate_followings() -> None:
+    """作废关注列表缓存(关注/取关后必须调用)。
+
+    只清这一份,不动 WBI 与账号级冷却——412/429 的冷却期是上游给的,
+    在这里清掉只会让下一次调用继续撞风控。
+    """
+    with _fetch_lock:
+        _followings_cache.update(items=[], total=0, ts=0.0, context=None)
 _follow_refresh_lock = threading.Lock()
 
 
@@ -470,6 +493,65 @@ _RELATION_MODIFY_ENDPOINT = "https://api.bilibili.com/x/relation/modify"
 _RELATION_ACTS = {"follow": 1, "unfollow": 2}
 
 
+_RELATION_QUERY_ENDPOINT = "https://api.bilibili.com/x/relation/relations"
+
+
+def fetch_relation_statuses(mids, *, context=None) -> Optional[dict]:
+    """批量查关注关系 → {mid: bool}；查不到返回 None(交给调用方回退)。
+
+    B 站前端就是拿 /x/relation/relations 一次问一批,这才是「是否关注」的
+    权威来源。但它对异常流量很敏感(412),而 412 会被全局冷却拦下后续请求,
+    所以这里**失败一律返回 None**,由调用方回退到关注列表匹配,
+    绝不让关注状态查询把整页的其它请求一起拖进冷却。
+    """
+    fid_list = [int(mid) for mid in mids if int(mid) > 0]
+    if not fid_list:
+        return {}
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
+        raise NotLoggedInError("未登录,无法查询关注状态")
+    result = {}
+    for start in range(0, len(fid_list), 50):
+        chunk = fid_list[start:start + 50]
+        try:
+            resp = governor.call(
+                "default", requests.get, _RELATION_QUERY_ENDPOINT,
+                params={"fids": ",".join(str(mid) for mid in chunk)},
+                cookies=cookiejar,
+                headers={**BROWSER_HEADERS, "Referer": "https://www.bilibili.com/"},
+                timeout=12,
+            )
+            data = _safe_json(resp)
+        except UpstreamRateLimitError:
+            # 已进入冷却:整体回退,别再挣扎
+            return None
+        except Exception:
+            return None
+        if not isinstance(data, dict) or data.get("code") != 0:
+            return None
+        # 这个接口的 data 结构在不同版本里是 list 或 {"list": [...]}/{"data":[...]}:
+        # 一律按「能取到 mid 的字典集合」处理,取不到就整体回退,
+        # 绝不让格式差异变成 500。
+        payload = data.get("data")
+        if isinstance(payload, dict):
+            payload = (payload.get("list") or payload.get("data")
+                       or payload.get("items") or [])
+        if not isinstance(payload, list):
+            return None
+        for item in payload:
+            if not isinstance(item, dict):
+                return None
+            mid = item.get("mid")
+            if mid is None:
+                continue
+            # attribute:0 未关注 / 2 已关注 / 6 互关 / 128 拉黑
+            result[int(mid)] = int(item.get("attribute") or 0) in (2, 6)
+        for mid in chunk:
+            result.setdefault(mid, False)
+    _ensure_context_current(context)
+    return result
+
+
 def modify_relation(mid: int, action: str, *, context=None) -> None:
     """关注/取消关注某 UP（写操作，作用于登录账号）。
 
@@ -507,6 +589,10 @@ def modify_relation(mid: int, action: str, *, context=None) -> None:
         if code != 0 and not already:
             raise RuntimeError(data.get("message") or "操作失败")
         _ensure_context_current(context)
+        # 关注关系变了,「关注列表」缓存必须立刻作废:
+        # 它带着 10 分钟 TTL,不作废的话刚取关的 UP 在卡片上还会显示
+        # 「已关注」,刷新几次都下不来(2026-11-16 用户实测报障)。
+        _invalidate_followings()
     except UpstreamRateLimitError:
         raise
     except AuthContextChangedError:
@@ -554,6 +640,120 @@ def _get_wbi_ie(context=None):
         return candidate
 
     return commit_if_current(context, commit)
+
+
+_SEARCH_ENDPOINT = "https://api.bilibili.com/x/web-interface/wbi/search/type"
+
+# 搜索结果内存缓存:同词同页在 TTL 内直接复用上次成功结果。
+_SEARCH_CACHE: dict = {}
+_SEARCH_CACHE_TTL = 5 * 60
+_SEARCH_CACHE_MAX = 200
+_SEARCH_CACHE_LOCK = threading.Lock()
+
+
+def _search_cache_get(key: str):
+    """搜索是 sensitive 接口,重复查询不值得再付一次接口间隔加一次上游
+    请求(2026-11-17 实测同词复查 1.6s,其中约 1.1s 在等 sensitive 间隔)。
+    只缓存上游明确成功的结果;412/429 等异常在进入缓存前就已抛出。"""
+    with _SEARCH_CACHE_LOCK:
+        hit = _SEARCH_CACHE.get(key)
+        if hit is None:
+            return None
+        ts, data = hit
+        if time.time() - ts > _SEARCH_CACHE_TTL:
+            _SEARCH_CACHE.pop(key, None)
+            return None
+        return data
+
+
+def _search_cache_put(key: str, data) -> None:
+    with _SEARCH_CACHE_LOCK:
+        if len(_SEARCH_CACHE) >= _SEARCH_CACHE_MAX:
+            # 简单淘汰最旧的一批,防止长会话里关键词无限增长。
+            stale = sorted(_SEARCH_CACHE, key=lambda k: _SEARCH_CACHE[k][0])
+            for old_key in stale[:max(1, _SEARCH_CACHE_MAX // 4)]:
+                _SEARCH_CACHE.pop(old_key, None)
+        _SEARCH_CACHE[key] = (time.time(), data)
+
+
+def _search_raw(search_type: str, keyword: str, page: int = 1):
+    """走 WBI 签名的站内搜索。失败抛 UpstreamRateLimitError 或 RuntimeError。"""
+    cache_key = f"{search_type}:{keyword}:{page}"
+    cached = _search_cache_get(cache_key)
+    if cached is not None:
+        return cached
+    context, cookiejar = _auth_session()
+    ie = _get_wbi_ie(context)
+    signed = ie._sign_wbi({
+        "search_type": search_type,
+        "keyword": keyword,
+        "page": str(page),
+        "page_size": "20",
+    }, "search")
+    resp = _get(_SEARCH_ENDPOINT, kind="sensitive", params=signed,
+                cookies=cookiejar,
+                headers={**BROWSER_HEADERS,
+                         "Referer": "https://search.bilibili.com/"},
+                timeout=15)
+    data = _safe_json(resp)
+    if not isinstance(data, dict):
+        raise RuntimeError("搜索接口返回非 JSON 数据")
+    if data.get("code") != 0:
+        raise RuntimeError(data.get("message") or "搜索失败")
+    result = data.get("data") or {}
+    if result:
+        # 上游给空 data(疑似风控静默空)不缓存,让它每次都走真实请求。
+        _search_cache_put(cache_key, result)
+    return result
+
+
+def _strip_em(text: str) -> str:
+    """搜索结果标题里的 <em class="keyword"> 高亮标签要去掉(前端自己不做 HTML)。"""
+    return re.sub(r"</?em[^>]*>", "", str(text or "")).strip()
+
+
+def search_videos(keyword: str, page: int = 1, *, context=None) -> list[dict]:
+    """站内搜视频,返回与列表页一致的条目字段,可直接喂给同一套卡片渲染。"""
+    data = _search_raw("video", keyword, page)
+    items = []
+    for raw in data.get("result") or []:
+        bvid = raw.get("bvid") or ""
+        if not bvid:
+            continue
+        stat = raw.get("video_review") or raw.get("play") or 0
+        items.append({
+            "bvid": bvid,
+            "title": _strip_em(raw.get("title")),
+            "uploader": _strip_em(raw.get("author")),
+            "uploader_mid": _int_or_zero(raw.get("mid")),
+            "thumbnail": (raw.get("pic") or "").replace("http:", "https:"),
+            "url": f"https://www.bilibili.com/video/{bvid}",
+            "duration": _duration_seconds({"duration": raw.get("duration")}),
+            "stat_view": _format_count(raw.get("play")),
+            "stat_like": _format_count(raw.get("like")),
+            "published_at": _int_or_zero(raw.get("pubdate")),
+        })
+    return items
+
+
+def search_users(keyword: str, page: int = 1, *, context=None) -> list[dict]:
+    """站内搜 UP 主,字段对齐「关注 UP」页的卡片。"""
+    data = _search_raw("bili_user", keyword, page)
+    users = []
+    for raw in data.get("result") or []:
+        mid = _int_or_zero(raw.get("mid"))
+        if not mid:
+            continue
+        users.append({
+            "mid": mid,
+            "uname": _strip_em(raw.get("uname")),
+            "face": (raw.get("upic") or "").replace("http:", "https:"),
+            "sign": _strip_em(raw.get("usign")),
+            "fans": _int_or_zero(raw.get("fans")),
+            "videos": _int_or_zero(raw.get("videos")),
+            "followed": False,
+        })
+    return users
 
 
 def fetch_up_card(mid: int) -> Optional[dict]:

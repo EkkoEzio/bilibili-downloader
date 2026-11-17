@@ -66,11 +66,28 @@ class UpListWriteError(RuntimeError):
     """UP 清单或游标未能可靠写入磁盘。"""
 
 
-# 每个 UP 可选的默认清晰度(""=最高画质自动);与前端下拉、quality.py 标签一致
-# 与 static/js/quality.js 的 QUALITY_OPTIONS 保持一致(测试会比对两侧)。
-# 低于 720P 无实际需求已移除;B 站无 1440P 档(上一版误加),60 帧档为 1080P60/720P60。
-# 存量配置里的旧值由 set_quality 归一为 ""
-QUALITY_CHOICES = ("", "2160P", "1080P60", "1080P", "720P60", "720P", "音频")
+# 每个 UP 的默认清晰度档位:纯分辨率(""=最高,自动挑最高帧率)。
+# 2026-11-17 改版:档位从「精确标签(1080P60 等)」改成「分辨率档」——同分辨率
+# 默认最高帧率(144→60→30),没有所选档位时自动降档到所选以下最高。
+# 档位→实际流的解析在 quality.resolve_quality_label;quality.js 的 QUALITY_OPTIONS
+# (手动下载/合集/收藏下拉,含仅音频)不受影响。
+# 存量旧值由 _norm_quality 归一:1080P60/1080P→1080、720P60/720P→720;
+# 已下线档位(480P/360P/1440P)回落最高。
+QUALITY_CHOICES = ("", "2160P", "2K", "1080", "720", "音频")
+
+# 旧精确标签 → 新分辨率档(读旧清单/旧 API 调用时归一)
+_LEGACY_QUALITY = {
+    "1080P60": "1080", "1080P": "1080",
+    "720P60": "720", "720P": "720",
+}
+
+
+def _norm_quality(quality: str) -> str:
+    """任意输入归一成合法档位:新档位原样,旧标签映射,其余回落最高。"""
+    q = (quality or "").strip()
+    if q in QUALITY_CHOICES:
+        return q
+    return _LEGACY_QUALITY.get(q, "")
 
 
 def _read() -> dict:
@@ -98,15 +115,14 @@ def list_ups() -> list[dict]:
         ups = _read().get("ups", [])
         if len(ups) > MAX_UPS:
             raise UpListCapacityError("ups", MAX_UPS, len(ups))
-    # 老数据带 auto 字段(开关已废除),读时丢弃;quality 统一补默认 ""
+    # 老数据带 auto 字段(开关已废除),读时丢弃;quality 归一到当前档位
     for u in ups:
         u.pop("auto", None)
-        # 已下线的档位(480P/360P/1440P)留在存量记录里会变成「界面显示最高画质,
-        # 实际按 480P 下载」:前端下拉里没有这个值,浏览器回落显示首项,而
-        # best_video_audio_choice 仍按 480P 挑流。读时归一成空串,与
-        # list_collections 的 quality 归一保持一致。
-        if u.get("quality") not in QUALITY_CHOICES:
-            u["quality"] = ""
+        # 旧值(1080P60/480P 等已下线/改名档位)留在存量记录里会变成「界面显示
+        # 一个档位、实际按另一个挑流」:读时统一映射到当前档位(1080P60→1080
+        # 等,见 _LEGACY_QUALITY),与前端 subscriptions.js 的 _normQuality 同一套。
+        # 合集/收藏订阅不受此改版影响(旧精确标签原样保留,见 COLLECTION_QUALITY_CHOICES)。
+        u["quality"] = _norm_quality(u.get("quality"))
     return ups
 
 
@@ -146,8 +162,8 @@ def add_up(mid: int, uname: str = "", face: str = "",
 
 
 def set_quality(mid: int, quality: str) -> bool:
-    """设置该 UP 新视频自动下载的默认清晰度("" = 最高画质自动)。"""
-    quality = quality if quality in QUALITY_CHOICES else ""
+    """设置该 UP 新视频自动下载的默认清晰度("" = 最高,自动挑最高帧率)。"""
+    quality = _norm_quality(quality)
     with _lock:
         data = _read()
         for u in data["ups"]:
@@ -292,6 +308,12 @@ def reset_seen(mid: int) -> None:
 #   首次添加时以当前全部条目为基线,之后只处理新出现的 bvid。
 
 COLLECTION_KINDS = ("season", "fav")
+# 合集/收藏夹订阅的清晰度仍用旧「精确标签」下拉(与手动下载 quality.js
+# QUALITY_OPTIONS 同一套值),不随 2026-11-17 UP 订阅「纯分辨率档」改版:
+# 下拉里选 1080P60 就存 1080P60,读/写原样保留;下载时 resolve_quality_label
+# 对非分辨率档原样透传,继续走 best_video_audio_choice 的精确匹配。
+# (发版核对时发现的回归:曾误用 UP 新档位表校验合集值,旧标签会被静默清空。)
+COLLECTION_QUALITY_CHOICES = ("", "2160P", "1080P60", "1080P", "720P60", "720P", "音频")
 MAX_COLLECTIONS = 100
 COLLECTION_SEEN_MAX = 300
 
@@ -321,7 +343,7 @@ def list_collections() -> list[dict]:
         entry["kind"] = kind
         entry["id"] = cid
         entry.setdefault("quality", "")
-        if entry["quality"] not in QUALITY_CHOICES:
+        if entry["quality"] not in COLLECTION_QUALITY_CHOICES:
             entry["quality"] = ""
         entry.setdefault("seen_bvids", [])
         out.append(entry)
@@ -336,7 +358,7 @@ def add_collection(kind: str, cid: int, title: str = "", cover: str = "",
     if kind not in COLLECTION_KINDS:
         raise ValueError(f"非法订阅类型:{kind}")
     cid = int(cid)
-    quality = quality if quality in QUALITY_CHOICES else ""
+    quality = quality if quality in COLLECTION_QUALITY_CHOICES else ""
     raw_baseline = [str(v) for v in (seen_bvids or []) if v]
     if len(raw_baseline) > COLLECTION_SEEN_MAX:
         # 与轮询侧保持一致:超限明确失败,不静默截断(截断会让被裁掉的旧条目
@@ -390,7 +412,7 @@ def remove_collection(kind: str, cid: int) -> bool:
 
 
 def set_collection_quality(kind: str, cid: int, quality: str) -> bool:
-    quality = quality if quality in QUALITY_CHOICES else ""
+    quality = quality if quality in COLLECTION_QUALITY_CHOICES else ""
     kind = str(kind or "")
     cid = int(cid)
     with _lock:

@@ -4,8 +4,8 @@ import { registerPage, state, libDom, renderPage, setItemExtras, LIB_PAGES,
 import { getJSON, postJSON, postEmpty, isAbortError } from '../net.js';
 import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
-import { escapeHtml, escapeAttr, formatBytes, bvFromUrl, dlKey, pageFromUrl,
-         safeHttpUrl, safeDecimalId } from '../util.js';
+import { escapeHtml, escapeAttr, formatBytes, formatDuration, formatTime, bvFromUrl, dlKey,
+         pageFromUrl, safeHttpUrl, safeDecimalId } from '../util.js';
 import { announce, confirmAction, toast, withPending } from '../confirm.js';
 
 const TASK_ACTIVE = ['queued', 'downloading', 'merging', 'cancelling', 'retrying'];
@@ -469,7 +469,10 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   const rawEta = Number(it.eta);
   const eta = Number.isFinite(rawEta) && rawEta > 0 ? Math.ceil(rawEta) : 0;
   const spd = speed > 1024 ? (speed / 1024).toFixed(1) + ' MB/s' : speed.toFixed(0) + ' KB/s';
-  const bar = active
+  /* 进度条只给真正有进度可看的状态(downloading/merging):排队/取消中/重试中
+     画一条 0% 空灰条,像一条多余的分隔线(2026-11-17 用户反馈排版难看)。
+     状态切换走 taskNeedsCardRebuild 整卡重建,不存在「该出现却没出现」的就地死角。 */
+  const bar = status === 'downloading' || status === 'merging'
     ? `<div class="dp-bar" role="progressbar" aria-label="${escapeAttr(it.title || '任务')}下载进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${pct}"><i style="width:${pct}%"></i></div>`
     : '';
   const err = ['failed', 'interrupted'].includes(status) && it.error
@@ -484,19 +487,64 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   const cancelBtn = active
     ? `<button class="danger" onclick="cancelTask(${taskArg},this)">取消</button>` : '';
   const targetUrl = safeHttpUrl(it.url);
+  // 已下载的任务:标题点一下就本地播放(player.js 接管),不用再开浏览器新窗口。
+  const playId = status === 'done' ? String(it.task_id || '') : '';
+  const playAttrs = playId
+    ? ` data-play-task="${escapeAttr(playId)}"`
+      + ` data-play-up="${escapeAttr(it.uploader || '')}"`
+      + ` data-play-duration="${escapeAttr(String(it.duration || 0))}"`
+      + ` data-play-size="${escapeAttr(String(it.downloaded_bytes || 0))}"`
+      + ` title="点击本地播放"`
+    : '';
   const titleHtml = targetUrl
-    ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
+    ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener"${playAttrs}>${escapeHtml(it.title)}</a>`
     : escapeHtml(it.title);
   const thumbnail = safeHttpUrl(it.thumbnail, { httpsOnly: true });
-  const thumb = `<div class="thumb-wrap"><img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy"></div>`;
+  // 封面正中播放:已完成的走本地文件,还没下完/失败的回落到 B 站在线播放。
+  const playData = ` data-play-title="${escapeAttr(it.title || '未命名视频')}"`
+    + ` data-play-up="${escapeAttr(it.uploader || '')}"`
+    + ` data-play-duration="${escapeAttr(String(it.duration || 0))}"`
+    + (playId ? ` data-play-size="${escapeAttr(String(it.downloaded_bytes || 0))}"` : '')
+    + (targetUrl ? ` data-play-url="${escapeAttr(targetUrl)}"` : '');
+  const playSource = playId
+    ? ` data-play-task="${escapeAttr(playId)}"`
+    : (targetUrl ? ` data-play-online="${escapeAttr(targetUrl)}"` : '');
+  const mainPlay = playSource
+    ? `<button class="vi-play-main"${playSource}${playData} aria-label="播放:${escapeAttr(it.title || '')}" title="${playId ? '播放本地视频' : '在线播放'}">${icon('play')}</button>`
+    : '';
+  // 下载页没有播放/点赞数(任务记录不带 stat),封面左下角留空;时长与定位在右下角
+  const durHtml = it.duration ? `<span class="thumb-dur">${escapeHtml(formatDuration(it.duration))}</span>` : '';
+  // 内联 onclick 只能调挂在 window 上的函数,参数必须是字面量:
+  // 这里沿用 JSON.stringify 生成字符串实参(与 lib.js 的 taskArg 同一写法)。
+  const revealArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
+  const revealButton = it.task_id
+    ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${escapeAttr(it.title || '')}" onclick="event.stopPropagation();revealTask(${revealArg})">${icon('folder')}</button>`
+    : '';
+  const thumb = `<div class="thumb-wrap">${checkHtml}<img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">`
+    + `<div class="thumb-actions">${mainPlay}<div class="thumb-row">${durHtml}${revealButton}</div></div></div>`;
+  const uploaderMid = safeDecimalId(it.uploader_mid);
+  const followChip = uploaderMid
+    ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`
+      + ` data-name="${escapeAttr(it.uploader || '')}" aria-pressed="false" aria-label="关注 ${escapeAttr(it.uploader || '')}">关注</button>`
+    : '';
+  /* 身份行与已完成卡(lib.js renderDefaultList)同一套控件:vi-ident「UP 主 · 时间」
+     + 关注按钮。uploader/view_at 一直随任务下发,此前 vi-meta 只渲染关注按钮,
+     进行中/失败的卡把 UP 名丢了(2026-11-17 用户报障)。 */
+  const upName = escapeHtml(it.uploader || '-');
+  const identParts = [uploaderMid
+    ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
+    : upName];
+  if (it.view_at) identParts.push(escapeHtml(formatTime(it.view_at)));
+  const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>${followChip}`;
   const warn = taskWarnHtml(it);
   const domId = escapeAttr(String(it.task_id ?? ''));
   if (!isGrid) {
     return `
     <div class="video-item lv${checkedCls}" id="vt-${domId}">
-      ${checkHtml}${thumb}
+      ${thumb}
       <div class="lv-body">
-        <div class="vi-title">${titleHtml}</div>
+        <div class="vi-title" title="${escapeAttr(it.title || '')}">${titleHtml}</div>
+        <div class="vi-meta">${metaHtml}</div>
         ${bar}
         <div class="dp-meta" aria-live="polite">${metaInner}${cancelBtn}</div>
         ${err}${warn}
@@ -505,8 +553,9 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   }
   return `
   <div class="video-item${checkedCls}" id="vt-${domId}">
-    ${checkHtml}${thumb}
-    <div class="vi-title">${titleHtml}</div>
+    ${thumb}
+    <div class="vi-title" title="${escapeAttr(it.title || '')}">${titleHtml}</div>
+    <div class="vi-meta">${metaHtml}</div>
     ${bar}
     <div class="dp-meta">${metaInner}${cancelBtn}</div>
     ${err}${warn}
@@ -677,12 +726,30 @@ export async function libDownload() {
   } catch (error) { toast(error.message); }
 }
 
+/* (BV, 分P) → 已完成任务的本地播放入口。标题是否变成「点一下本地播放」,
+   全看这里返不返回 ID;返空就是普通 B 站链接。 */
+function playTaskId(url) {
+  const bv = bvFromUrl(url);
+  if (!bv) return '';
+  const key = dlKey(bv, pageFromUrl(url));
+  if (!_doneKeys.has(key)) return '';
+  for (const task of _taskById.values()) {
+    if (task.status !== 'done') continue;
+    const taskBv = bvFromUrl(task.url);
+    if (!taskBv) continue;
+    if (dlKey(taskBv, task.page || 1) !== key) continue;
+    return String(task.task_id || '');
+  }
+  return '';
+}
+
 setItemExtras({
   isProgressCard: (it) => state.mode === 'downloads' && !!it.status && it.status !== 'done',
   progressCard: taskCardHtml,
   warnHtml: taskWarnHtml,
   isDownloaded,
   downloadState,
+  playTaskId,
   onChecksEmpty: () => {
     if (state.mode === 'downloads' && _dirty) {
       _dirty = false;

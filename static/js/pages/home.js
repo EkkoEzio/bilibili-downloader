@@ -16,6 +16,7 @@ import { emptyStateHtml, loadingStateHtml as loadingHtml } from '../lib.js';
 import { icon } from '../icons.js';
 import { escapeHtml } from '../util.js';
 import { announce } from '../confirm.js';
+import { registerSearchTarget, isSearchMode } from '../search.js';
 
 /* 首屏一次请求的条数：按当前视口网格容量算，夹在接口允许的 12–30 之间。
    B 站 rcmd 接口 ps 上限 30，web 端惯用 12。 */
@@ -119,20 +120,13 @@ function retryDelayMs(error) {
   return RETRY_DELAY_MS;
 }
 
-/* 第一页现拉成功后的上屏。有缓存且用户已勾选条目时不打断勾选，
-   改走「获取到新内容」提示条（与关注动态同一交互）；否则无缝替换。 */
+/* 第一页现拉成功后直接上屏:不再弹「获取到新内容 · 查看最新」让人点一下。
+   用户勾选不会被清掉——replaceItems 只丢弃新列表里已不存在的项。 */
 function applyFirstPage(items, restored, isCurrent) {
-  const apply = () => {
-    replaceItems(items);
-    state.shown = state.items.length;  // 已拉到的条目全部上屏
-    renderPage();
-    pullPages(0);
-  };
-  if (restored && state.checked.size > 0) {
-    showFreshHint('home', () => { if (isCurrent()) apply(); });
-    return;
-  }
-  apply();
+  replaceItems(items);
+  state.shown = state.items.length;  // 已拉到的条目全部上屏
+  renderPage();
+  pullPages(0);
 }
 
 export async function loadHomeFeed() {
@@ -283,6 +277,18 @@ function deactivateHome() {
   dismissFresh('home');
 }
 
+/* 搜索栏:回车搜全站视频,结果直接用同一套卡片铺进列表;
+   退出搜索时把推荐流重新加载回来。 */
+registerSearchTarget('home', {
+  kind: 'video',
+  apply: (items) => {
+    replaceItems(items);
+    state.shown = state.items.length;
+    renderPage();
+  },
+  exit: () => { state.shown = 0; loadHomeFeed(); },
+});
+
 registerPage('home', {
   load: loadHomeFeed,
   retry: loadHomeFeed,
@@ -292,7 +298,9 @@ registerPage('home', {
   onViewToggle: () => { state.shown = state.items.length; },
   chunk: () => defaultChunk(),
   actionBar: 'download',
-  emptyHint: (q) => q ? '没有匹配结果（试试其他关键词）'
+  // 搜索态的空结果也用「没有匹配结果」:此时列表是站内搜索结果,
+  // 「暂无推荐内容」会把搜索失败误读成推荐流故障。
+  emptyHint: (q) => (q || isSearchMode('home')) ? '没有匹配结果（试试其他关键词）'
     : '暂无推荐内容（可能 B 站限流或未登录）',
   deactivate: deactivateHome,
 });

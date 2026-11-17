@@ -21,13 +21,15 @@ try:
 except AlreadyRunningError as exc:
     raise SystemExit(f"启动失败：{exc}") from exc
 
-from flask import Flask, request, jsonify, render_template, Response, make_response, stream_with_context
+from flask import (Flask, request, jsonify, render_template, Response, make_response,
+                   send_file, stream_with_context)
 from werkzeug.exceptions import HTTPException
 
 import qrcode
 import auto_refresh
 import pagecache
 import parsing
+import online
 import up_list
 import bilibili_auth as auth
 import bilibili_api as bapi
@@ -1067,6 +1069,82 @@ def followings():
     return jsonify(body)
 
 
+@app.route("/api/search")
+@api_errors
+def search():
+    """站内搜索:?type=video|user&q=关键词&page=1。
+
+    首页推荐与关注 UP 页的搜索框用它当真正的搜索栏,而不是只过滤当前列表。
+    """
+    kind = _string(request.args.get("type"), "type", required=True, max_length=16)
+    keyword = _string(request.args.get("q"), "q", required=True, max_length=100)
+    if kind not in ("video", "user"):
+        raise ApiError(400, "invalid_field", "type 必须是 video 或 user", field="type")
+    keyword = keyword.strip()
+    if not keyword:
+        raise ApiError(400, "invalid_field", "搜索词不能为空", field="q")
+    page = _integer(request.args.get("page"), "page", minimum=1,
+                    maximum=50, default=1)
+    context = _request_auth_context()
+    try:
+        if kind == "video":
+            items = _account_call(bapi.search_videos, keyword, page, context=context)
+        else:
+            items = _account_call(bapi.search_users, keyword, page, context=context)
+    except UpstreamRateLimitError:
+        return _json_error("B 站搜索暂时被限流,请稍后再试", 429,
+                           "upstream_rate_limited")
+    return jsonify({"ok": True, "type": kind, "q": keyword, "items": items})
+
+
+@app.route("/api/relation/status")
+@api_errors
+def relation_status():
+    """批量查关注关系:?mids=1,2,3 → {mid: true/false}。
+
+    刻意不逐个调 /x/relation(一张列表页十几张卡会把 B 站风控打到 412),
+    改为复用 fetch_followings_all 的 10 分钟缓存做本地匹配——关注 UP 页
+    本来就要拉这份数据,这里不额外增加请求。
+    """
+    raw = _string(request.args.get("mids"), "mids", required=True,
+                  max_length=_MAX_TEXT_LENGTH)
+    wanted = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part.isdigit():
+            continue
+        value = int(part)
+        if 1 <= value <= 10 ** 20 and value not in wanted:
+            wanted.append(value)
+    if not wanted:
+        raise ApiError(400, "invalid_field", "mids 里没有合法的 UP 主 ID", field="mids")
+    if len(wanted) > 200:
+        raise ApiError(400, "invalid_field", "单次最多查询 200 个 UP 主", field="mids")
+
+    context = _request_auth_context()
+    # 主路径:关注列表倒推。
+    # 为什么不优先用 /x/relation/relations:它对本会话极不稳定,实测反复 412,
+    # 而 412 会触发全局冷却,连首页推荐、搜索一起停 10 分钟——代价远大于收益。
+    # 关注列表有 10 分钟缓存、关注 UP 页本来也要用,写操作成功时会主动作废,
+    # 所以「刚取关却还显示已关注」的旧问题在缓存失效后已经消失。
+    try:
+        payload = _account_call(bapi.fetch_followings_all, context=context)
+    except bapi.NotLoggedInError:
+        # 未登录时不能报错打断整页渲染:卡片按「未关注」显示,点了会提示去登录。
+        return jsonify({"ok": True, "logged_in": False, "statuses": {}})
+    except UpstreamRateLimitError:
+        return _json_error("B 站限流中,关注状态稍后再试", 429, "upstream_rate_limited")
+    except Exception:
+        return _json_error("关注状态暂时查不到,请稍后重试", 502, "relation_unavailable")
+    followed = {int(item.get("mid") or 0) for item in payload.get("items") or []}
+    return jsonify({
+        "ok": True,
+        "logged_in": True,
+        "source": "followings",
+        "statuses": {str(mid): mid in followed for mid in wanted},
+    })
+
+
 @app.route("/api/relation/modify", methods=["POST"])
 @api_errors
 def relation_modify():
@@ -1228,6 +1306,89 @@ def task_reveal(task_id):
         return jsonify({"ok": True, "found": True})
     downloader.open_dir(config.DOWNLOAD_DIR)
     return jsonify({"ok": True, "found": False})
+
+
+@app.route("/api/online/qualities")
+@api_errors
+def online_qualities():
+    """按应用已登录的 Cookie 解析在线播放档位,返回可直连的 token。
+
+    前端拿到的只是 token,拿不到也构造不出 CDN 地址——避免这个接口变成
+    任意 URL 代理。
+    """
+    url = _string(request.args.get("url"), "url", required=True,
+                  max_length=_MAX_TEXT_LENGTH)
+    if "bilibili.com" not in url:
+        raise ApiError(400, "invalid_field", "只支持 B 站视频链接", field="url")
+    payload = online.resolve(url)
+    if not payload.get("qualities"):
+        return _json_error("没有解析到可播放的清晰度", 502, "no_stream")
+    return jsonify(payload)
+
+
+@app.route("/online/stream/<token>")
+@api_errors
+def online_stream(token):
+    """转发一条媒体轨(视频或音频)给浏览器。
+
+    刻意不放在 /api/ 下:after_request 会给 /api/ 加 no-store,视频流需要
+    让浏览器缓存已取到的片段,否则每次拖动都重新拉。
+    """
+    token = _string(token, "token", required=True, max_length=128)
+    upstream, error = online.open_upstream(token, request.headers.get("Range"))
+    if error:
+        message, code = error
+        return _json_error(message, 404 if code == "token_expired" else 502, code)
+
+    def generate():
+        try:
+            for chunk in upstream.iter_content(chunk_size=64 * 1024):
+                if chunk:
+                    yield chunk
+        finally:
+            upstream.close()
+
+    response = Response(stream_with_context(generate()),
+                        status=upstream.status_code)
+    for header in ("Content-Type", "Content-Length", "Content-Range",
+                   "Accept-Ranges", "ETag", "Last-Modified"):
+        value = upstream.headers.get(header)
+        if value:
+            response.headers[header] = value
+    # CDN 有时只回 application/octet-stream;<video>/<audio> 要按 mp4 分片解码
+    if response.headers.get("Content-Type") in (None, "", "application/octet-stream"):
+        response.headers["Content-Type"] = "video/mp4"
+    response.headers["Cache-Control"] = "private, max-age=600"
+    response.call_on_close(upstream.close)
+    return response
+
+
+@app.route("/api/play/resolve")
+@api_errors
+def play_resolve():
+    """按视频链接查本地是否已有可播文件；前端点标题时就地播放，不再开新窗口。"""
+    url = _string(request.args.get("url"), "url", required=True,
+                  max_length=_MAX_TEXT_LENGTH)
+    info = taskstore.find_playable(url)
+    if not info:
+        return _json_error("这个视频还没有下载到本地", 404, "not_downloaded")
+    return jsonify({"ok": True, "stream": f"/api/stream/{info['task_id']}", **info})
+
+
+@app.route("/api/stream/<task_id>")
+@api_errors
+def task_stream(task_id):
+    """本地播放流。conditional=True 由 werkzeug 负责 Range/206，
+    几百 MB 的 MP4 才拖得动进度条。"""
+    task_id = _string(task_id, "task_id", required=True,
+                      max_length=_MAX_TEXT_LENGTH)
+    path = taskstore.playable_file(task_id)
+    if not path or not path.is_file():
+        return _json_error("本地视频文件已不存在", 404, "media_not_found")
+    response = send_file(path, conditional=True, as_attachment=False)
+    response.headers["Cache-Control"] = "no-store"
+    response.headers["Accept-Ranges"] = "bytes"
+    return response
 
 
 @app.route("/api/task/<task_id>/resolve-conflict", methods=["POST"])

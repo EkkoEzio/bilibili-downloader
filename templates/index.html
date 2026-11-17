@@ -8,7 +8,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>bilibili download</title>
-<link rel="stylesheet" href="/static/css/main.css?v=20261111b">
+<link rel="stylesheet" href="/static/css/main.css?v=20261116v">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -81,7 +81,7 @@
       <div class="page active" data-page="home">
         <div class="page-head">
           <h1 class="sr-only">首页推荐</h1>
-          {{ lib_toolbar('搜索标题 / UP 主', 'loadHomeFeed()', '换一批') }}
+          {{ lib_toolbar('搜全站视频，回车搜索', 'loadHomeFeed()', '换一批') }}
         </div>
         <div class="sub-info" id="meta-home"></div>
         <div id="list-home" class="lib-list"></div>
@@ -127,7 +127,7 @@
       <div class="page" data-page="subs">
         <div class="page-head">
           <h1 class="sr-only">关注 UP</h1>
-          {{ lib_toolbar('搜索 UP 名称 / mid', 'refreshSubs()', '刷新(绕过缓存)') }}
+          {{ lib_toolbar('搜全站 UP 主，回车搜索', 'refreshSubs()', '刷新(绕过缓存)') }}
           <div class="ph-add" aria-label="添加 UP 订阅">
             <input type="text" id="up-add-input" class="tb-input" aria-label="UP 主页链接或 mid" placeholder="粘贴 UP 主页链接或 mid;加入后新投稿自动进入下载队列">
             <button class="primary" id="up-add-btn" onclick="upAdd()">添加</button>
@@ -389,6 +389,61 @@
 
 </div>
 
+<!-- ========== 播放器(封面正中播放按钮 / 已下载条目的标题打开) ========== -->
+<div class="player" id="player" role="dialog" aria-modal="true" aria-labelledby="player-title" aria-hidden="true">
+  <div class="pl-box">
+    <div class="pl-head">
+      <div class="pl-titles">
+        <div class="pl-title" id="player-title">播放</div>
+        <div class="pl-sub" id="player-sub"></div>
+      </div>
+      <div class="pl-actions">
+        <button class="pl-btn" type="button" id="player-reveal" aria-label="在 Finder 中显示该视频">
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
+          <span>Finder</span>
+        </button>
+        <button class="pl-btn" type="button" id="player-external" aria-label="到 B 站观看">
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+          <span>B 站</span>
+        </button>
+        <button class="pl-btn" type="button" id="player-close" aria-label="关闭播放器">
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+          <span>关闭</span>
+        </button>
+      </div>
+    </div>
+    <div class="pl-stage">
+      <!-- 不用原生 controls:在线时 <video> 没有音轨(声音在下面的 <audio>),
+           原生音量键点了没反应,会让人以为坏了。控制条统一自己搭一条。 -->
+      <video id="player-video" playsinline preload="metadata" aria-label="视频画面"></video>
+      <!-- DASH 的音轨单独一路;本地播放时保持隐藏,声音由 <video> 自己出 -->
+      <audio id="player-audio" preload="auto" hidden></audio>
+    </div>
+    <div class="pl-controls" id="pl-local-controls">
+      <button class="pl-ic" type="button" id="pl-toggle" aria-label="播放"></button>
+      <span class="pl-time" id="pl-time">0:00 / 0:00</span>
+      <input class="pl-seek" type="range" id="pl-seek" min="0" max="1000" step="1" value="0" aria-label="播放进度">
+      <div class="pl-field pl-field-speed">
+        <span>倍速</span>
+        <div class="pl-segs" id="pl-speed-segs" role="group" aria-label="播放倍速"></div>
+      </div>
+      <label class="pl-field pl-field-vol">
+        <span>音量</span>
+        <input type="range" id="pl-volume" min="0" max="100" step="1" value="100" aria-label="音量">
+      </label>
+      <button class="pl-btn pl-btn-sm pl-mute-icon" type="button" id="pl-mute" aria-label="静音"></button>
+      <div class="pl-field" id="pl-quality-wrap" hidden>
+        <span>清晰度</span>
+        <div class="pl-segs" id="pl-quality-segs" role="group" aria-label="清晰度"></div>
+      </div>
+      <button class="pl-ic" type="button" id="pl-full" aria-label="全屏">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M8 21H5a2 2 0 0 1-2-2v-3"/><path d="M16 21h3a2 2 0 0 0 2-2v-3"/></svg>
+      </button>
+    </div>
+    <div class="pl-tip" id="player-tip" role="status" aria-live="polite" hidden></div>
+  </div>
+</div>
+
 <!-- ========== 共享危险操作确认 ========== -->
 <dialog class="confirm-dialog" id="confirm-dialog" aria-labelledby="confirm-title" aria-describedby="confirm-message">
   <form method="dialog">
@@ -402,6 +457,6 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/js/app.js?v=20261111b"></script>
+<script type="module" src="/static/js/app.js?v=20261116v"></script>
 </body>
 </html>

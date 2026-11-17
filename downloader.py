@@ -20,7 +20,7 @@ import yt_dlp
 
 import extras
 import config
-from quality import best_video_audio_choice
+from quality import best_video_audio_choice, resolve_quality_label
 from request_governor import UpstreamRateLimitError, governor
 
 from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
@@ -574,7 +574,9 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
             _persist_task_state([task_id], "解析失败终态")
             return
 
-    fmt_str = best_video_audio_choice(formats, label)
+    # 订阅档位是纯分辨率(1080/720/2K/2160P),先解析成实际标签(同高度默认
+    # 最高帧率;没有所选档自动降档到以下最高),旧精确标签原样透传
+    fmt_str = best_video_audio_choice(formats, resolve_quality_label(formats, label))
     base_opts = _base_opts(fmt_str, page, task_id)
 
     max_retries = 2  # 失败后最多重试 2 次,共尝试 3 次

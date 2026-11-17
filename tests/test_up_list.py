@@ -18,9 +18,13 @@ def test_add_up_defaults_quality_auto(store):
 
 
 def test_set_quality_persists(store):
+    """新分辨率档原样落盘;旧精确标签写入时自动归一(2026-11-17 档位改版)。"""
     store.add_up(123, "A", "")
-    assert store.set_quality(123, "720P") is True
-    assert store.list_ups()[0]["quality"] == "720P"
+    assert store.set_quality(123, "720") is True
+    assert store.list_ups()[0]["quality"] == "720"
+    # 旧精确标签(720P/1080P60 等)归一到分辨率档
+    assert store.set_quality(123, "1080P60") is True
+    assert store.list_ups()[0]["quality"] == "1080"
     # 改回自动
     assert store.set_quality(123, "") is True
     assert store.list_ups()[0]["quality"] == ""
@@ -49,12 +53,12 @@ def test_old_records_default_quality_and_drop_auto(store, tmp_path):
 
 
 def test_old_removed_quality_label_normalised_on_read(store, tmp_path):
-    """存量记录里已下线的档位(480P/360P)读时必须归一成空串。
+    """存量旧档位读时归一到当前档位体系(2026-11-17 纯分辨率改版)。
 
-    回归:QUALITY_CHOICES 删掉 480P/360P 后,list_ups 仍把旧值原样返回。
-    前端下拉里没有这个值 → 浏览器回落显示首项「不下载」,用户看到的是
-    「这张卡没在自动下载」,而 best_video_audio_choice 仍按 480P 挑流;
-    list_collections 早就做了同样的归一,list_ups 漏了。
+    已下线档位(480P/360P)没有对应分辨率档 → 归一成空串(最高画质自动);
+    旧精确标签(1080P60)映射到对应分辨率档(1080)——否则界面显示一个档位、
+    实际按另一个挑流。与前端 subscriptions.js 的 _normQuality 同一套映射;
+    合集/收藏订阅的旧精确标签原样保留(见 COLLECTION_QUALITY_CHOICES)。
     """
     tmp_path.joinpath("up_list.json").write_text(
         json.dumps({"ups": [{"mid": 8, "uname": "旧档位", "face": "",
@@ -67,7 +71,7 @@ def test_old_removed_quality_label_normalised_on_read(store, tmp_path):
     by_mid = {int(u["mid"]): u["quality"] for u in store.list_ups()}
     assert by_mid[8] == "", "已下线的 480P 必须归一成最高画质自动"
     assert by_mid[9] == "", "已下线的 360P 必须归一成最高画质自动"
-    assert by_mid[10] == "1080P60", "合法档位不得被误改"
+    assert by_mid[10] == "1080", "旧精确标签 1080P60 归一到 1080 分辨率档"
 
 
 # ---------- 拉取时间(自适应页大小依据) ----------
@@ -105,16 +109,18 @@ def test_set_uname_fills_and_overwrites(store):
 
 
 def test_quality_choices_single_source():
-    """清晰度可选项的值集合在三个副本处必须一致:
-    后端 up_list.QUALITY_CHOICES / 前端 static/js/quality.js /
-    index.html 操作条静态 <option>(显示文案各端自理)。
-    改清晰度档位时三处一起改,漏改在这里炸。"""
+    """精确标签下拉的单一来源(2026-11-17 档位改版后两套档位并存):
+
+    UP 订阅的「纯分辨率档」绑定(up_list.QUALITY_CHOICES ↔ subscriptions.js
+    UP_QUALITY_SEGMENTS)在 test_app.py 的分段契约测试里,这里不重复。
+    本测试绑「精确标签」一侧——手动下载/合集/收藏共用:
+    quality.js QUALITY_OPTIONS ↔ index.html 操作条静态 <option> ↔
+    后端 up_list.COLLECTION_QUALITY_CHOICES(合集下拉的值全部来自
+    QUALITY_OPTIONS,后端只接受同一集合)。改任何一侧漏改在这里炸。"""
     import re
     from pathlib import Path
     import up_list
     base = Path(__file__).resolve().parent.parent
-
-    backend = set(up_list.QUALITY_CHOICES)
 
     js = (base / "static" / "js" / "quality.js").read_text(encoding="utf-8")
     pairs = re.findall(r"\['([^']*)',\s*'([^']*)'\]", js)
@@ -127,8 +133,9 @@ def test_quality_choices_single_source():
     bar = html[i:html.find("</select>", i)]
     html_values = set(re.findall(r'<option value="([^"]*)"', bar))
 
-    assert backend == js_values, f"后端与前端 quality.js 不一致: {backend ^ js_values}"
-    assert backend == html_values, f"后端与操作条静态 HTML 不一致: {backend ^ html_values}"
+    assert js_values == html_values, f"quality.js 与操作条静态 HTML 不一致: {js_values ^ html_values}"
+    assert js_values == set(up_list.COLLECTION_QUALITY_CHOICES), \
+        f"quality.js 与合集/收藏后端档位表不一致: {js_values ^ set(up_list.COLLECTION_QUALITY_CHOICES)}"
 
 
 # ---------- 合集/收藏夹订阅 ----------

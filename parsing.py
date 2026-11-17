@@ -75,8 +75,10 @@ def _extract_info(url: str, opts: dict, error_prefix: str) -> dict:
     return info
 
 
-def parse_video(url: str) -> dict:
-    """解析单视频或多 P；坏分 P 被隔离，保留有效条目的原始页码。"""
+def parse_video_with_info(url: str) -> tuple[dict, dict]:
+    """parse_video 但同时返回底层 yt-dlp info,供需要原始 formats(直链)
+    的调用方一次解析两用。同 URL 连跑两遍 yt-dlp 是双倍秒级 CPU 开销,
+    曾把同进程的其它接口拖慢(2026-11-17 搜索被预热解析堵 23s)。"""
     opts = _ydl_opts({"skip_download": True})
     info = _extract_info(url, opts, "解析失败")
 
@@ -110,10 +112,16 @@ def parse_video(url: str) -> dict:
             "formats": [],
             "best_label": "",
         }
-        return {**summary, "is_multi_part": True, "parts": parts}
+        return {**summary, "is_multi_part": True, "parts": parts}, info
 
     summary = _summarize(info)
-    return {**summary, "is_multi_part": False, "parts": []}
+    return {**summary, "is_multi_part": False, "parts": []}, info
+
+
+def parse_video(url: str) -> dict:
+    """解析单视频或多 P；坏分 P 被隔离，保留有效条目的原始页码。"""
+    summary, _info = parse_video_with_info(url)
+    return summary
 
 
 def parse_part(url: str, page: int) -> dict:

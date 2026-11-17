@@ -29,7 +29,52 @@ def test_up_list_includes_fetched_at_and_quality(client, monkeypatch, tmp_path):
     up_list_module.mark_seen(1, "BVx", 100, "标题", fetched_at=1234)
     r = client.get("/api/up-list").get_json()
     assert r["ups"][0]["fetched_at"] == 1234
-    assert r["ups"][0]["quality"] == "720P"
+    assert r["ups"][0]["quality"] == "720"
+    # 旧档位写入时归一到新分辨率档(720P60/720P→720),与新档位并存有效
+    up_list_module.set_quality(1, "720P60")
+    assert client.get("/api/up-list").get_json()["ups"][0]["quality"] == "720"
+    up_list_module.set_quality(1, "音频")
+    assert client.get("/api/up-list").get_json()["ups"][0]["quality"] == "音频"
+
+
+def test_resolve_quality_label_prefers_framerate_then_downgrades():
+    """订阅档位是纯分辨率:同分辨率默认最高帧率,没有所选档自动降档到以下最高。
+
+    2026-11-17 档位改版:去掉 60 帧独立档,只选分辨率。同高度里 classify_formats
+    已把 P60 排在前,取第一项即默认最高帧率(144/60 由 B 站档位编号天然保证);
+    所选高度缺失时降档到所选以下最高;''(最高)= 全场最高;旧精确标签原样透传。
+    """
+    from quality import resolve_quality_label
+    options = [
+        {"format_id": "30280", "kind": "audio", "label": "音频", "height": None, "tbr": 88},
+        {"format_id": "v2160", "kind": "video", "label": "2160P", "height": 2160, "tbr": 900},
+        {"format_id": "v1080_60", "kind": "video", "label": "1080P60", "height": 1080, "tbr": 600},
+        {"format_id": "v1080", "kind": "video", "label": "1080P", "height": 1080, "tbr": 500},
+        {"format_id": "v720", "kind": "video", "label": "720P", "height": 720, "tbr": 300},
+        {"format_id": "v480", "kind": "video", "label": "480P", "height": 480, "tbr": 200},
+    ]
+    # 同高度取最高帧率(1080P60 在 1080P 之前)
+    assert resolve_quality_label(options, "1080") == "1080P60"
+    # 所选高度(2K=1440)没有:降到所选以下最高(1080,同样取 60 帧档)
+    assert resolve_quality_label(options, "2K") == "1080P60"
+    # 720 精确命中;''(最高)= 全场最高
+    assert resolve_quality_label(options, "720") == "720P"
+    assert resolve_quality_label(options, "") == "2160P"
+    # 只有更高档位、以下什么都没有:理论边缘,取全场最高
+    assert resolve_quality_label(options[:2], "720") == "2160P"
+    # 旧精确标签不是分辨率档位,原样透传走既有精确匹配路径
+    assert resolve_quality_label(options, "1080P60") == "1080P60"
+    assert resolve_quality_label(options, "1080P") == "1080P"
+    assert resolve_quality_label(options, "音频") == "音频"
+
+
+def test_downloader_resolves_tier_before_choice():
+    """订阅档位(纯分辨率)必须在挑流前先解析成实际标签。"""
+    import inspect
+    import downloader as dl
+    src = inspect.getsource(dl._run_download)
+    assert "resolve_quality_label(formats, label)" in src, \
+        "best_video_audio_choice 之前要先过 resolve_quality_label"
 
 
 # ---------- /api/up-list/add:名称解析 + 只追「加入之后」的新投稿 ----------
@@ -609,10 +654,20 @@ def test_pagecache_purge_stale_discards_30d(client, tmp_path, monkeypatch):
     assert fresh_f.exists(), "近期缓存文件不得误删"
 
 
-def test_frontend_fast_apply_never_breaks_checking():
-    """fast 无感替换必须带勾选守卫:用户已勾选条目时静默重渲染会错位勾选索引。"""
+def test_frontend_bg_refresh_applies_silently():
+    """后台拉到新数据直接上屏,不再弹「是否刷新」让用户点一次。
+
+    安全性由 replaceItems 保证:它只丢弃「新列表里已经不存在的」勾选,
+    仍在的勾选会保留,所以静默替换不会清掉用户正在选的东西。
+    """
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    cl = _js_func_body(lib_js, "cachedLoad")
+    assert "showFreshHint(" not in cl, "cachedLoad 不应再弹「查看最新」询问条"
     html = _tpl()
-    assert "state.checked.size === 0" in html, "fast 分支应检查无勾选才静默替换"
+    replace_body = html[html.index("export function replaceItems("):]
+    replace_body = replace_body[:replace_body.index("\n}")]
+    assert "state.checked.delete(id)" in replace_body and "nextMap.has(id)" in replace_body, \
+        "静默替换的前提:replaceItems 只丢弃新列表里已不存在的勾选"
 
 
 # ---------- /api/stats ----------
@@ -916,8 +971,8 @@ def test_frontend_audio_and_quality_config():
     """清晰度:批量下拉有仅音频;UP 清单可配每个 UP 的默认清晰度。"""
     html = _tpl()
     assert '<option value="音频">' in html, "清晰度下拉应有仅音频"
-    assert "upAutoChanged" in html and "up-list/set-quality" in html, \
-        "UP 管理应有默认清晰度设置(合并进自动下载控件)"
+    assert "upAutoPick" in html and "up-list/set-quality" in html, \
+        "UP 管理应有默认清晰度设置(平铺分段直接点选)"
     assert "/api/up-list/set-quality" in html
     assert "dl-badge" in html, "列表项应有已下载角标"
 
@@ -948,7 +1003,7 @@ def test_frontend_feed_and_subs_are_separate_pages():
     assert "upToggleFollow" in subs_js and "relation/modify" in subs_js, \
         "订阅页应有取关/回关能力"
     assert "local_ups" in subs_js, "订阅页应消费 local_ups 字段"
-    assert "upAutoChanged" in subs_js, "订阅页应有自动下载开关"
+    assert "upAutoPick" in subs_js, "订阅页应有自动下载档位分段"
 
     feed_js = (_js_dir() / "pages" / "feed.js").read_text(encoding="utf-8")
     assert "follow-updates" in feed_js, "feed 页只拉投稿流"
@@ -1079,7 +1134,7 @@ def test_frontend_fast_sources_auto_apply():
         start = html.rfind("cachedLoad({", 0, i)
         return html[start:html.find("});", i)]
 
-    assert "opts.fast" in html, "cachedLoad 应实现 fast 分支"
+    assert "cachedLoad({" in html, "cachedLoad 应存在"
     for key in ("fav_seasons", "fav_folders", "watchlater"):
         assert "fast: true" in opts_of(key), f"{key} 是快源,应 fast: true 无感替换"
     for key in ("follow_updates", "followings"):
@@ -1158,6 +1213,32 @@ def test_frontend_queue_merged_into_downloads():
     assert 'id="dl-badge"' in html, "进行中任务数显示在侧边栏「下载记录」角标"
     assert 'id="ab-del-rec"' in html and 'id="ab-del-file"' in html
     assert "delSelected" in html and "clearAllRecords" in html
+
+
+def test_task_card_keeps_uploader_ident_and_progress_discipline():
+    """任务卡(排队/下载中/失败等)与已完成卡共用同一套「UP 主 · 时间」身份行。
+
+    2026-11-17 用户报障:进行中任务卡的 vi-meta 只有关注按钮,UP 名被丢。
+    任务卡必须复用标准卡(lib.js renderDefaultList)的 vi-ident 控件;
+    行序为 标题 → 身份行 → 进度条 → 状态行,身份行与已完成卡的 UP 行上下对齐;
+    进度条只渲染在真正有进度的状态(downloading/merging),排队/取消中/重试中
+    不再画 0% 空灰条。
+    """
+    dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
+    card = _js_func_body(dl_js, "taskCardHtml")
+
+    # UP 身份行与标准卡同一套控件:vi-ident + UP 主页链接,关注按钮保留。
+    assert '<span class="vi-ident">' in card, "任务卡要有「UP 主 · 时间」身份行"
+    assert "space.bilibili.com" in card
+    assert 'class="vi-follow"' in card
+    assert '<div class="vi-meta">${metaHtml}</div>' in card
+
+    # 行序:身份行在进度条之前(网格与行式两个分支同序,取首处出现位置)。
+    assert card.index("${metaHtml}") < card.index("${bar}"), \
+        "身份行应排在进度条之前,与已完成卡的 UP 行上下对齐"
+
+    # 进度条门控:排队/取消中/重试中不再出现 0% 空条。
+    assert "status === 'downloading' || status === 'merging'" in card
 
 
 def test_frontend_switch_back_while_bg_fetch_in_flight():
@@ -1351,11 +1432,12 @@ def test_frontend_fast_apply_guard_lives_in_cached_load():
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     cl = _js_func_body(lib_js, "cachedLoad")
-    assert "opts.fast && state.checked.size === 0" in cl, \
-        "cachedLoad 的无感替换分支应带 state.checked.size === 0 守卫"
-    guard_at = cl.index("opts.fast && state.checked.size === 0")
-    assert "showFreshHint(" in cl[guard_at:], \
-        "守卫不成立时应退回 showFreshHint(「查看最新」提示条),而不是照样重渲染"
+    # 行为已按用户要求改成「有新数据直接换」:不再有 fast 守卫与提示条。
+    assert "showFreshHint(" not in cl, \
+        "cachedLoad 里不应再弹「查看最新」:有更新直接静默替换"
+    apply_at = cl.index("apply(freshResponse)")
+    assert "stillValid()" in cl[:apply_at], \
+        "静默替换前仍要确认这一代请求还有效(否则旧响应会覆盖新列表)"
 
 
 def test_frontend_downloads_uses_single_aggregate_stream_and_deferred_render():
@@ -2196,46 +2278,79 @@ def test_up_card_toggles_have_no_confirmation_dialog():
     body = _js_func_body(feed_js, "upToggleFollow")
     assert "confirmAction" not in body, "取关不应弹二次确认"
     assert "relation/modify" in body, "回关/取关仍要走 relation/modify"
-    auto_body = _js_func_body(feed_js, "upAutoChanged")
-    assert "confirmAction" not in auto_body, "自动下载开关不应弹二次确认"
-    assert "up-list/remove" in auto_body and "up-list/add" in auto_body
+    pick_body = _js_func_body(feed_js, "upAutoPick")
+    assert "confirmAction" not in pick_body, "自动下载分段点击不应弹二次确认"
+    assert "up-list/remove" in pick_body and "up-list/add" in pick_body
 
 
-def test_up_card_auto_is_single_merged_control():
-    """自动下载与画质合成一个 select 控件,控件条压在封面底部。
+def test_up_card_auto_is_flat_segment_row():
+    """自动下载档位平铺成分段胶囊(2026-11-17 用户定稿),点哪个切哪个。
 
-    回归:旧卡片「画质下拉」单独占第二行且按钮挤得名称全是省略号;
-    合并后开启态一个 select(选项=画质,含「不下载」),未开启态选画质即加入。
-    控件条不再额外占行,整卡高度与视频卡片对齐。
+    「不下载 + 最高/4K/2K/1080/720」统一平铺一排——纯分辨率档:同分辨率默认
+    最高帧率(144→60→30),没有所选分辨率时自动降档到所选以下最高(由后端
+    quality.resolve_quality_label 在挑流时落实);60 帧独立档与音频已移除,
+    「最高画质」更名「最高」。切换即时生效但列表位置不动、卡片不立刻消失,
+    重排与移卡只发生在页面加载/刷新时。关注胶囊在 UP 名后靠右(与视频卡
+    .vi-meta 的 space-between 一致);封面右上角不再有关注角标。
     """
     feed_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
     card = _js_func_body(feed_js, "upCardHtml")
     assert "upAutoControlHtml" in card and "uc-actions" in card, \
         "自动下载控件应收进 uc-actions"
-    assert "upToggleFollow" in card, "卡片应有关注开关按钮"
+    assert 'class="uc-actions">${upAutoControlHtml(u)}</div>' in card, \
+        "控件条里只应剩自动下载控件(关注胶囊已挪到名字后)"
+    assert "${nameHtml}${followChip}</div>" in card, \
+        "关注胶囊要挂在 UP 名后面(与视频卡同一枚样式)"
+    assert "uc-follow" in card and "upToggleFollow" in card, \
+        "关注胶囊用 uc-follow 类、点击走 upToggleFollow(不被 follow.js 扫到)"
+    assert "badge" not in card, "封面右上角的关注角标应删除(名字后的胶囊已表达)"
     assert "dl-badge" not in card, "绿色自动下载标签应移除"
     assert "加入清单" not in card and ">移除<" not in card, \
         "旧的加入清单/移除按钮应移除"
     ctrl = _js_func_body(feed_js, "upAutoControlHtml")
-    assert 'class="uc-auto on"' in ctrl and "不下载" in ctrl, \
-        "开启态控件应含画质选项与「不下载」项"
-    # 两态都要有显式的「不下载」:用户要能直接看到/选择"不自动下载"状态
-    assert ctrl.count("不下载") >= 2, \
-        "未开启态与开启态都应提供「不下载」选项"
-    assert 'value="__off" selected>不下载' in ctrl, \
-        "未开启态应以「不下载」为当前选中项(而非误导性的「自动下载」占位)"
-    assert "停止下载" not in feed_js, "选项文案统一为「不下载」"
+    assert "UP_QUALITY_SEGMENTS" in ctrl and "_normQuality" in ctrl, \
+        "分段档位来自订阅页自己的分辨率清单,存量旧档读时归一"
+    # 注意:_js_func_body 会把函数前的模块级常量与注释一并带进 ctrl,
+    # 旧档位字面量(归一映射)与注释里的措辞不该在这里做字面量禁令,
+    # 「不下载/最高/4K/2K/1080/720」的档位约束全部落在上面 seg_decl 断言。
+    assert "uc-auto-pill" in ctrl and "upAutoPick" in ctrl, \
+        "分段是可点的胶囊按钮,统一走 upAutoPick"
+    assert "tgl" not in ctrl and "<select" not in ctrl, \
+        "平铺分段不再用开关/下拉"
+    assert "停止下载" not in feed_js, "文案统一,不出现「停止下载」"
+    # 分段清单:模块级常量,「不下载」第一项、第二项「最高」,档位与后端一致
+    import re
+    import up_list as up_list_module
+    seg_at = feed_js.index("UP_QUALITY_SEGMENTS = [")
+    seg_decl = feed_js[seg_at:feed_js.index("];", seg_at)]
+    assert '["__off", "不自动下载"]' in seg_decl and '["", "最高"]' in seg_decl \
+        and '["音频", "仅音频"]' in seg_decl, \
+        "首项「不自动下载」(2026-11-17 改名),仅音频保留为正式档位,「最高画质」已更名「最高」"
+    assert "720P60" not in seg_decl and "1080P60" not in seg_decl, \
+        "60 帧独立档不在订阅分段里(音频是正式档位,标签「仅音频」)"
+    seg_values = re.findall(r'\["([^"]*)",', seg_decl)
+    assert set(seg_values[1:]) == set(up_list_module.QUALITY_CHOICES), \
+        "分段档位与后端 up_list.QUALITY_CHOICES 一致(最高/4K/2K/1080/720)"
+    pick_body = _js_func_body(feed_js, "upAutoPick")
+    assert "/api/up-list/remove" in pick_body and "/api/up-list/add" in pick_body \
+        and "/api/up-list/set-quality" in pick_body, \
+        "分段分别走移除/加入/换档接口"
+    # 位置不跳、卡片不立刻消失(2026-11-17 用户要求):切换即时生效但不重排
+    assert "sortUps" not in pick_body, "切换档位后列表位置不动,重排只在页面加载/刷新时发生"
+    assert "_mergedUps = _mergedUps.filter" not in pick_body, \
+        "停用自动下载不立刻移卡,刷新后才消失"
+    assert "auto: false" in pick_body, "关档仍要即时更新本地状态(分段高亮跟着变)"
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    assert ".uc-auto" in css, "清晰度/自动下载合并控件应有样式"
-    assert ".uc-auto.on" in css and "background-color:var(--accent-soft)" in css, \
-        "开启态应有强调样式,且用 background-color 长属性(否则 shorthand 覆盖自绘箭头)"
-    assert ".up-card .uc-actions > button{flex:0 0 auto;width:64px;padding:0;justify-content:center;white-space:nowrap}" in css, \
-        "关注/不关注按钮必须等宽,切换时不跳动"
-    assert "flex:1 1 auto" in css, "下拉占满控件条剩余宽度"
-    # 原生 select 的三角钉死在右边框上,加宽/改 padding 都推不动;
-    # 必须 appearance:none 自绘箭头,才能让箭头与右边框留出间距
-    assert "appearance:none" in css and "background-position:right 6px center" in css, \
-        "下拉须自绘箭头(appearance:none + background-position),否则三角贴右边框"
+    assert ".uc-auto-row" in css and ".uc-auto-pill" in css, "分段胶囊要有样式"
+    assert ".uc-auto-pill.on{color:#fff;background:var(--accent-bright)" in css, \
+        "当前档在封面暗底上要实底粉白字(同 .uc-badge.on 的理由)"
+    assert ".up-list .uc-auto-pill" in css, "行式白底要有自己的分段配色"
+    assert "tgl" not in ctrl, "分段控件不引入开关"
+    assert ".up-card .uc-tgl" not in css, "开关时代的专属规则应删除"
+    assert ".up-card .uc-actions > button" not in css, \
+        "控件条里是分段行不是按钮,旧的 64px 等宽规则应删除"
+    # 行式:分段单行横滚,卡片高度不因平铺暴涨
+    assert ".up-list .uc-auto-row{flex-wrap:nowrap" in css, "行式分段要单行横滚"
 
 
 def test_action_bar_bottom_pill():
@@ -2359,22 +2474,27 @@ def test_collection_unsubscribed_control_has_one_selected_option():
 
 
 def test_quality_select_puts_off_option_first():
-    """「不下载」固定第一项:两个页面的开关排序必须一致。
+    """「不下载」固定第一项:追更合集的下拉保持;关注 UP 已改开关交互。
 
-    用户反馈追更合集的排序更好(「不下载」在最前),关注 UP 卡片要对齐。
+    2026-11-17 关注 UP 卡的自动下载改成开关(tgl):开/关不再走下拉,画质
+    下拉里没有「不下载」项;追更合集仍是同款下拉,「不下载」在最前。
     """
     import re
     seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
     subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
     flat_seasons = re.sub(r"\s+", " ", _js_func_body(seasons_js, "collectionAutoControl"))
     flat_subs = re.sub(r"\s+", " ", _js_func_body(subs_js, "upAutoControlHtml"))
-    for flat, name in ((flat_seasons, "collectionAutoControl"),
-                       (flat_subs, "upAutoControlHtml")):
-        # 已订阅态:不下载项必须排在画质项之前
-        assert re.search(r'__off">不下载</option>\s*\$\{', flat), \
-            f"{name} 的已订阅态应把「不下载」放在画质项之前"
-        # 文案不再说「末项」
-        assert "末项" not in flat, f"{name} 的提示文案仍写着「末项」"
+    # 追更合集保持下拉交互:已订阅态不下载项必须排在画质项之前
+    assert re.search(r'__off">不下载</option>\s*\$\{', flat_seasons), \
+        "collectionAutoControl 的已订阅态应把「不下载」放在画质项之前"
+    assert "末项" not in flat_seasons, "collectionAutoControl 的提示文案仍写着「末项」"
+    # 关注 UP 卡:平铺分段,「不下载」同样是第一项(清单声明的首项)
+    seg_at = subs_js.index("UP_QUALITY_SEGMENTS = [")
+    seg_decl = subs_js[seg_at:subs_js.index("];", seg_at)]
+    assert seg_decl.index("__off") < seg_decl.index("最高") \
+        and seg_decl.index("最高") < seg_decl.index("4K"), \
+        "关注 UP 卡的分段里「不下载」要排在画质之前"
+    assert "upAutoPick" in subs_js, "关注 UP 卡要有分段点击处理函数"
 
 
 def test_frontend_module_urls_are_not_duplicated():
@@ -2416,10 +2536,10 @@ def test_subs_merge_ups_orders_auto_first_then_time():
     assert ".auto" in sort_body, "排序第一关键字必须是「是否自动下载」"
     assert "followedAt" in sort_body, "组内第二关键字必须是关注时间"
     assert "sortUps(merged)" in body, "mergeUps 必须走统一排序"
-    # 切换开关后要立刻归位:开启升到自动组,关闭落到不下载组
-    auto_body = _js_func_body(subs_js, "upAutoChanged")
-    assert auto_body.count("sortUps()") == 2, \
-        "开启与关闭自动下载后都要立即重排"
+    # 2026-11-17 用户要求:切换档位后位置不动,重排只发生在页面加载/刷新时
+    pick_body = _js_func_body(subs_js, "upAutoPick")
+    assert "sortUps" not in pick_body, \
+        "切换档位后列表位置不跳,卡在原地"
     for key in ("followedAt", "lastPubAt", "sign"):
         assert key in body, f"mergeUps 应携带 {key}"
 
@@ -2493,20 +2613,19 @@ def test_up_card_poster_cover():
     assert "aspect-ratio:16/9" in block and "max-height:220px" in block, \
         "封面区应为 16:9 且限高,单卡全宽时不至于巨高"
     assert "position:absolute" in block, "控件条应绝对定位压在封面底部"
-    assert ".up-card .uc-actions > button{flex:0 0 auto;width:64px;padding:0;justify-content:center;white-space:nowrap}" in css, \
-        "关注/取消关注按钮必须等宽且单行"
+    assert ".up-card .uc-actions > button" not in css, \
+        "控件条里不再有按钮(关注胶囊在名字后,开关是 label),旧的 64px 等宽规则应删除"
     assert ".up-list .up-card{flex-direction:row" in css, "列表模式应为行式"
 
 
 def test_badge_icon_svg_has_explicit_size():
-    """「已下载」角标里的勾选图标必须有显式尺寸。
+    """封面角标里的勾选图标必须有显式尺寸。
 
     回归（2026-11-10 关注动态页实拍）：icons.js 的 icon() 只输出带 viewBox 的
-    <svg>，不带 width/height 属性；.dl-badge 是全项目唯一漏写尺寸规则的图标容器
-    （button svg / .vi-stat svg / #qr-status svg 等都有），于是勾选图标退回
-    "替换元素默认尺寸"（约 150px 方块），把角标撑成一个占满标题行的浅绿色大矩形，
-    中文标题也被挤得逐字换行。修法两层：.dl-badge 里给显式 11px（与 .vi-stat svg
-    同规格），基础层再给 svg 一个 1em 兜底，新容器漏写尺寸时不会重演。
+    <svg>，不带 width/height 属性；当年 .dl-badge（标题后行内标签）是全项目唯一
+    漏写尺寸规则的图标容器，勾选图标退回"替换元素默认尺寸"（约 150px 方块），
+    把角标撑成占满标题行的大矩形。2026-11-17 行内标签随「标题后不放胶囊」删除，
+    图标角标统一走 .uc-badge——尺寸守卫随之锁到 .uc-badge svg 上。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
     # 基础层兜底：任何新容器忘写尺寸都不会退回 150px 方块
@@ -2514,10 +2633,11 @@ def test_badge_icon_svg_has_explicit_size():
     assert base_rule and "width:1em" in base_rule[0] and "height:1em" in base_rule[0], \
         "基础层要给 svg 一个 1em 兜底尺寸：icon() 的 svg 没有 width/height 属性"
     # 出事的那一处：显式尺寸
-    badge_svg = css[css.index(".dl-badge svg{"):]
+    badge_svg = css[css.index(".uc-badge svg{"):]
     badge_svg = badge_svg[:badge_svg.index("}")]
     assert "width:11px" in badge_svg and "height:11px" in badge_svg, \
-        ".dl-badge svg 必须显式给尺寸，否则勾选图标会撑成一个大矩形盖住标题"
+        ".uc-badge svg 必须显式给尺寸，否则勾选图标会撑成一个大矩形盖住标题"
+    assert ".dl-badge" not in css, "行内已下载标签已删除，样式不应残留"
     # 根因是图标缺尺寸，不要再用改标题行布局的方式绕过（已用 A/B 复现页证伪）
     assert ":has(.dl-badge)" not in css and ":has(.rcmd-badge)" not in css, \
         "角标问题根因在图标尺寸，不应再改 .vi-title 的布局去绕过"
@@ -2527,22 +2647,25 @@ def test_downloaded_badge_sits_on_cover_corner():
     """「已下载」标记挂在封面右上角，与合集卡的「追更中」是同一枚角标。
 
     回归（2026-11-10 实拍）：它原先跟在标题行里（标题 + 「✓已下载」挤同一行，
-    长标题和角标互相压），用户圈图要求「和追更中放一样的位置」。现在网格卡把它
-    移进封面容器、复用 .uc-badge（.ok 变体 = 实底绿白字），行式列表的封面只有
-    150px 宽、挂角标会挤，保留行内浅底小标签。
+    长标题和角标互相压），用户圈图要求「和追更中放一样的位置」，网格卡先移进
+    封面容器。2026-11-17 用户定稿「标题后面的胶囊全去掉」：行式列表的行内标签
+    也删除，两种视图都挂封面右上角（.uc-badge .ok = 实底绿白字）。
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     assert 'class="uc-badge ok"' in lib_js, \
         "「已下载」应复用封面角标 .uc-badge（与「追更中」同一枚）"
+    assert 'class="dl-badge' not in lib_js, "行内「已下载」标签已随标题胶囊清零删除"
     lv_at = lib_js.index('<div class="video-item lv${checkedCls}">')
     grid_at = lib_js.index('<div class="video-item${checkedCls}">')
     assert lv_at < grid_at, "两个分支的顺序变了，下面切片的前提不成立"
     lv_card = lib_js[lv_at:grid_at]
     grid_card = lib_js[grid_at:lib_js.index("updateLibCount();", grid_at)]
-    title_at = grid_card.index('<div class="vi-title"')
-    assert "coverBadgeHtml" in grid_card[:title_at], "网格卡的角标必须落在封面容器内"
-    assert "coverBadgeHtml" not in grid_card[title_at:], "标题行里不应再挂「已下载」"
-    assert "badgeHtml" in lv_card, "行式列表保留行内「已下载」标签"
+    lv_title_at = lv_card.index('<div class="vi-title"')
+    assert "coverBadgeHtml" in lv_card[:lv_title_at], "行式列表的角标也要落在封面容器内"
+    assert "coverBadgeHtml" not in lv_card[lv_title_at:], "标题行里不应再挂「已下载」"
+    grid_title_at = grid_card.index('<div class="vi-title"')
+    assert "coverBadgeHtml" in grid_card[:grid_title_at], "网格卡的角标必须落在封面容器内"
+    assert "coverBadgeHtml" not in grid_card[grid_title_at:], "标题行里不应再挂「已下载」"
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
     assert ".uc-badge svg{width:11px;height:11px}" in css, \
         "角标里的勾选图标必须显式给尺寸，否则退回替换元素默认尺寸（约 150px 方块）"
@@ -2564,7 +2687,8 @@ def test_active_download_badge_on_cover_corner():
     assert "function activeKeySet(" in dl_js, "要有「进行中任务」键集合"
     assert "TASK_ACTIVE.includes(t.status)" in dl_js, "进行中集合按 TASK_ACTIVE 判状态"
     assert "function downloadState(" in dl_js, "要把状态判定暴露给卡片"
-    assert "downloadState,\n  onChecksEmpty" in dl_js, "downloadState 要挂进 setItemExtras"
+    assert "downloadState," in dl_js, "downloadState 要挂进 setItemExtras"
+    assert "playTaskId," in dl_js, "已下载条目的本地播放入口也要挂进 setItemExtras"
     badges = dl_js[dl_js.index("function applyTaskBadges("):]
     badges = badges[:badges.index("\n}")]
     assert "_activeKeys" in badges, "applyTaskBadges 要维护进行中集合"
@@ -2578,8 +2702,8 @@ def test_active_download_badge_on_cover_corner():
     assert ".uc-badge.dl{color:#fff;background:var(--blue-solid)}" in css, \
         "「下载中」角标要用实底蓝：浅底蓝压在封面画面上读不出来"
     assert css.count("--blue-solid:") == 2, "实底蓝要有明暗两套令牌"
-    assert ".dl-badge.active{color:var(--blue);background:var(--blue-soft)}" in css, \
-        "行式列表的行内标签也要有「下载中」态"
+    assert 'class="dl-badge' not in lib_js, \
+        "行内「下载中」标签已随标题胶囊清零删除;两种视图都用封面角标"
 
 
 def test_content_area_fills_width_without_cap():
@@ -2868,17 +2992,20 @@ def test_collection_add_does_not_swallow_rate_limit():
 
 
 def test_subscribe_success_reflected_even_if_quality_fails():
-    """订阅成功但设清晰度失败时,界面仍须显示「已开启」而不是「不下载」。
+    """开启成功即更新本地状态;换清晰度失败不得把卡片打回「未开启」。
 
-    回归:先 add 后 set-quality,后者失败时直接抛错跳过状态更新,
-    导致界面显示未订阅而实际已订阅。
+    2026-11-17 改开关交互后,原「add 后立刻 set-quality」的链路拆开了:
+    开关开启走 add(默认最高画质)并立刻 patch 本地状态;换清晰度是独立的
+    upAutoChanged,失败时只影响清晰度显示,不得回退开启状态。
     """
     subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
-    body = _js_func_body(subs_js, "upAutoChanged")
-    patch_idx = body.find("patchUp(mid, { auto: true, quality: value });")
-    quality_idx = body.find("'/api/up-list/set-quality'")
-    assert patch_idx > 0, "订阅成功后应立即更新本地状态"
-    assert patch_idx < quality_idx, "状态更新必须在设置清晰度之前(失败也要如实反映)"
+    body = _js_func_body(subs_js, "upAutoPick")
+    add_idx = body.find("'/api/up-list/add'")
+    patch_idx = body.find("patchUp(mid, { auto: true")
+    assert add_idx > 0 and patch_idx > add_idx, "订阅成功后应立即更新本地状态"
+    # 换清晰度分支不得改开启状态:最后一次 set-quality 调用之后不再出现 auto: false
+    sq_idx = body.rfind("'/api/up-list/set-quality'")
+    assert "auto: false" not in body[sq_idx:], "换清晰度失败不应改变开启状态"
 
 
 def test_collection_items_parse_page_from_url():
@@ -3066,8 +3193,8 @@ def test_overview_search_placeholder_matches_implementation():
 def test_frontend_assets_bumped_for_fix_batch():
     """改过的静态资源版本号必须前进,避免浏览器吃旧副本。"""
     html = _tpl()
-    assert "main.css?v=20261111b" in html and "app.js?v=20261111b" in html
-    assert "20261111a" not in html, "旧版本号不应残留"
+    assert "main.css?v=20261116v" in html and "app.js?v=20261116v" in html
+    assert "20261116u" not in html and "20261116t" not in html and "20261116s" not in html, "旧版本号不应残留"
 
 
 def test_downloads_head_has_single_new_download_entry():
@@ -3153,3 +3280,507 @@ def test_not_logged_in_maps_to_401(client, monkeypatch):
     body = r.get_json()
     assert body["code"] == "auth_required"
     assert "未登录" in body["error"]
+
+
+# ---------- 本地播放器:点标题就地播放 ----------
+
+def _add_play_task(tmp_path, monkeypatch, *, suffix=".mp4", page=1,
+                   bvid="BV1xx411c7mD", task_id="play-1"):
+    """在沙盒下载根里放一个已完成任务,返回媒体文件路径。"""
+    import config
+    import taskstore
+    monkeypatch.setattr(config, "DOWNLOAD_DIR", tmp_path)
+    media = tmp_path / f"本地视频{page}{suffix}"
+    media.write_bytes(b"0123456789")
+    taskstore._tasks[task_id] = {
+        "task_id": task_id, "status": "done", "title": "本地视频",
+        "url": f"https://www.bilibili.com/video/{bvid}", "page": page,
+        "actual_filename": str(media), "downloaded_bytes": 10,
+    }
+    return media
+
+
+def test_play_resolve_points_at_stream_for_downloaded_url(client, tmp_path, monkeypatch):
+    """/api/play/resolve 按 (BV, 分P) 找到本地产物,并给出流地址。"""
+    _add_play_task(tmp_path, monkeypatch)
+    r = client.get("/api/play/resolve?url=https://www.bilibili.com/video/BV1xx411c7mD")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["ok"] is True
+    assert body["stream"] == "/api/stream/play-1"
+    assert body["task_id"] == "play-1"
+    assert body["browser_playable"] is True
+
+
+def test_play_resolve_is_not_downloaded_for_other_page(client, tmp_path, monkeypatch):
+    """合集里只下了 P1 时,P2 不能被当成「已有本地文件」。"""
+    _add_play_task(tmp_path, monkeypatch, page=1)
+    r = client.get("/api/play/resolve?url=https://www.bilibili.com/video/BV1xx411c7mD?p=2")
+    assert r.status_code == 404
+    assert r.get_json()["code"] == "not_downloaded"
+
+
+def test_stream_serves_range_for_seeking(client, tmp_path, monkeypatch):
+    """播放流必须支持 Range/206,否则大文件拖不动进度条。"""
+    _add_play_task(tmp_path, monkeypatch)
+    r = client.get("/api/stream/play-1", headers={"Range": "bytes=2-5"})
+    assert r.status_code == 206
+    assert r.data == b"2345"
+    assert r.headers["Accept-Ranges"] == "bytes"
+
+
+def test_stream_404s_when_file_gone(client, tmp_path, monkeypatch):
+    media = _add_play_task(tmp_path, monkeypatch)
+    media.unlink()
+    r = client.get("/api/stream/play-1")
+    assert r.status_code == 404
+    assert r.get_json()["code"] == "media_not_found"
+
+
+def test_local_player_frontend_contract():
+    """封面播放按钮 → 弹层播放的接线:标记、模块、结构、样式都要在。"""
+    js_dir = _js_dir()
+    player_js = (js_dir / "player.js").read_text(encoding="utf-8")
+    assert "data-play-task" in player_js, "播放器靠 [data-play-task] 认领本地播放"
+    assert "data-play-online" in player_js, "没下载的条目走 [data-play-online]"
+    assert "/api/stream/" in player_js, "本地播放源走流路由"
+    # 在线播放改成自己播:后端按登录态解析直链,前端 <video> + <audio> 同步。
+    # 用 iframe 拿不到登录态(第三方 Cookie 被拦),只能拿到 360P/480P。
+    assert "/api/online/qualities" in player_js, "在线清晰度走后端解析"
+    assert "/online/stream/" in player_js, "两条媒体轨走后端代理"
+    assert "player.bilibili.com/player.html" not in player_js, \
+        "在线不该再用 iframe:那拿不到登录态的高清档位"
+    assert "syncAudioToVideo" in player_js, "DASH 音视频分离,必须做音画同步"
+    assert "closeLocalPlayer" in player_js and "Escape" in player_js, "要有 Esc 关闭"
+
+    lib_js = (js_dir / "lib.js").read_text(encoding="utf-8")
+    assert "vi-play-main" in lib_js, "每张封面都要有播放按钮(右下角、时长胶囊上方)"
+    assert "data-play-online=" in lib_js, "未下载走在线源"
+    dl_js = (js_dir / "pages" / "downloads.js").read_text(encoding="utf-8")
+    assert "function playTaskId(" in dl_js, "下载记录页要按 (bv, 分P) 解析播放任务"
+    assert "vi-play-main" in dl_js, "下载记录的卡片同样要有播放按钮"
+
+    html = _tpl()
+    assert 'id="player-video"' in html and 'id="player-close"' in html, "播放器结构要在模板里"
+    assert 'id="player-audio"' in html, "DASH 音轨要单独一路 <audio>"
+    assert 'id="pl-quality-segs"' in html, "在线要有清晰度档位(胶囊)"
+    assert 'id="player-gate"' not in html, "不再用起播闸门:点进去直接播"
+    assert 'id="pl-speed-segs"' in html and 'id="pl-volume"' in html, "本地要有倍速档位与音量控件"
+    assert 'id="pl-seek"' in html and 'id="pl-full"' in html, "进度与全屏要自己给"
+
+    css = (js_dir.parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".player.open{display:flex}" in css, "播放器要有显隐状态"
+    # 勾选热区只能压封面:曾经铺满整卡,把标题链接和封面按钮一起压死
+    assert ".vi-check-hit{position:absolute;inset:0;z-index:3;cursor:pointer}" in css
+    # 播放按钮要压过热区,否则点播放会变成勾选
+    actions_rule = css[css.index(".thumb-actions{"):]
+    actions_rule = actions_rule[:actions_rule.index("}")]
+    assert "z-index:5" in actions_rule, "封面动作区必须高于勾选热区(z-index:3)"
+    assert ".pl-controls[hidden]" in css, \
+        "display:flex 会盖掉 hidden,必须显式归零,否则在线播放时本地控件还在"
+    for name in ("lib.js", "pages/downloads.js"):
+        source = (js_dir / name).read_text(encoding="utf-8")
+        for index in [i for i in range(len(source)) if source.startswith("${checkHtml}", i)]:
+            assert "thumb" in source[max(0, index - 260):index], \
+                f"{name} 的勾选标签必须渲染在封面容器内"
+
+
+def test_cover_play_button_does_not_toggle_selection():
+    """封面播放/定位按钮在 thumb-wrap 里,点它们不能顺手把卡片勾上。"""
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    guard = lib_js[lib_js.index("document.addEventListener('click'"):]
+    guard = guard[:guard.index("});")]
+    assert ".vi-check-hit, .vi-play-main, .vi-play, .vi-follow" in guard, \
+        "封面点击处理器必须跳过勾选热区、播放/定位按钮与关注按钮"
+
+
+def test_title_link_hit_area_regression():
+    """封面按钮要压过勾选热区,标题链接才点得动(z-index 顺序是这条链的核心)。"""
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    play_rule = css[css.index(".vi-play{"):]
+    play_rule = play_rule[:play_rule.index("}")]
+    assert "z-index:4" in play_rule, ".vi-play 必须在 .vi-check-hit(z-index:3) 之上"
+
+
+def test_checked_badge_lives_on_hit_target():
+    """选中态的粉圆/对勾必须画在勾选热区 label 自己的伪元素上(2026-11-16 用户报障)。
+
+    画在外壳 .video-item.checked::after/::before(z-index:5/6)上时,它们压在热区
+    label(z-index:3)之上:点击对勾落在伪元素上,事件目标变成卡片本身——热区收不到,
+    封面兜底处理器也跳过,左上角 22px 圆圈变成死区,只有挪出圆圈才点得动。且「伪元素
+    pointer-events:none 穿透」各浏览器实现不一致(WebKit 167021),不能依赖。视觉与
+    热区同一个元素,点击才在任何浏览器都落在热区上。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    # 死区回归:卡片外壳上不允许再出现选中态伪元素
+    assert ".video-item.checked::after" not in css, "选中态视觉不得画在外壳 ::after 上(会盖住热区)"
+    assert ".video-item.checked::before" not in css, "选中态视觉不得画在外壳 ::before 上(会盖住热区)"
+    # 选中态视觉:粉圆与对勾都在热区 label 的伪元素上
+    fill_rule = css[css.index(".video-item.checked .vi-check-hit::before{background:"):]
+    fill_rule = fill_rule[:fill_rule.index("}")]
+    assert "border-color:var(--accent-bright)" in fill_rule, "选中态方框要变实底强调色"
+    assert "border-radius" not in fill_rule and "width" not in fill_rule and "height" not in fill_rule, \
+        "选中态不得改变方框形状/尺寸——方变圆的形状跳变被用户打回(2026-11-17)"
+    check_rule = css[css.index(".video-item.checked .vi-check-hit::after"):]
+    check_rule = check_rule[:check_rule.index("}")]
+    assert "opacity:1" in check_rule, "选中态对勾必须是热区 ::after 的显形规则"
+
+
+
+def test_sub_info_row_height_uniform_across_pages():
+    """所有页面的 sub-info 信息行必须预留同一高度,首列卡片起始位置才跨页一致。
+
+    2026-11-17 用户报障:下载页首列卡片比其他页低一截。实测各页 page-head 都是
+    32px,差异全在信息行——下载页这一行里有 28px 的 quiet 按钮(清除已结束记录/
+    清除失败/失效记录),其余页只有 ~19px 文字;min-height:20px 时下载页整行被
+    撑到 28px,首行卡片 top=162px,其余页 154px,整整低 8px。信息行统一预留
+    28px(控件紧凑档高度),所有页面对齐到同一基线,按钮档位不动。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    rule = css[css.index(".sub-info{"):]
+    rule = rule[:rule.index("}")]
+    assert "min-height:28px" in rule, "sub-info 行高必须统一预留 28px(下载页 si-actions 按钮档)"
+    assert "min-height:20px" not in rule, "旧 20px 行高会被下载页 28px 按钮撑破,首列卡片跨页错位 8px"
+
+
+# ---------- 在线播放:登录态直链 ----------
+
+def test_online_qualities_requires_bilibili_url(client):
+    """只接受 B 站链接:这个接口会代发请求,不能让别处借它当任意代理。"""
+    r = client.get("/api/online/qualities?url=https://example.com/video/1")
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "invalid_field"
+
+
+def test_online_qualities_returns_tokens_not_urls(client, monkeypatch):
+    """前端只该拿到 token,拿不到也构造不出 CDN 地址。"""
+    import online
+
+    def fake_resolve(url):
+        return {"ok": True, "duration": 60, "title": "示例",
+                "qualities": [{"label": "1080P", "height": 1080, "token": "tok-hd"}],
+                "audio": "tok-audio"}
+
+    monkeypatch.setattr(online, "resolve", fake_resolve)
+    r = client.get("/api/online/qualities?url=https://www.bilibili.com/video/BV1xx411c7mD")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["qualities"][0]["token"] == "tok-hd"
+    assert "bilivideo" not in r.get_data(as_text=True), "响应里不能出现真实 CDN 地址"
+
+
+def test_online_stream_forwards_range_and_referer(client, monkeypatch):
+    """代理必须把 Range 透传上去,并固定补 Referer(缺了视频轨 403)。"""
+    import online
+
+    seen = {}
+
+    class FakeUpstream:
+        status_code = 206
+        headers = {"Content-Type": "video/mp4", "Content-Range": "bytes 0-9/100",
+                   "Content-Length": "10", "Accept-Ranges": "bytes"}
+
+        def iter_content(self, chunk_size=1):
+            yield b"0123456789"
+
+        def close(self):
+            seen["closed"] = True
+
+    def fake_open(token, range_header):
+        seen["token"] = token
+        seen["range"] = range_header
+        return FakeUpstream(), None
+
+    monkeypatch.setattr(online, "open_upstream", fake_open)
+    r = client.get("/online/stream/tok-hd", headers={"Range": "bytes=0-9"})
+    assert r.status_code == 206
+    assert r.data == b"0123456789"
+    assert seen["range"] == "bytes=0-9"
+    assert r.headers["Content-Range"] == "bytes 0-9/100"
+    assert r.headers["Accept-Ranges"] == "bytes"
+
+
+def test_online_stream_expired_token_is_404(client, monkeypatch):
+    import online
+
+    monkeypatch.setattr(online, "open_upstream",
+                        lambda token, range_header: (None, ("过期", "token_expired")))
+    r = client.get("/online/stream/gone")
+    assert r.status_code == 404
+    assert r.get_json()["code"] == "token_expired"
+
+
+def test_online_resolve_keeps_logged_in_qualities(monkeypatch):
+    """登录态解析出来的档位要全保留,同高度只留码率最高的一条。"""
+    import online
+
+    formats = [
+        {"format_id": "30280", "kind": "audio", "label": "音频", "tbr": 88},
+        {"format_id": "30112", "kind": "video", "label": "1080P", "height": 1080, "tbr": 5512},
+        {"format_id": "30080", "kind": "video", "label": "1080P", "height": 1080, "tbr": 3000},
+        {"format_id": "30064", "kind": "video", "label": "720P", "height": 720, "tbr": 622},
+    ]
+    picked = online._pick_video_quality(formats)
+    assert [(label, item["format_id"]) for label, item in picked] == [
+        ("1080P", "30112"), ("720P", "30064")], \
+        "同高度要留码率最高的那条,并按高度从高到低排"
+    assert online._pick_audio(formats)["format_id"] == "30280"
+
+
+# ---------- 卡片封面布局 / 关注 / 滑条 ----------
+
+def test_cover_layout_play_bottom_right_stats_bottom_left():
+    """播放键在右下角时长胶囊上方,播放/点赞胶囊在封面左下角。"""
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert 'class="thumb-actions"' in lib_js, "封面右下角要有动作区"
+    assert 'class="thumb-row"' in lib_js, "时长/定位与播放键同列"
+    assert 'class="vi-play-main"' in lib_js, "播放键用 vi-play-main(不再放正中)"
+    assert 'class="thumb-stats"' in lib_js, "播放/点赞胶囊要搬到封面左下角"
+    assert "vi-play-center" not in lib_js, "原来的居中播放键应彻底退役"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    actions = css[css.index(".thumb-actions{"):]
+    actions = actions[:actions.index("}")]
+    assert "right:8px" in actions and "bottom:8px" in actions, "动作区贴右下角"
+    assert "flex-direction:column" in actions, "播放键要在时长上方而非并排"
+    stats = css[css.index(".thumb-stats{"):]
+    stats = stats[:stats.index("}")]
+    assert "left:8px" in stats and "bottom:8px" in stats, "统计胶囊贴左下角"
+
+
+def test_follow_chip_and_batch_status_endpoint(client, monkeypatch):
+    """卡片要有「关注」按钮,状态由后端批量查(不逐个打 /x/relation)。"""
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert 'class="vi-follow"' in lib_js, "元信息行要有关注按钮"
+    assert "refreshFollowChips()" in lib_js, "渲染完要批量落关注状态"
+    follow_js = (_js_dir() / "follow.js").read_text(encoding="utf-8")
+    assert "/api/relation/status?mids=" in follow_js, "状态走批量接口"
+    assert "/api/relation/modify" in follow_js, "点击走关注/取关写接口"
+    assert "statusByMid" in follow_js, "同一UP 的状态要复用,别重复查"
+
+    import bilibili_api as bapi
+    # 批量接口优先:返回 None 表示它被风控,才会回退到关注列表匹配
+    monkeypatch.setattr(bapi, "fetch_relation_statuses", lambda mids, **kw: None)
+    monkeypatch.setattr(bapi, "fetch_followings_all",
+                        lambda **kw: {"items": [{"mid": 111}, {"mid": 333}], "total": 2})
+    import app as app_module
+    monkeypatch.setattr(app_module, "_request_auth_context", lambda: None)
+    r = client.get("/api/relation/status?mids=111,222,333")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["statuses"] == {"111": True, "222": False, "333": True}
+
+
+def test_relation_status_rejects_bad_mids(client):
+    r = client.get("/api/relation/status?mids=abc,,")
+    assert r.status_code == 400
+    assert r.get_json()["code"] == "invalid_field"
+
+
+def test_online_player_autoplays_without_gate():
+    """用户要求点进去就播:不能再摆「点击播放」的闸门。"""
+    player_js = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    assert "player-gate" not in player_js, "起播闸门应移除"
+    assert "attemptOnlinePlay" in player_js, "在线要自动起播"
+    assert "armUnmuteOnGesture" in player_js, \
+        "被自动播放策略拦掉时要先静音播,再在用户手势里放开声音"
+    html = _tpl()
+    assert 'id="player-gate"' not in html, "模板里也不该留闸门"
+
+
+def test_speed_and_quality_use_segmented_pills():
+    """倍速与清晰度改成平铺胶囊:点一下直接切档。
+
+    起因(用户原话):「现在的滑动用起来如果我想要切回1倍速,我得鼠标慢慢挪到1那里」——
+    档位本来就有限,摊平成一排按钮点谁是谁,比滑条准确。
+    """
+    html = _tpl()
+    assert 'id="pl-speed-segs"' in html, "倍速要有一排胶囊容器"
+    assert 'id="pl-quality-segs"' in html, "清晰度要有一排胶囊容器"
+    assert 'id="pl-speed"' not in html, "原来的倍速滑条应退役"
+    assert 'id="pl-quality"' not in html, "原来的清晰度滑条应退役"
+
+    player_js = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    assert "SPEEDS = { steps:" in player_js, "倍速档位要显式列出,不能是连续区间"
+    assert "buildSpeedSegs" in player_js and "markSpeedSegs" in player_js, \
+        "胶囊要能生成与选中态同步"
+    assert "markQualitySegs" in player_js, "清晰度胶囊也要标出当前档"
+
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".pl-seg.on{" in css, "选中的胶囊要有明确的高亮态"
+
+
+def test_relation_status_uses_followings_cache(client, monkeypatch):
+    """关注状态走关注列表缓存倒推。
+
+    不用 /x/relation/relations 当主路径的原因写在 app.py 里:它对本会话反复 412,
+    一 412 就触发全局冷却,连首页推荐与搜索一起停 10 分钟,代价大于收益。
+    """
+    import bilibili_api as bapi
+    import app as app_module
+    monkeypatch.setattr(app_module, "_request_auth_context", lambda: None)
+    monkeypatch.setattr(bapi, "fetch_followings_all",
+                        lambda **kw: {"items": [{"mid": 111}, {"mid": 333}], "total": 2})
+
+    def boom(*a, **kw):
+        raise AssertionError("不该再依赖批量关系接口")
+
+    monkeypatch.setattr(bapi, "fetch_relation_statuses", boom)
+    r = client.get("/api/relation/status?mids=111,222,333")
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body["source"] == "followings"
+    assert body["statuses"] == {"111": True, "222": False, "333": True}
+
+
+# ---------- 搜索栏:回车搜全站 ----------
+
+def test_search_endpoint_validates_and_dispatches(client, monkeypatch):
+    """搜索接口:只接受 video/user,并按类型分派。"""
+    import bilibili_api as bapi
+    import app as app_module
+    monkeypatch.setattr(app_module, "_request_auth_context", lambda: None)
+    monkeypatch.setattr(bapi, "search_videos",
+                        lambda q, page=1, **kw: [{"bvid": "BV1xx411c7mD", "title": q}])
+    monkeypatch.setattr(bapi, "search_users",
+                        lambda q, page=1, **kw: [{"mid": 42, "uname": q}])
+
+    r = client.get("/api/search?type=video&q=测试")
+    assert r.status_code == 200 and r.get_json()["items"][0]["bvid"] == "BV1xx411c7mD"
+    r = client.get("/api/search?type=user&q=测试")
+    assert r.status_code == 200 and r.get_json()["items"][0]["mid"] == 42
+    assert client.get("/api/search?type=album&q=x").status_code == 400
+    assert client.get("/api/search?type=video&q=%20").status_code == 400
+
+
+def test_search_wires_home_and_subs_as_real_search_bars():
+    """首页与关注 UP 的搜索框要能搜全站,而不是只过滤当前列表。"""
+    html = _tpl()
+    assert "回车搜索" in html, "占位文案要说明这是站内搜索"
+    search_js = (_js_dir() / "search.js").read_text(encoding="utf-8")
+    assert "/api/search?type=" in search_js, "回车走站内搜索接口"
+    assert "registerSearchTarget" in search_js, "页面注册式接入"
+    home_js = (_js_dir() / "pages" / "home.js").read_text(encoding="utf-8")
+    assert "registerSearchTarget('home'" in home_js, "首页接搜索"
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+    assert "registerSearchTarget('subs'" in subs_js, "关注 UP 页接搜索"
+    assert "kind: 'user'" in subs_js, "关注 UP 搜的是用户"
+
+
+def test_search_results_not_refiltered_by_raw_query():
+    """站内搜索结果不得再用搜索原文做本地过滤(2026-11-17 回归)。
+
+    B 站搜索自带纠错/模糊匹配:搜「傅立叶」返回的标题是「傅里叶」,
+    原文 includes 一条都匹配不上——实测 18 条命中被本地过滤筛成
+    「共 18 条 · 匹配 0」,列表只剩「没有匹配结果」空态。搜索态渲染必须
+    跳过本地过滤;本地过滤职责只属于非搜索页(下载记录/观看历史等)。
+    """
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    search_js = (_js_dir() / "search.js").read_text(encoding="utf-8")
+    home_js = (_js_dir() / "pages" / "home.js").read_text(encoding="utf-8")
+    subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
+
+    # search.js 暴露搜索态;lib.js 引入后经 renderFilterQuery 在渲染路径生效。
+    assert "export function isSearchMode" in search_js, "搜索态要能被渲染层查询"
+    assert "from './search.js'" in lib_js, "lib.js 必须从 search.js 引入搜索态查询"
+    rdl = _js_func_body(lib_js, "renderDefaultList")
+    assert "renderFilterQuery()" in rdl, "renderDefaultList 必须用搜索态感知的有效过滤词"
+    assert "visiblePairs(q)" in rdl, "取窗入口保持 visiblePairs(q) 不变"
+    assert "renderFilterQuery()" in _js_func_body(lib_js, "advanceDefaultChunk"), \
+        "无限滚推进的渲染同样不按原文过滤"
+
+    # applyLibFilter 先撤销已排队的本地过滤,再让位给站内搜索态。
+    alf = _js_func_body(lib_js, "applyLibFilter")
+    assert alf.index("clearTimeout(_filterTimer)") < alf.index("_bdSearchActive"), \
+        "applyLibFilter 要先清旧定时器再判断搜索态,否则旧渲染排队闪空"
+
+    # 搜索态置位必须用捕获阶段监听:内联 oninput 在目标阶段先执行,
+    # 冒泡置位会让首个按键仍按原文调度一次本地过滤(输入过程闪空)。
+    assert "addEventListener('input', onSearchInput, true)" in search_js, \
+        "搜索输入监听走捕获阶段,压过内联 oninput 的执行顺序"
+
+    # 搜索态空态文案不得落回非搜索话术(「暂无推荐」「还没有关注」)。
+    assert "isSearchMode('home')" in home_js
+    assert "isSearchMode('subs')" in subs_js
+
+    # 关注 UP 页渲染改用有效过滤词,站内结果不再被原文筛掉。
+    assert "renderFilterQuery()" in _js_func_body(subs_js, "renderUps")
+
+
+def test_search_result_cache_avoids_repeat_upstream_calls(monkeypatch):
+    """同词同页的站内搜索在 TTL 内复用缓存,不再打上游(2026-11-17 性能)。
+
+    搜索是 sensitive 接口:重复查询要再付 1.5s 接口间隔 + 一次上游请求,
+    实测同词复查 1.6s(其中约 1.1s 在等间隔)。缓存只存上游明确成功的
+    结果;换词/换页/换类型是不同 key,412/429 异常不进缓存。
+    """
+    import bilibili_api as bapi
+    calls = []
+
+    def _fake_get(url, **kwargs):
+        calls.append(str((kwargs.get("params") or {}).get("keyword", "")))
+        return _FakeResp({"code": 0, "data": {"result": [
+            {"bvid": "BV1cacheTest1", "title": "标题", "author": "UP"}]}})
+
+    monkeypatch.setattr(bapi, "_auth_session", lambda context=None: (None, object()))
+    monkeypatch.setattr(bapi, "_get_wbi_ie", lambda context=None: _FakeWbiIE())
+    monkeypatch.setattr(bapi, "_get", _fake_get)
+    monkeypatch.setattr(bapi, "_SEARCH_CACHE", {})
+
+    first = bapi._search_raw("video", "傅立叶", 1)
+    second = bapi._search_raw("video", "傅立叶", 1)
+    other = bapi._search_raw("video", "傅里叶", 1)
+
+    assert len(calls) == 2, "同词同页必须命中缓存,只有换词才再打上游"
+    assert first is second, "命中缓存应返回同一份结果"
+    assert other is not first, "换词是不同 key,必须走真实请求"
+
+    import time as _time
+    bapi._SEARCH_CACHE["video:过期:1"] = (_time.time() - 301, {"result": []})
+    assert bapi._search_cache_get("video:过期:1") is None, "超 TTL 的缓存必须失效"
+
+
+def test_search_frontend_session_cache_and_keepalive():
+    """前端会话内同词秒回 + 上游 keep-alive 连接池(2026-11-17 二轮提速)。
+
+    前端:同页同词命中会话缓存时直接上屏,不再发请求(连后端缓存都不用打);
+    换词/换页仍走真实搜索。后端:_get 在生产走带连接池的 Session(实测每次
+    省 0.05–0.15s TLS 握手),测试替换顶层 requests.get 时要让路给桩。
+    """
+    lib_dir = _js_dir()
+    search_js = (lib_dir / "search.js").read_text(encoding="utf-8")
+    api_src = (lib_dir.parent.parent / "bilibili_api.py").read_text(encoding="utf-8")
+
+    # 会话缓存只在「输入仍是触发词」时上屏,防竞态;成功拉取后必须写入缓存。
+    run_body = _js_func_body(search_js, "runSearch")
+    assert "cacheGet(cacheKey(pageName, target.kind, q))" in run_body, \
+        "runSearch 必须先查会话缓存"
+    assert "nowInput && (nowInput.value || '').trim() === q" in run_body, \
+        "命中缓存也要校验当前输入,防止旧词覆盖新词"
+    assert "cacheSet(cacheKey(pageName, target.kind, q), items)" in run_body, \
+        "真实搜索成功后必须写入会话缓存"
+    assert "SEARCH_CACHE_MAX" in search_js, "会话缓存必须有上限"
+
+    # 生产走连接池会话;测试替换 requests.get 时让路,不破坏既有桩。
+    assert "_UPSTREAM_SESSION = requests.Session()" in api_src
+    getter_line = [ln for ln in api_src.splitlines() if "getter = requests.get if" in ln]
+    assert getter_line and "_UPSTREAM_SESSION.get" in getter_line[0], \
+        "_get 生产路径必须使用连接池会话"
+    assert "_requests_get = requests.get" in api_src, \
+        "必须锚定顶层 requests.get 原始实现,供桩替换检测"
+
+
+def test_follow_write_invalidates_followings_cache(monkeypatch):
+    """关注/取关成功后必须作废关注列表缓存,否则卡片刷新仍是旧状态。"""
+    import bilibili_api as bapi
+    # 1) 真实函数要真的清掉缓存
+    bapi._followings_cache.update(items=[{"mid": 1}], total=1, ts=1e9, context=None)
+    bapi._invalidate_followings()
+    assert bapi._followings_cache["items"] == [], "作废后缓存要清空"
+    assert bapi._followings_cache["ts"] == 0.0, "时间戳归零才会重新拉"
+
+    # 2) 关注/取关的写路径必须调用它(否则刷新仍显示旧状态)
+    source = (_js_dir().parent.parent / "bilibili_api.py").read_text(encoding="utf-8")
+    body = source[source.index("def modify_relation("):]
+    body = body[:body.index("\ndef ")]
+    assert "_invalidate_followings()" in body, \
+        "modify_relation 成功后必须作废关注列表缓存"

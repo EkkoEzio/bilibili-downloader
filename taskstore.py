@@ -1014,6 +1014,65 @@ def find_task_files(task_id: str) -> list[Path]:
     return _task_files(task) if task else []
 
 
+# 浏览器能直接解码的封装。mkv/flv/avi 等仍可交给本地播放器，但网页 <video> 播不了，
+# 播放器要据此给「用系统播放器打开」的提示，而不是留一块黑屏。
+_PLAY_BROWSER_EXTS = (".mp4", ".m4v", ".webm")
+
+
+def playable_media(task: Optional[dict]) -> Optional[Path]:
+    """任务产物里的媒体文件；多种候选时优先浏览器可播的封装。"""
+    if not task:
+        return None
+    candidates = [path for path in _task_files(task)
+                  if path.suffix.lower() in _MEDIA_EXTS]
+    if not candidates:
+        return None
+    candidates.sort(key=lambda path: 0 if path.suffix.lower() in _PLAY_BROWSER_EXTS else 1)
+    return candidates[0]
+
+
+def find_playable(url: str) -> Optional[dict]:
+    """按 (BV 号, 分 P) 找已完成的本地产物，供「点标题就地播放」使用。
+
+    与 is_downloaded 同一套键规则：判定粒度必须是 (bv, page)，否则合集里下完
+    P1 会把其余分 P 都当成本地已有。
+    """
+    bv = bvid_from_url(url)
+    if not bv:
+        return None
+    key = extras.dl_key(bv, extras.page_from_url(url))
+    for task in list_tasks():
+        if task.get("status") != "done":
+            continue
+        task_bv = bvid_from_url(task.get("url") or "")
+        if not task_bv:
+            continue
+        if extras.dl_key(task_bv, int(task.get("page") or 1)) != key:
+            continue
+        media = playable_media(task)
+        if media is None:
+            continue
+        try:
+            size = media.stat().st_size
+        except OSError:
+            size = 0
+        return {
+            "task_id": task.get("task_id"),
+            "title": task.get("title") or "",
+            "uploader": task.get("uploader") or "",
+            "duration": task.get("duration") or 0,
+            "page": int(task.get("page") or 1),
+            "size": size,
+            "browser_playable": media.suffix.lower() in _PLAY_BROWSER_EXTS,
+        }
+    return None
+
+
+def playable_file(task_id: str) -> Optional[Path]:
+    """播放流路由用：任务 ID → 可直接读的媒体文件。"""
+    return playable_media(get_task(task_id))
+
+
 def _files_for_destructive_delete(task: dict, *, root=None) -> list[Path]:
     """返回允许删除的文件；legacy 扫描只有主候选唯一时才放行。"""
     safe_root = (_canonical_root(root) if root is not None

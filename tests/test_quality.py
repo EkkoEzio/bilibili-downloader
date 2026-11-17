@@ -156,20 +156,27 @@ def test_label_height_parses_60fps_label():
 
 
 def test_quality_ladder_matches_bilibili_reality():
-    """档位集合必须与 B 站实际可用画质一致。
+    """档位集合必须与 B 站实际可用画质一致(2026-11-17 档位改版后分两套)。
+
+    UP 订阅用「纯分辨率档」(up_list.QUALITY_CHOICES):不枚举 60 帧精确标签,
+    同分辨率默认最高帧率、缺档自动降档由 resolve_quality_label 落实;「2K」
+    是分辨率档,B 站暂无 1440P 流时自动降到 1080P,不会挑空。
+    手动下载/合集/收藏仍用精确标签下拉(quality.js QUALITY_OPTIONS),
+    那一侧才需要与 B 站实际档位一一对应。
 
     核实结论(2026-10-31,实测 BV12msf6kEwz 的 playurl):
-    - B 站无 1440P/2K 档(上一版误加)
+    - B 站无 1440P 档(上一版误加,别再回来)
     - 60 帧档是 1080P60(quality 116)与 720P60(quality 74)
     """
     import up_list
     from pathlib import Path
     choices = set(up_list.QUALITY_CHOICES)
-    assert "1440P" not in choices, "B 站没有 1440P/2K 档,不应提供"
-    assert "1080P60" in choices and "720P60" in choices, "60 帧档缺失"
-    assert choices == {"", "2160P", "1080P60", "1080P", "720P60", "720P", "音频"}
+    assert "1440P" not in choices, "UP 档位不提供 1440P 精确标签(2K 档由降档兜底)"
+    assert "1080P60" not in choices and "720P60" not in choices, \
+        "UP 档位已是纯分辨率,60 帧精确标签只留在归一映射 _LEGACY_QUALITY 里"
+    assert choices == {"", "2160P", "2K", "1080", "720", "音频"}
 
     js = (Path(__file__).resolve().parent.parent
           / "static" / "js" / "quality.js").read_text(encoding="utf-8")
-    assert "'1440P'" not in js, "前端不应再提供 2K"
-    assert "'1080P60'" in js and "'720P60'" in js, "前端缺 60 帧档"
+    assert "'1440P'" not in js, "前端不应提供 1440P 精确档"
+    assert "'1080P60'" in js and "'720P60'" in js, "精确标签下拉缺 60 帧档"

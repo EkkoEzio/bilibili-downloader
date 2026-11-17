@@ -16,9 +16,12 @@
    - metaText(q, pairs)  自定义统计行文案(缺省「共 N 条」;用于总数不可得的页面)
    - onViewToggle()     列表/网格切换时的额外复位 */
 import { icon } from './icons.js';
+import { refreshFollowChips } from './follow.js';
+import { warmVisibleCovers } from './player.js';
 import { escapeHtml, escapeAttr, sig, formatDuration, formatTime,
          safeHttpUrl, safeDecimalId, bvFromUrl, pageFromUrl, nonNegativeInt } from './util.js';
 import { getJSON, isAbortError } from './net.js';
+import { isSearchMode } from './search.js';
 
 /* ---------- 共享状态（所有标准列表页共用） ---------- */
 export const state = {
@@ -228,7 +231,7 @@ export function visiblePairs(q) {
 export function renderDefaultList(d = libDom()) {
   if (!d || !d.list) return;
   const ctrl = page();
-  const q = getLibSearchQuery();
+  const q = renderFilterQuery();
   if (!state.shown) state.shown = curChunk();
   const pairs = visiblePairs(q);
   renderLibList(pairs, d.list);
@@ -283,7 +286,7 @@ export function advanceDefaultChunk() {
     return false;
   }
   state.shown += curChunk();
-  renderLibList(visiblePairs(getLibSearchQuery()), libDom().list);
+  renderLibList(visiblePairs(renderFilterQuery()), libDom().list);
   return true;
 }
 
@@ -385,13 +388,10 @@ export async function cachedLoad(opts) {
       return;
     }
     if (sig(fresh) !== sig(shown) && current()) {
-      if (opts.fast && state.checked.size === 0) {
-        apply(freshResponse);
-      } else {
-        showFreshHint(pageName, () => {
-          if (_bgGeneration.get(cacheKey) === generation && stillValid()) apply(freshResponse);
-        });
-      }
+      // 有更新就直接换,不再问「是否刷新」。
+      // replaceItems 只丢弃「新列表里已经没有的」勾选,仍在的勾选会保留,
+      // 所以静默替换不会把用户正在选的东西清掉(见 replaceItems 实现)。
+      if (_bgGeneration.get(cacheKey) === generation && stillValid()) apply(freshResponse);
     }
   } catch (error) {
     if (!isAbortError(error) && shown === null && opts.showError && current()) {
@@ -440,6 +440,7 @@ const _itemExtras = {
   warnHtml: () => '',
   isDownloaded: () => false,
   downloadState: () => '',
+  playTaskId: () => '',
   onChecksEmpty: null,
 };
 
@@ -474,13 +475,10 @@ export function renderLibList(pairs, container) {
     if (_itemExtras.isProgressCard(it)) {
       return _itemExtras.progressCard(it, isGrid, checkHtml, checkedCls);
     }
-    // 下载状态标记:已下载 / 下载中。网格卡挂封面右上角,与合集卡的「追更中」
-    // 共用同一枚角标(.uc-badge);行式列表的封面只有 150px 宽,挂角标会挤,
-    // 保持行内浅底小标签——两档状态在两种视图里都给,只是位置不同。
+    // 下载状态标记:已下载 / 下载中。两种视图都挂封面右上角,与合集卡的「追更中」
+    // 共用同一枚角标(.uc-badge)——标题后不再放任何衍生胶囊(2026-11-17 用户定稿:
+    // 视频标题后不放胶囊,状态信息一律上封面或元信息行)。
     const dlState = state.mode !== 'downloads' ? _itemExtras.downloadState(it.url) : '';
-    const badgeHtml = dlState === 'done'
-      ? `<span class="dl-badge">${icon('check')}已下载</span>`
-      : (dlState === 'active' ? '<span class="dl-badge active">下载中</span>' : '');
     const coverBadgeHtml = dlState === 'done'
       ? `<span class="uc-badge ok">${icon('check')}已下载</span>`
       : (dlState === 'active' ? '<span class="uc-badge dl">下载中</span>' : '');
@@ -495,38 +493,65 @@ export function renderLibList(pairs, container) {
       ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
       : upName];
     if (it.view_at) identParts.push(escapeHtml(formatTime(it.view_at)));
-    // 播放/点赞单独成组:它们和上面的身份信息不在同一个换行单元里。
-    // 原来四段平铺 + flex-wrap,UP 名字一长就把「点赞」挤到第二行,
-    // 同一行卡片因此一高一矮;现在身份区可截断、统计区固定不换行。
+    // 播放/点赞搬到封面左下角,和右下角的时长胶囊同一种视觉语言(半透明小胶囊):
+    // 视频卡上「关于这个视频的数字」集中在一块,标题下面只留身份与关注。
     const statParts = [];
-    // 播放走强调色药丸、点赞走中性药丸:任何页面都是同一副样子
     if (it.stat_view) statParts.push(`<span class="vi-stat v-view">${icon('play')} ${escapeHtml(it.stat_view)}</span>`);
     if (it.stat_like) statParts.push(`<span class="vi-stat v-like">${icon('like')} ${escapeHtml(it.stat_like)}</span>`);
-    const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>`
-      + (statParts.length ? `<span class="vi-stats">${statParts.join('')}</span>` : '');
-    const rcmdBadge = (state.mode === 'home' && it.rcmd_reason)
-      ? `<span class="rcmd-badge">${escapeHtml(it.rcmd_reason)}</span>` : '';
+    const coverStats = statParts.length
+      ? `<div class="thumb-stats">${statParts.join('')}</div>` : '';
+    // 关注状态:按钮先渲染成未知态,follow.js 批量查完再落成「关注 / 已关注」。
+    const followChip = uploaderMid
+      ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`
+        + ` data-name="${escapeAttr(it.uploader || '')}" aria-pressed="false" aria-label="关注 ${escapeAttr(it.uploader || '')}">关注</button>`
+      : '';
+    const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>${followChip}`;
     const targetUrl = safeHttpUrl(it.url);
+    // 已下载的条目:标题带 data-play-task,点一下就地播放(见 player.js);
+    // 没下载过的仍是普通 B 站链接,不拦截、不改语义。
+    const playTaskId = _itemExtras.playTaskId ? String(_itemExtras.playTaskId(it.url) || '') : '';
+    // 播放按钮的公共数据:标题/UP/时长给播放器头部,url 给「到 B 站」按钮。
+    const playData = ` data-play-title="${itemLabel}"`
+      + ` data-play-up="${escapeAttr(it.uploader || '')}"`
+      + ` data-play-duration="${escapeAttr(String(it.duration || 0))}"`
+      + (targetUrl ? ` data-play-url="${escapeAttr(targetUrl)}"` : '');
+    const playAttrs = playTaskId
+      ? ` data-play-task="${escapeAttr(playTaskId)}"${playData} title="点击本地播放"`
+      : ` title="${itemLabel}"`;
+    // 播放入口:右下角,压在时长胶囊上方。放正中会挡封面本身(用户明确嫌这个)。
+    const playSource = playTaskId
+      ? ` data-play-task="${escapeAttr(playTaskId)}"`
+      : (targetUrl ? ` data-play-online="${escapeAttr(targetUrl)}"` : '');
+    const mainPlay = playSource
+      ? `<button class="vi-play-main"${playSource}${playData} aria-label="播放:${itemLabel}" title="${playTaskId ? '播放本地视频' : '在线播放'}">${icon('play')}</button>`
+      : '';
     const titleHtml = targetUrl
-      ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener">${escapeHtml(it.title)}</a>`
+      ? `<a href="${escapeAttr(targetUrl)}" target="_blank" rel="noopener"${playAttrs}>${escapeHtml(it.title)}</a>`
       : escapeHtml(it.title);
     const durHtml = it.duration ? `<span class="thumb-dur">${escapeHtml(formatDuration(it.duration))}</span>` : '';
     const thumbnail = safeHttpUrl(it.thumbnail, { httpsOnly: true });
     const taskArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
+    // 「在 Finder 中显示」用文件夹图标,和播放键并排在时长右侧:
+    // 两个都用播放三角的话,分不清谁播谁定位。
     const playHtml = (state.mode === 'downloads' && it.task_id)
-      ? `<button class="vi-play" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${itemLabel}" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('play')}</button>` : '';
+      ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${itemLabel}" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('folder')}</button>` : '';
     const thumbCls = playHtml ? 'thumb-wrap has-play' : 'thumb-wrap';
     const warnHtml = _itemExtras.warnHtml(it);
     if (!isGrid) {
       return `
       <div class="video-item lv${checkedCls}">
-        ${checkHtml}
         <div class="${thumbCls}">
+          ${checkHtml}
           <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
-          ${durHtml}${playHtml}
+          ${coverStats}
+          <div class="thumb-actions">
+            ${mainPlay}
+            <div class="thumb-row">${durHtml}${playHtml}</div>
+          </div>
+          ${coverBadgeHtml}
         </div>
         <div class="lv-body">
-          <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}${badgeHtml}</div>
+          <div class="vi-title" title="${itemLabel}">${titleHtml}</div>
           <div class="vi-meta">${metaHtml}</div>
           ${watchbar}
           ${warnHtml}
@@ -535,18 +560,27 @@ export function renderLibList(pairs, container) {
     }
     return `
     <div class="video-item${checkedCls}">
-      ${checkHtml}
       <div class="${thumbCls}">
+        ${checkHtml}
         <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
-        ${durHtml}${playHtml}${coverBadgeHtml}
+        ${coverStats}
+        <div class="thumb-actions">
+          ${mainPlay}
+          <div class="thumb-row">${durHtml}${playHtml}</div>
+        </div>
+        ${coverBadgeHtml}
       </div>
-      <div class="vi-title" title="${itemLabel}">${titleHtml} ${rcmdBadge}</div>
+      <div class="vi-title" title="${itemLabel}">${titleHtml}</div>
       <div class="vi-meta">${metaHtml}</div>
       ${watchbar}
       ${warnHtml}
     </div>`;
   }).join('');
   updateLibCount();
+  // 卡片渲染完再批量落关注状态:一次请求覆盖这一页所有 UP 主
+  refreshFollowChips();
+  // 顺手预热首屏几张卡的在线档位,让「点播放」时不必等解析
+  warmVisibleCovers();
 }
 
 /* ---------- 合集/收藏夹卡片（唯一实现） ----------
@@ -616,13 +650,40 @@ export function getLibSearchQuery() {
   return el ? el.value.trim().toLowerCase() : '';
 }
 
-/* 搜索防抖:每个按键都全量重渲染,大列表连续输入会卡;静默 150ms 后只渲染一次。
-   视图切换要即时反馈,走 renderPage() 不走这里。 */
+/* 渲染用的有效过滤词:当前页处于站内搜索态时返回 ''——结果由 B 站匹配
+   (自带纠错/模糊,搜「傅立叶」返回「傅里叶」),不得再用原文 includes
+   筛一遍,否则纠错结果全部落空(2026-11-17 首页 18 条命中被筛成 0)。
+   非搜索页(下载记录/观看历史等)过滤行为不变;搜索态的翻页抑制
+   (maybeFillScreen/maybeLoadMore)仍读原文,继续拦住推荐流补页。 */
+export function renderFilterQuery() {
+  const q = getLibSearchQuery();
+  if (!q) return '';
+  const pg = document.querySelector('.page.active');
+  if (pg && isSearchMode(pg.dataset.page)) return '';
+  return q;
+}
+
+/* 搜索防抖:每个按键都全量重渲染,大列表连续输入会卡;静默 250ms 后只渲染一次。
+   与站内搜索(search.js)的防抖同一档;视图切换要即时反馈,走 renderPage() 不走这里。 */
 let _filterTimer = null;
 export function applyLibFilter() {
+  // 有搜索目标的页面(home/subs)由 search.js 自动搜索,跳过本地过滤。
+  // 先撤销已排队的重绘再让位:内联 oninput 触发时搜索态可能刚置位,
+  // 旧定时器若还挂着,会按原文把列表闪成一次空态。
   clearTimeout(_filterTimer);
-  _filterTimer = setTimeout(renderPage, 150);
+  if (window._bdSearchActive) return;
+  _filterTimer = setTimeout(renderPage, 250);
 }
+
+/* 搜索栏清除按钮:输入有内容时显示 ×,点击清空并触发过滤/退出搜索 */
+document.addEventListener('input', (event) => {
+  const input = event.target.closest?.('.lib-search');
+  if (!input) return;
+  const wrap = input.closest('.search-wrap');
+  if (!wrap) return;
+  const clear = wrap.querySelector('.search-clear');
+  if (clear) clear.hidden = !input.value;
+});
 
 /* ---------- 勾选与批量操作 ---------- */
 function findVisibleCheckbox(libId) {
@@ -642,12 +703,30 @@ export function toggleLibCheck(libId, checked) {
 }
 
 document.addEventListener('click', (e) => {
+  // 勾选热区本身就是 label,原生就会切换 checkbox 并触发它的 onchange;
+  // 这里再翻一次会把结果抵消掉(点一下等于没点),所以先让开。
+  // 封面上的播放/定位按钮同样在 thumb-wrap 里:点它们不能顺手把卡片勾上。
+  if (e.target.closest('.vi-check-hit, .vi-play-main, .vi-play, .vi-follow')) return;
   const thumb = e.target.closest('.video-item .thumb-wrap');
   if (!thumb) return;
   const cb = thumb.closest('.video-item').querySelector('input.vi-check');
   if (!cb) return;
   cb.checked = !cb.checked;
   toggleLibCheck(cb.dataset.libid, cb.checked);
+});
+
+/* 搜索栏清除按钮:点击 × 清空输入并触发过滤/退出搜索 */
+document.addEventListener('click', (event) => {
+  const clear = event.target.closest?.('.search-clear');
+  if (!clear) return;
+  const wrap = clear.closest('.search-wrap');
+  const input = wrap?.querySelector('.lib-search');
+  if (input) {
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.focus();
+  }
+  clear.hidden = true;
 });
 
 document.addEventListener('click', (e) => {

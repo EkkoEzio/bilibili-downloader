@@ -11,16 +11,22 @@ import * as drawer from './drawer.js';
 import * as login from './login.js';
 
 /* 页面模块:import 即向 lib 注册页控制器(顺序即顶栏页签顺序,仅可读性) */
-import * as home from './pages/home.js?v=20261111b';
-import * as downloads from './pages/downloads.js?v=20261111b';
+import * as home from './pages/home.js?v=20261116v';
+import * as downloads from './pages/downloads.js?v=20261116v';
 import * as history from './pages/history.js';
 import * as feed from './pages/feed.js';
-import * as subs from './pages/subscriptions.js?v=20261111b';
-import * as seasons from './pages/seasons.js?v=20261111b';
-import * as fav from './pages/fav.js?v=20261111b';
+import * as subs from './pages/subscriptions.js?v=20261116v';
+import * as seasons from './pages/seasons.js?v=20261116v';
+import * as fav from './pages/fav.js?v=20261116v';
 import * as later from './pages/later.js';
 
-import * as newdl from './newdl.js?v=20261111b';
+import * as newdl from './newdl.js?v=20261116v';
+/* 本地播放器:只为副作用而加载——自己挂 [data-play-task] 的点击与 Esc 关闭。 */
+import './player.js?v=20261116v';
+/* 关注状态:批量查、点击关注/取关,自己挂事件。 */
+import './follow.js?v=20261116v';
+/* 搜索栏:回车搜全站,自己挂输入/回车/Esc。 */
+import './search.js?v=20261116v';
 
 /* ---------- 全局桥(内联 onclick 兼容) ---------- */
 Object.assign(window, {
@@ -74,7 +80,7 @@ Object.assign(window, {
   refreshSubs: subs.refreshSubs,
   upAdd: subs.upAdd,
   upCheckNow: subs.upCheckNow,
-  upAutoChanged: subs.upAutoChanged,
+  upAutoPick: subs.upAutoPick,
   upToggleFollow: subs.upToggleFollow,
   // 下载记录
   loadDownloads: downloads.loadDownloads,

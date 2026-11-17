@@ -166,3 +166,48 @@ def best_video_audio_choice(options: list[dict], preferred_label: str) -> str:
     if audios:
         return audios[0]["format_id"]
     return "best"
+
+
+# 订阅档位(纯分辨率)→像素高度。与 up_list.QUALITY_CHOICES、前端
+# subscriptions.js 的 UP_QUALITY_SEGMENTS 同一套档位(测试绑定两侧)。
+QUALITY_TIERS = {"2160P": 2160, "2K": 1440, "1080": 1080, "720": 720}
+
+
+def resolve_quality_label(options: list[dict], quality: str) -> str:
+    """把订阅档位解析成实际可用的清晰度标签(2026-11-17 档位改版)。
+
+    ''(最高)= 全场最高高度;具体分辨率先取该高度的第一项——classify_formats
+    已按高度降序、同高度 P60 在前,所以第一项就是「同分辨率默认最高帧率」
+    (144→60→30 由 B 站档位编号天然保证:116/74 这类 60 帧号在同高度里最大);
+    该高度没有时降档到所选以下最高;连以下都没有(理论边缘)取全场最高。
+    旧精确标签(1080P60/1080P/2160P/音频 等)不是纯分辨率档位,原样返回,
+    继续走 best_video_audio_choice 的精确匹配路径。
+    """
+    q = (quality or "").strip()
+    if q not in QUALITY_TIERS and q != "":
+        return q
+    tier_h = QUALITY_TIERS.get(q)  # q == ""(最高)时为 None:走全场最高分支
+    if tier_h is None:
+        entries_all = [o for o in options
+                       if o.get("kind") in ("video", "av") and (o.get("height") or 0) > 0]
+        if not entries_all:
+            return ""
+        entries_all.sort(key=lambda o: (-(o["height"]),
+                                        0 if "P60" in o.get("label", "") else 1,
+                                        0 if o.get("kind") == "video" else 1))
+        return entries_all[0]["label"]
+    entries = [o for o in options
+               if o.get("kind") in ("video", "av") and (o.get("height") or 0) > 0]
+    # video/av 两段各自有序,这里重排成跨 kind 的高度序;同高度 P60 在前,
+    # 纯视频优先于单体 AV(挑流时纯视频还能搭独立音轨)
+    entries.sort(key=lambda o: (-(o["height"]),
+                                0 if "P60" in o.get("label", "") else 1,
+                                0 if o.get("kind") == "video" else 1))
+    hit = next((o for o in entries if o["height"] == tier_h), None)
+    if hit:
+        return hit["label"]
+    below = next((o for o in entries if o["height"] < tier_h), None)
+    if below:
+        return below["label"]
+    above = next((o for o in entries if o["height"] > tier_h), None)
+    return above["label"] if above else ""
