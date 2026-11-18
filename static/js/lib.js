@@ -18,7 +18,7 @@
 import { icon } from './icons.js';
 import { refreshFollowChips } from './follow.js';
 import { warmVisibleCovers } from './player.js';
-import { escapeHtml, escapeAttr, sig, formatDuration, formatTime,
+import { escapeHtml, escapeAttr, sig, formatDuration, formatTime, formatDay,
          safeHttpUrl, safeDecimalId, bvFromUrl, pageFromUrl, nonNegativeInt } from './util.js';
 import { getJSON, isAbortError } from './net.js';
 import { isSearchMode } from './search.js';
@@ -157,6 +157,15 @@ export function goPage(name, skipLoad) {
 export function refreshLib() {
   const ctrl = page();
   if (ctrl && ctrl.load) ctrl.load();
+}
+
+/* 顶栏刷新:当前页自己的刷新动作优先(订阅页 refreshSubs 绕缓存、
+   收藏/追更的 favRefresh/seasonRefresh 兼顾详情态),否则统一 load()。
+   各页原工具条刷新按钮已收进顶栏(2026-11-18 用户要求)。 */
+export function refreshCurrentPage() {
+  const ctrl = page();
+  if (ctrl && typeof ctrl.refresh === 'function') { ctrl.refresh(); return; }
+  refreshLib();
 }
 
 /* ---------- 每页条数自适应 ---------- */
@@ -531,8 +540,8 @@ export function renderLibList(pairs, container) {
     const durHtml = it.duration ? `<span class="thumb-dur">${escapeHtml(formatDuration(it.duration))}</span>` : '';
     const thumbnail = safeHttpUrl(it.thumbnail, { httpsOnly: true });
     const taskArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
-    // 「在 Finder 中显示」用文件夹图标,和播放键并排在时长右侧:
-    // 两个都用播放三角的话,分不清谁播谁定位。
+    // 「在 Finder 中显示」用文件夹图标,提到播放键上方(同尺寸圆钮,
+    // 2026-11-18 用户要求);两个都用播放三角的话,分不清谁播谁定位。
     const playHtml = (state.mode === 'downloads' && it.task_id)
       ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${itemLabel}" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('folder')}</button>` : '';
     const thumbCls = playHtml ? 'thumb-wrap has-play' : 'thumb-wrap';
@@ -545,8 +554,9 @@ export function renderLibList(pairs, container) {
           <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
           ${coverStats}
           <div class="thumb-actions">
+            ${playHtml}
             ${mainPlay}
-            <div class="thumb-row">${durHtml}${playHtml}</div>
+            <div class="thumb-row">${durHtml}</div>
           </div>
           ${coverBadgeHtml}
         </div>
@@ -565,8 +575,9 @@ export function renderLibList(pairs, container) {
         <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
         ${coverStats}
         <div class="thumb-actions">
+          ${playHtml}
           ${mainPlay}
-          <div class="thumb-row">${durHtml}${playHtml}</div>
+          <div class="thumb-row">${durHtml}</div>
         </div>
         ${coverBadgeHtml}
       </div>
@@ -586,37 +597,84 @@ export function renderLibList(pairs, container) {
 /* ---------- 合集/收藏夹卡片（唯一实现） ----------
    seasons.js 与 fav.js 只传业务差异（进入函数、角标、自动下载控件），
    封面结构、计数、标题行与键盘操作统一在这里，避免两份实现再次漂移。 */
-export function collectionCard({ id, title, count, cover = '', badge = '',
-                                 onEnter = 'seasonEnter', autoHtml = '' }) {
-  const itemCount = nonNegativeInt(count);
-  const safeCover = safeHttpUrl(cover, { httpsOnly: true });
-  const image = safeCover
+/* 收藏夹/合集卡封面媒体区(2026-11-18 用户要求):有夹内最新收藏视频的封面
+   就拼图——>=9 张 3x3、4-8 张 2x2、1-3 张单图;没有再回落单封面,
+   两者皆无返回空串,卡片落到「暂无封面」占位。fav.js 拼图数据到货后就地
+   补封面时也复用这里,避免两份实现漂移。 */
+export function collectionCoverMedia(cover, covers = []) {
+  const list = (Array.isArray(covers) ? covers : [])
+    .map((value) => safeHttpUrl(value, { httpsOnly: true })).filter(Boolean);
+  const gram = (cls, n) => `<div class="fc-gram ${cls}" aria-hidden="true">`
+    + list.slice(0, n).map((value) =>
+      `<img src="${escapeAttr(value)}" alt="" loading="lazy"`
+      + ` onerror="this.style.visibility='hidden'">`).join('')
+    + `</div>`;
+  if (list.length >= 9) return gram('gram9', 9);
+  if (list.length >= 4) return gram('gram4', 4);
+  const safeCover = safeHttpUrl(list[0] || cover, { httpsOnly: true });
+  return safeCover
     ? `<img src="${escapeAttr(safeCover)}" alt="" onerror="this.hidden=true" loading="lazy">`
     : '';
+}
+
+export function collectionCard({ id, title, count, cover = '', badge = '', covers = [],
+                                 onEnter = 'seasonEnter', autoHtml = '',
+                                 upName = '', upMid = 0, latestLabel = '' }) {
+  const itemCount = nonNegativeInt(count);
+  const image = collectionCoverMedia(cover, covers);
+  // 元信息行(2026-11-17 用户要求,做成视频卡式):UP 名 · 更新时间 · 关注胶囊。
+  // 关注按钮复用视频卡的 .vi-follow:follow.js 在 document 上委托接管状态与
+  // 点击,渲染后 refreshFollowChips() 批量落「关注/已关注」。
+  const followChip = upMid
+    ? `<button class="vi-follow" type="button" data-mid="${escapeAttr(String(upMid))}"`
+      + ` data-name="${escapeAttr(upName || '')}" aria-pressed="false"`
+      + ` aria-label="关注 ${escapeAttr(upName || '该UP')}">关注</button>`
+    : '';
+  // UP 名与视频卡 .vi-ident 同构:space 主页链接,新标签打开
+  const upHtml = upName
+    ? (upMid
+        ? `<a class="fc-up" href="https://space.bilibili.com/${escapeAttr(String(upMid))}" target="_blank" rel="noopener">${escapeHtml(upName)}</a>`
+        : `<span class="fc-up">${escapeHtml(upName)}</span>`)
+    : '';
+  const ident = [upHtml,
+                 latestLabel ? `<span class="fc-latest">${escapeHtml(latestLabel)}</span>` : '']
+    .filter(Boolean).join(' · ');
+  const metaHtml = (ident || followChip)
+    ? `<div class="fc-meta"><span class="fc-ident">${ident}</span>${followChip}</div>`
+    : '';
+  // 档位沙发压在封面左下角(2026-11-17 用户要求,与 UP 卡同一位置、同一套暗底
+  // 配色);「n 个视频」角标留在右下角,沙发给右侧留白避让。
+  // 卡片点击守卫:档位行自己 stopPropagation;元信息行和关注按钮不拦——
+  // 关注按钮的点击必须冒泡到 document(follow.js 委托),所以按目标在卡片层放行。
   return `
-  <div class="fav-card" role="button" tabindex="0" onclick="${onEnter}(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();${onEnter}(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
+  <div class="fav-card" role="button" tabindex="0" onclick="event.target.closest('.uc-auto-row,.fc-meta,.vi-follow')||${onEnter}(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();${onEnter}(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
     <div class="fc-cover">
       <span class="fc-placeholder" aria-hidden="true">${icon('bilibili')}<span>暂无封面</span></span>
       ${image}
       ${badge}
       <span class="fc-count">${itemCount} 个视频</span>
+      <div class="uc-actions">${autoHtml}</div>
     </div>
     <div class="fc-head">
       <div class="fc-title" title="${escapeAttr(title || '')}">${escapeHtml(title || '(未命名)')}</div>
-      ${autoHtml}
+      ${metaHtml}
     </div>
   </div>`;
 }
 
 export function collectionRow({ id, title, count, badge = '', onEnter = 'seasonEnter',
-                                autoHtml = '', iconName = 'layers' }) {
+                                autoHtml = '', iconName = 'layers',
+                                upName = '', latestLabel = '' }) {
   const itemCount = nonNegativeInt(count);
+  const info = [upName ? escapeHtml(upName) : '',
+                latestLabel ? escapeHtml(latestLabel) : '']
+    .filter(Boolean).join(' · ');
   return `
     <div class="fav-folder" role="button" tabindex="0" onclick="${onEnter}(this.dataset.id)" onkeydown="if(event.target!==this)return;if(event.key==='Enter'||event.key===' '){event.preventDefault();${onEnter}(this.dataset.id)}" data-id="${escapeAttr(String(id ?? ''))}">
       <div class="fav-icon">${icon(iconName)}</div>
       <div class="fav-main">
         <div class="fav-name">${escapeHtml(title || '(未命名)')}${badge}</div>
-        <div class="fav-count">${itemCount} 个视频</div>
+        <div class="fav-count">${info ? `${info} · ` : ''}${itemCount} 个视频</div>
       </div>
       ${autoHtml}
       <span class="fav-arrow">${icon('chevron')}</span>

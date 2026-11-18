@@ -520,8 +520,10 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   const revealButton = it.task_id
     ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${escapeAttr(it.title || '')}" onclick="event.stopPropagation();revealTask(${revealArg})">${icon('folder')}</button>`
     : '';
+  // 「在 Finder 中显示」提到播放键上方(同尺寸圆钮,2026-11-18 用户要求),
+  // thumb-row 只留时长胶囊,不再把时间顶得左移。
   const thumb = `<div class="thumb-wrap">${checkHtml}<img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">`
-    + `<div class="thumb-actions">${mainPlay}<div class="thumb-row">${durHtml}${revealButton}</div></div></div>`;
+    + `<div class="thumb-actions">${revealButton}${mainPlay}<div class="thumb-row">${durHtml}</div></div></div>`;
   const uploaderMid = safeDecimalId(it.uploader_mid);
   const followChip = uploaderMid
     ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`

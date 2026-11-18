@@ -57,8 +57,8 @@ def test_old_removed_quality_label_normalised_on_read(store, tmp_path):
 
     已下线档位(480P/360P)没有对应分辨率档 → 归一成空串(最高画质自动);
     旧精确标签(1080P60)映射到对应分辨率档(1080)——否则界面显示一个档位、
-    实际按另一个挑流。与前端 subscriptions.js 的 _normQuality 同一套映射;
-    合集/收藏订阅的旧精确标签原样保留(见 COLLECTION_QUALITY_CHOICES)。
+    实际按另一个挑流。与前端 quality.js 的 normAutoQuality 同一套映射;
+    合集/收藏订阅的旧标签同样归一(见 list_collections)。
     """
     tmp_path.joinpath("up_list.json").write_text(
         json.dumps({"ups": [{"mid": 8, "uname": "旧档位", "face": "",
@@ -109,14 +109,13 @@ def test_set_uname_fills_and_overwrites(store):
 
 
 def test_quality_choices_single_source():
-    """精确标签下拉的单一来源(2026-11-17 档位改版后两套档位并存):
+    """两套档位各自的单一来源绑定(2026-11-17 分段改版后):
 
-    UP 订阅的「纯分辨率档」绑定(up_list.QUALITY_CHOICES ↔ subscriptions.js
-    UP_QUALITY_SEGMENTS)在 test_app.py 的分段契约测试里,这里不重复。
-    本测试绑「精确标签」一侧——手动下载/合集/收藏共用:
-    quality.js QUALITY_OPTIONS ↔ index.html 操作条静态 <option> ↔
-    后端 up_list.COLLECTION_QUALITY_CHOICES(合集下拉的值全部来自
-    QUALITY_OPTIONS,后端只接受同一集合)。改任何一侧漏改在这里炸。"""
+    手动下载仍用「精确标签」下拉:quality.js QUALITY_OPTIONS ↔ index.html
+    操作条静态 <option>(后端手动下载接受同一集合)。
+    自动下载分段(关注 UP/追更合集/我的收藏共用):quality.js
+    AUTO_QUALITY_SEGMENTS 的档位值(去掉 __off)↔ 后端 up_list.QUALITY_CHOICES;
+    UP 侧的分段↔后端绑定在 test_app.py 的分段契约测试里。改任何一侧漏改在这里炸。"""
     import re
     from pathlib import Path
     import up_list
@@ -134,8 +133,15 @@ def test_quality_choices_single_source():
     html_values = set(re.findall(r'<option value="([^"]*)"', bar))
 
     assert js_values == html_values, f"quality.js 与操作条静态 HTML 不一致: {js_values ^ html_values}"
-    assert js_values == set(up_list.COLLECTION_QUALITY_CHOICES), \
-        f"quality.js 与合集/收藏后端档位表不一致: {js_values ^ set(up_list.COLLECTION_QUALITY_CHOICES)}"
+    # 自动下载分段:UP/合集/收藏三处共用一份字典,值集合 = up_list.QUALITY_CHOICES
+    assert "AUTO_QUALITY_SEGMENTS = [" in js, "quality.js 应有 UP/合集/收藏共用的分段清单"
+    seg_at = js.index("AUTO_QUALITY_SEGMENTS = [")
+    seg_decl = js[seg_at:js.index("];", seg_at)]
+    seg_values = set(re.findall(r'\["([^"]*)",', seg_decl))
+    assert seg_values - {"__off"} == set(up_list.QUALITY_CHOICES), \
+        f"AUTO_QUALITY_SEGMENTS 与 up_list.QUALITY_CHOICES 不一致: {seg_values ^ set(up_list.QUALITY_CHOICES)}"
+    assert not hasattr(up_list, "COLLECTION_QUALITY_CHOICES"), \
+        "合集/收藏已并入 QUALITY_CHOICES,旧双轨档位表应删除"
 
 
 # ---------- 合集/收藏夹订阅 ----------
@@ -147,7 +153,7 @@ def test_collection_add_list_remove_roundtrip(store):
                                    seen_bvids=["BV1", "BV2"], quality="1080P")
     assert entry["kind"] == "season" and entry["id"] == 123
     assert entry["seen_bvids"] == ["BV1", "BV2"]
-    assert entry["quality"] == "1080P"
+    assert entry["quality"] == "1080", "旧精确标签 1080P 写入时归一成分辨率档"
 
     # 重复添加:只回填缺失字段,不动 seen
     again = up_list.add_collection("season", 123, title="新名字",
@@ -162,13 +168,32 @@ def test_collection_add_list_remove_roundtrip(store):
 
 
 def test_collection_quality_validation(store):
-    """清晰度非法值归一为空串;与 UP 订阅共用同一档位表。"""
+    """合集/收藏清晰度与 UP 订阅同一套档位(2026-11-17 分段改版):
+
+    旧精确标签(1080P60 等)写入与读取时都归一成分辨率档;非法值归一为
+    空串(最高画质自动)。存量订阅里留着的旧标签读时同样归一,否则界面
+    显示一个档位、实际按另一个挑流。"""
     import up_list
     up_list.add_collection("fav", 456, title="收藏夹")
     assert up_list.set_collection_quality("fav", 456, "1080P60") is True
-    assert up_list.list_collections()[0]["quality"] == "1080P60"
+    assert up_list.list_collections()[0]["quality"] == "1080"
+    # 订阅时同样归一
+    entry = up_list.add_collection("season", 10, title="合集", quality="720P")
+    assert entry["quality"] == "720"
     up_list.set_collection_quality("fav", 456, "1440P")  # 不存在的档位
     assert up_list.list_collections()[0]["quality"] == ""
+    # 存量订阅里的旧标签读时归一
+    store.UP_LIST_FILE.write_text(
+        json.dumps({"ups": [], "last_seen": {},
+                    "collections": [
+                        {"kind": "season", "id": 1, "title": "旧订阅",
+                         "quality": "1080P60", "seen_bvids": []},
+                        {"kind": "fav", "id": 2, "title": "更旧",
+                         "quality": "480P", "seen_bvids": []}]}),
+        encoding="utf-8")
+    by_id = {c["id"]: c["quality"] for c in up_list.list_collections()}
+    assert by_id[1] == "1080", "存量 1080P60 读时归一到 1080"
+    assert by_id[2] == "", "已下线档位 480P 读时归一成最高画质自动"
 
 
 def test_collection_seen_dedup_and_cap(store):

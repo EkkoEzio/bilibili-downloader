@@ -1060,10 +1060,15 @@ def test_frontend_empty_parse_clears_stale_result():
 
 
 def test_frontend_unified_toolbar():
-    """各列表页工具栏结构统一(搜索+视图切换同位置)。"""
+    """各列表页工具条只留搜索;刷新/视图/昼夜收进顶栏。"""
     html = _tpl()
     assert html.count("lib-search") >= 5
-    assert html.count("view-btn") >= 5
+    for bid in ("tb-refresh", "tb-view", "tb-theme"):
+        assert f'id="{bid}"' in html, f"顶栏应有 {bid} 按钮"
+    assert "toggleTheme" in html, "顶栏昼夜切换应绑定 toggleTheme"
+    theme_js = (_js_dir() / "theme.js").read_text(encoding="utf-8")
+    assert "export function toggleTheme" in theme_js, "theme.js 应导出 toggleTheme"
+    assert "syncThemeBtn" in theme_js, "昼夜按钮图标应跟随当前明暗状态"
 
 
 def test_frontend_settings_autosave():
@@ -1092,8 +1097,7 @@ def test_frontend_fav_seasons_and_grid():
     assert "/api/fav-seasons" in html
     assert "/api/season-content" in html
     assert "fav-card" in html, "收藏夹/合集应有网格卡片"
-    assert 'id="fav-view-btn"' in html and 'style="display:none;" id="fav-view-btn"' not in html, \
-        "视图切换在收藏夹首屏应常驻"
+    assert 'id="fav-view-btn"' not in html, "视图切换已收进顶栏,收藏夹不再单独放"
     assert "favEnterSeason" not in html, "旧的合集入口已并入 seasonEnter"
 
 
@@ -1152,13 +1156,18 @@ def test_frontend_uplist_drawer_removed():
 
 
 def test_frontend_unified_toolbar_everywhere():
-    """八个页面统一:搜索 + 刷新 + 视图切换;收藏夹首屏也支持搜索。"""
+    """八个页面工具条统一只留搜索;刷新/视图/昼夜收进顶栏且顺序固定。"""
     html = _tpl()
     assert html.count('class="search-input lib-search"') == 8
-    assert html.count('class="ghost icon-only view-btn"') == 8
-    for handler in ("loadHomeFeed()", "loadDownloads()", "refreshLib()",
-                    "refreshSubs()", "seasonRefresh()", "favRefresh()"):
-        assert f'onclick="{handler}"' in html, f"缺少刷新入口:{handler}"
+    assert 'class="ghost icon-only view-btn"' not in html, \
+        "各页刷新/视图按钮应已撤下,统一收进顶栏"
+    # 顶栏顺序:刷新 → 视图切换 → 昼夜切换 → 设置齿轮
+    i_r = html.index('id="tb-refresh"')
+    i_v = html.index('id="tb-view"')
+    i_t = html.index('id="tb-theme"')
+    i_s = html.index('title="设置"')
+    assert i_r < i_v < i_t < i_s, "顶栏顺序应为 刷新→视图→昼夜→设置"
+    assert 'onclick="refreshCurrentPage()"' in html, "刷新应统一走页面分发"
     # 总览只按名称过滤,占位符不再承诺 UP 主/标题(2026-11-11 复查)
     assert "搜索收藏夹名称" in html
 
@@ -2288,8 +2297,8 @@ def test_up_card_auto_is_flat_segment_row():
 
     「不下载 + 最高/4K/2K/1080/720」统一平铺一排——纯分辨率档:同分辨率默认
     最高帧率(144→60→30),没有所选分辨率时自动降档到所选以下最高(由后端
-    quality.resolve_quality_label 在挑流时落实);60 帧独立档与音频已移除,
-    「最高画质」更名「最高」。切换即时生效但列表位置不动、卡片不立刻消失,
+    quality.resolve_quality_label 在挑流时落实);60 帧独立档已移除,仅音频
+    保留为正式档位,「最高画质」更名「最高」。切换即时生效但列表位置不动、卡片不立刻消失,
     重排与移卡只发生在页面加载/刷新时。关注胶囊在 UP 名后靠右(与视频卡
     .vi-meta 的 space-between 一致);封面右上角不再有关注角标。
     """
@@ -2309,7 +2318,7 @@ def test_up_card_auto_is_flat_segment_row():
         "旧的加入清单/移除按钮应移除"
     ctrl = _js_func_body(feed_js, "upAutoControlHtml")
     assert "UP_QUALITY_SEGMENTS" in ctrl and "_normQuality" in ctrl, \
-        "分段档位来自订阅页自己的分辨率清单,存量旧档读时归一"
+        "分段档位来自 quality.js 共享清单(UP/合集/收藏同源),存量旧档读时归一"
     # 注意:_js_func_body 会把函数前的模块级常量与注释一并带进 ctrl,
     # 旧档位字面量(归一映射)与注释里的措辞不该在这里做字面量禁令,
     # 「不下载/最高/4K/2K/1080/720」的档位约束全部落在上面 seg_decl 断言。
@@ -2318,11 +2327,18 @@ def test_up_card_auto_is_flat_segment_row():
     assert "tgl" not in ctrl and "<select" not in ctrl, \
         "平铺分段不再用开关/下拉"
     assert "停止下载" not in feed_js, "文案统一,不出现「停止下载」"
-    # 分段清单:模块级常量,「不下载」第一项、第二项「最高」,档位与后端一致
+    # 分段清单:UP/合集/收藏三处共用,单一来源在 quality.js;「不下载」第一项
     import re
     import up_list as up_list_module
-    seg_at = feed_js.index("UP_QUALITY_SEGMENTS = [")
-    seg_decl = feed_js[seg_at:feed_js.index("];", seg_at)]
+    qjs = (_js_dir() / "quality.js").read_text(encoding="utf-8")
+    assert "AUTO_QUALITY_SEGMENTS = [" in qjs, "quality.js 应有 UP/合集/收藏共用的分段清单"
+    assert "AUTO_QUALITY_SEGMENTS as UP_QUALITY_SEGMENTS" in feed_js \
+        and "normAutoQuality as _normQuality" in feed_js, \
+        "订阅页分段清单与归一函数应从 quality.js 别名导入"
+    assert '"1080P60": "1080"' in qjs and '"720P60": "720"' in qjs, \
+        "旧精确标签的归一映射在前端同样存在(合集/收藏订阅记录里可能有旧值)"
+    seg_at = qjs.index("AUTO_QUALITY_SEGMENTS = [")
+    seg_decl = qjs[seg_at:qjs.index("];", seg_at)]
     assert '["__off", "不自动下载"]' in seg_decl and '["", "最高"]' in seg_decl \
         and '["音频", "仅音频"]' in seg_decl, \
         "首项「不自动下载」(2026-11-17 改名),仅音频保留为正式档位,「最高画质」已更名「最高」"
@@ -2434,67 +2450,140 @@ def test_up_list_returns_collections_without_seen_payload(client, monkeypatch):
 
 
 def test_frontend_collection_toggle_wired():
-    """追更合集/我的收藏卡片上有自动下载开关,并接到合集订阅接口。"""
+    """追更合集/我的收藏卡片上有自动下载分段控件,并接到合集订阅接口。"""
     seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
     fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    app_js = (_js_dir() / "app.js").read_text(encoding="utf-8")
     assert "collectionAutoControl" in seasons_js
-    assert "collectionAutoChanged" in seasons_js
+    assert "collectionAutoPick" in seasons_js
     assert "/api/collection/add" in seasons_js
     assert "/api/collection/remove" in seasons_js
-    assert "collectionAutoControl" in fav_js, "收藏夹也应复用同一开关"
-    assert "stopPropagation" in seasons_js, "开关点击不得触发进入合集"
+    assert "/api/collection/set-quality" in seasons_js
+    assert "collectionAutoControl" in fav_js, "收藏夹也应复用同一控件"
+    assert "collectionAutoPick" not in fav_js, "点击处理器定义在 seasons.js,收藏页不重复实现"
+    assert "stopPropagation" in seasons_js, "分段点击不得触发进入合集"
+    assert "collectionAutoPick: seasons.collectionAutoPick" in app_js, \
+        "内联 onclick 依赖 window 桥"
+    assert "collectionAutoChanged" not in seasons_js \
+        and "collectionAutoChanged" not in app_js, "旧下拉的 change 处理器应随下拉一起删除"
 
 
 # ---------- 前端模块图完整性(防「测试全绿但页面白屏」) ----------
 
-def test_collection_unsubscribed_control_has_one_selected_option():
-    """未订阅时控件只能有一个 selected 项,否则「最高画质」永远订阅不上。
+def test_collection_auto_control_is_flat_segment_row():
+    """追更合集/我的收藏的下载配置与关注 UP 卡同一套平铺分段(2026-11-17 用户要求)。
 
-    回归:未订阅分支用 `_qualityOptionsHtml('')` 生成画质项,空串画质
-    (最高画质)因此也被打上 selected,与「不下载」同时选中。浏览器只认
-    最后一个,控件显示成「最高画质」而实际没有订阅;用户再选一次
-    「最高画质」不产生 change 事件,`/api/collection/add` 永远不会被调用。
+    下拉退役:档位字典与 UP 分段同源(quality.js AUTO_QUALITY_SEGMENTS,
+    值集合 = up_list.QUALITY_CHOICES),旧精确标签读/写归一;点击统一走
+    collectionAutoPick(订阅/换档/停止三接口),未订阅时只有「不自动下载」
+    胶囊处于选中态,点任一画质胶囊即订阅——不再有「选了不触发 change
+    就永远订阅不上」的下拉回归面。切换即时生效但列表位置不动(重算只挂加载)。
     """
     import re
+    import up_list as up_list_module
     seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    qjs = (_js_dir() / "quality.js").read_text(encoding="utf-8")
+    assert "AUTO_QUALITY_SEGMENTS = [" in qjs, "quality.js 应有 UP/合集/收藏共用的分段清单"
     ctrl = _js_func_body(seasons_js, "collectionAutoControl")
-    # 未订阅分支必须传 null(明确「无当前档位」),不能传空串
-    assert "_qualityOptionsHtml(null)" in ctrl, \
-        "未订阅分支不得把空串当作已选档位"
-    assert "_qualityOptionsHtml('')" not in ctrl, \
-        "空串会让「最高画质」被误选中"
-    # 选项生成器必须真的区分 null 与空串
-    opts = _js_func_body(seasons_js, "_qualityOptionsHtml")
-    assert "cur != null" in opts, "生成器要显式跳过 null 的选中标记"
+    assert "uc-auto-row" in ctrl and "uc-auto-pill" in ctrl, "分段与 UP 卡同一套胶囊"
+    assert "collectionAutoPick" in ctrl, "胶囊点击统一走 collectionAutoPick"
+    assert "AUTO_QUALITY_SEGMENTS" in ctrl and "normAutoQuality" in ctrl, \
+        "档位来自共享清单,存量旧档显示时归一"
+    assert "<select" not in ctrl and "<option" not in ctrl and "onchange" not in ctrl, \
+        "下拉与 change 事件彻底退役"
+    assert "aria-pressed" in ctrl, "胶囊用 aria-pressed 表达选中态"
+    assert "value === '__off'" in ctrl, "「不自动下载」胶囊的选中态单独判定(未订阅只有它亮)"
+    assert "data-title" in ctrl, "订阅落库的真实标题仍由卡片带上"
+    assert "event.stopPropagation()" in ctrl, "分段点击不得冒泡到卡片触发进入详情"
+    # 分段清单与后端绑定(与 UP 分段同一来源,顺序:不自动下载 → 最高 → 4K…)
+    seg_at = qjs.index("AUTO_QUALITY_SEGMENTS = [")
+    seg_decl = qjs[seg_at:qjs.index("];", seg_at)]
+    assert seg_decl.index("__off") < seg_decl.index("最高") < seg_decl.index("4K"), \
+        "首项「不自动下载」,其次「最高」,再往下才是具体分辨率"
+    seg_values = re.findall(r'\["([^"]*)",', seg_decl)
+    assert seg_values[0] == "__off"
+    assert set(seg_values[1:]) == set(up_list_module.QUALITY_CHOICES), \
+        "分段档位与后端 up_list.QUALITY_CHOICES 一致(最高/4K/2K/1080/720/音频)"
+    assert "720P60" not in seg_decl and "1080P60" not in seg_decl, \
+        "60 帧独立档不在分段里(音频是正式档位,标签「仅音频」)"
+    # pick 语义:三接口齐全;切换即时生效但列表位置不动(重算只挂在加载路径)
+    pick = _js_func_body(seasons_js, "collectionAutoPick")
+    assert "/api/collection/add" in pick and "/api/collection/remove" in pick \
+        and "/api/collection/set-quality" in pick, "分段分别走订阅/停止/换档接口"
+    assert "_orderDirty = true" not in pick, \
+        "切换档位后列表位置不动,重排只在数据加载时发生"
+    assert seasons_js.count("_orderDirty = true") >= 2, \
+        "合集页重算点应挂在加载路径(loadSeasons 与订阅状态到达)"
+    assert fav_js.count("_orderDirty = true") >= 2, \
+        "收藏页重算点应挂在加载路径(favLoadFolders 与订阅状态到达)"
+    # 两页都不再渲染旧下拉
+    assert "<select" not in seasons_js and "<select" not in fav_js, "旧下拉应删干净"
+    assert "_qualityOptionsHtml" not in seasons_js and "_qualityOptionsHtml" not in fav_js, \
+        "下拉选项生成器应删除"
 
-    # 未订阅分支整段里 selected 只应出现一次(「不下载」)
-    unsubscribed = ctrl[ctrl.index('class="uc-auto"'):]
-    assert unsubscribed.count("selected") == 1, \
-        f"未订阅控件出现多个 selected: {unsubscribed}"
 
+def test_auto_pill_template_html_survives_parsing():
+    """分段胶囊模板产出的 HTML 必须经得起真实解析(2026-11-17 生产 bug 回归锁)。
 
-def test_quality_select_puts_off_option_first():
-    """「不下载」固定第一项:追更合集的下拉保持;关注 UP 已改开关交互。
-
-    2026-11-17 关注 UP 卡的自动下载改成开关(tgl):开/关不再走下拉,画质
-    下拉里没有「不下载」项;追更合集仍是同款下拉,「不下载」在最前。
+    collectionAutoControl 的按钮模板曾少写 class 属性的收尾引号:字符串层面
+    data-value、onclick 全都在(子串断言全绿),但浏览器解析时 data-value 被
+    吞进 class,dataset.value 永远是空串——点「不自动下载」被当成「点当前档」
+    静默 return,连请求都不发。子串断言查不出「源码对、产物坏」,必须把模板
+    按真实插值拼成 HTML 走一遍解析器。UP 渲染器一并锁定防漂移。
     """
     import re
+    from html.parser import HTMLParser
+
+    class _PillParser(HTMLParser):
+        def __init__(self):
+            super().__init__()
+            self.attrs = None
+
+        def handle_starttag(self, tag, attrs):
+            if tag == "button" and self.attrs is None:
+                self.attrs = dict(attrs)
+
+    def _pill_attrs(src: str, func: str, extra_repl: dict) -> dict:
+        body = _js_func_body(src, func)
+        segs = re.findall(r"`([^`]*)`", body)
+        start = next(i for i, s in enumerate(segs)
+                     if s.startswith('<button type="button" class="uc-auto-pill'))
+        parts = []
+        for seg in segs[start:start + 3]:
+            for expr, value in {
+                "${on ? ' on' : ''}": " on",
+                "${value === '__off' ? ' off' : ''}": " off",
+                "${on ? 'true' : 'false'}": "false",
+                "${escapeAttr(value)}": "__off",
+                "${escapeAttr(tip)}": "tip",
+                "${escapeAttr(title)}": "tip",
+                "${escapeHtml(text)}": "X",
+                **extra_repl,
+            }.items():
+                seg = seg.replace(expr, value)
+            parts.append(seg)
+        html = "".join(parts)
+        assert "${" not in html, f"{func} 模板插值后仍残留表达式"
+        assert html.endswith("</button>"), f"{func} 抽出的模板段不完整"
+        parser = _PillParser()
+        parser.feed(html)
+        assert parser.attrs is not None, f"{func} 应解析出 button 开标签"
+        return parser.attrs
+
     seasons_js = (_js_dir() / "pages" / "seasons.js").read_text(encoding="utf-8")
+    attrs = _pill_attrs(seasons_js, "collectionAutoControl", {})
+    assert attrs.get("data-value") == "__off", \
+        "data-value 必须作为独立属性存活——class 属性缺收尾引号会把它吞进 class"
+    assert attrs.get("class") == "uc-auto-pill on off", \
+        "class 只含样式类,不得混入被吞的属性残片"
+    assert attrs.get("onclick") == "collectionAutoPick(this)", "点击处理器必须存活"
+
     subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
-    flat_seasons = re.sub(r"\s+", " ", _js_func_body(seasons_js, "collectionAutoControl"))
-    flat_subs = re.sub(r"\s+", " ", _js_func_body(subs_js, "upAutoControlHtml"))
-    # 追更合集保持下拉交互:已订阅态不下载项必须排在画质项之前
-    assert re.search(r'__off">不下载</option>\s*\$\{', flat_seasons), \
-        "collectionAutoControl 的已订阅态应把「不下载」放在画质项之前"
-    assert "末项" not in flat_seasons, "collectionAutoControl 的提示文案仍写着「末项」"
-    # 关注 UP 卡:平铺分段,「不下载」同样是第一项(清单声明的首项)
-    seg_at = subs_js.index("UP_QUALITY_SEGMENTS = [")
-    seg_decl = subs_js[seg_at:subs_js.index("];", seg_at)]
-    assert seg_decl.index("__off") < seg_decl.index("最高") \
-        and seg_decl.index("最高") < seg_decl.index("4K"), \
-        "关注 UP 卡的分段里「不下载」要排在画质之前"
-    assert "upAutoPick" in subs_js, "关注 UP 卡要有分段点击处理函数"
+    up_attrs = _pill_attrs(subs_js, "upAutoControlHtml", {"${escapeAttr(mid)}": "123"})
+    assert up_attrs.get("data-value") == "__off", "UP 分段的 data-value 同样必须存活"
+    assert up_attrs.get("data-mid") == "123", "UP 分段的 data-mid 必须存活"
+    assert up_attrs.get("onclick") == "upAutoPick(this)", "UP 分段点击处理器必须存活"
 
 
 def test_frontend_module_urls_are_not_duplicated():
@@ -2568,6 +2657,11 @@ def test_fav_folders_order_auto_first_then_subscription_time():
     assert "export function collectionSub(" in seasons_js
     assert "collectionSub" in fav_js
     assert "_collSubs" not in fav_js, "收藏页不应直接访问 seasons.js 的内部 Map"
+    # 2026-11-17 分段控件:切换订阅档位即时生效但位置不动——重算只挂在加载路径
+    pick = _js_func_body(seasons_js, "collectionAutoPick")
+    assert "_orderDirty = true" not in pick, "切换档位后收藏夹列表位置不跳"
+    assert fav_js.count("_orderDirty = true") >= 2, \
+        "收藏页重算点应挂在加载路径(favLoadFolders 与订阅状态到达)"
 
 
 def test_seasons_overview_orders_auto_first_then_time():
@@ -2580,6 +2674,11 @@ def test_seasons_overview_orders_auto_first_then_time():
     assert "overviewList()" in render, "渲染必须使用排序后的列表"
     assert "_seasons.length" not in render, \
         "统计口径应取排序后的全集,不能再用未排序的 _seasons"
+    # 2026-11-17 分段控件:切换订阅档位即时生效但位置不动——重算只挂在加载路径
+    pick = _js_func_body(seasons_js, "collectionAutoPick")
+    assert "_orderDirty = true" not in pick, "切换档位后合集列表位置不跳"
+    assert seasons_js.count("_orderDirty = true") >= 2, \
+        "合集页重算点应挂在加载路径(loadSeasons 与订阅状态到达)"
 
     import inspect
     import bilibili_api as bapi
@@ -2828,16 +2927,18 @@ def test_collection_card_control_shares_title_row():
         assert "collectionAutoControl" in src, f"{name} 的标题行应带画质控件"
     assert "fc-head" in lib_js, "共享卡片正文应为「标题 + 控件」一行"
     assert "fc-sub" not in lib_js, "共享卡片不应再有独占一行的控件行"
-    # 「追更中」= 封面右上角角标,复用关注 UP 卡那一套(不是标题行内小标签)
+    # 2026-11-18 用户决策:追更页数据来自「我追的合集」接口,每张卡必然在
+    # 追更,角标零信息量;收藏页同理(档位沙发已是订阅状态,角标重复)——
+    # 两页的「追更中」标记全部撤下,共享卡片的角标插槽保留备用。
     card = seasons_js[seasons_js.index("const seasonCard"):]
     card = card[:card.index("function seasonRow")]
-    assert '<span class="uc-badge on">追更中</span>' in card, \
-        "「追更中」应为封面角标,复用关注 UP 卡的 .uc-badge"
+    assert '<span class="uc-badge on">追更中</span>' not in card, \
+        "追更页每张卡必然在追更,角标不应再渲染"
+    assert '<span class="fav-tag">追更中</span>' not in seasons_js, \
+        "行式列表的「追更中」小标签同理由已撤下"
     cover = lib_js[lib_js.index('class="fc-cover"'):lib_js.index('class="fc-head"')]
-    assert "${badge}" in cover, "共享卡片必须把状态角标插进封面容器"
+    assert "${badge}" in cover, "共享卡片的角标插槽保留备用"
     assert "fc-tag" not in seasons_js, "不要标题行内的「追更中」小标签"
-    assert '<span class="fav-tag">追更中</span>' in seasons_js, \
-        "行式列表没有封面可挂角标,保留原有的「追更中」小标签"
     assert "icon('folder') + '收藏夹'" not in fav_js, \
         "收藏页的类型小字保持移除(用户只点了「追更中」)"
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
@@ -2845,12 +2946,28 @@ def test_collection_card_control_shares_title_row():
     assert ".fc-tag{" not in css, "标题行标签样式应撤掉"
     assert ".uc-badge{position:absolute;top:8px;right:8px" in css, \
         "角标靠 .uc-badge 的绝对定位钉在右上角"
-    # 卡内控件改标签语言:不再画 28px 描边下拉
-    chip = css[css.index(".fc-head .uc-auto,"):]
-    chip = chip[:chip.index("}")]
-    assert "border:none" in chip and "height:20px" in chip, \
-        "卡内画质控件应改浅底标签样式(无描边、20px)"
-    assert "background-color:var(--bg-soft)" in chip, "静息态靠浅底表达,不靠描边"
+    # 卡内控件与 UP 卡同一套分段胶囊(白卡面配色);旧的下拉专属规则删除
+    assert ".fc-head .uc-auto," not in css and ".fav-folder .uc-auto{" not in css, \
+        "旧下拉专属规则应随下拉一起删除"
+    assert ".fc-head .uc-auto-pill" in css and ".fav-folder .uc-auto-pill" in css, \
+        "白卡面上的分段胶囊要有浅底配色(与 UP 行式同款)"
+    # 长沙发两端圆头:首尾分段自圆,容器更宽时右端不出现方角(2026-11-18)
+    assert ".uc-auto-row .uc-auto-pill:first-child{border-radius:999px 0 0 999px}" in css, \
+        "分段链左端要自带圆头"
+    assert ".uc-auto-row .uc-auto-pill:last-child{border-radius:0 999px 999px 0}" in css, \
+        "分段链右端要自带圆头"
+    # 合集卡 UP 名:与视频卡 .vi-ident a 同构(space 链接+悬停品牌粉)
+    assert '.fc-up:hover{color:var(--accent)}' in css, \
+        "合集卡 UP 名要可点进 UP 主页,悬停态与视频卡一致"
+    assert ".fav-folder .uc-auto-row{flex:0 1 auto" in css, \
+        "行式分段单行横滚,不挤名称列"
+    # 网格卡标题行放不下 7 颗胶囊 + 有意义的标题(实测标题被挤到 1px):标题独占
+    # 一行,分段整行 flex-basis 100% 强制换到标题下方
+    head_rule = css[css.index(".fc-head{"):]
+    head_rule = head_rule[:head_rule.index("}")]
+    assert "flex-wrap:wrap" in head_rule, "fc-head 要允许换行,标题不被分段挤没"
+    assert ".fc-head .uc-auto-row{flex:0 0 100%" in css, \
+        "标题行里的分段整行独占一行(flex-basis 100%),标题吃整行"
 
 
 def _css_rgb(block, token):
@@ -2872,17 +2989,20 @@ def _css_contrast(block, foreground, background):
 
 
 def test_dark_collection_quality_control_has_readable_contrast():
-    """深色下「不下载」仍是可操作控件,不能退成难以辨认的装饰文字。
+    """深色下合集/收藏卡上的分段胶囊仍是可操作控件,不能退成难认的装饰。
 
     这里直接按 CSS 实际引用计算 WCAG 对比度,而不是锁定某个变量名,
-    允许以后换成其他同样可读的 Geist 色阶。
+    允许以后换成其他同样可读的 Geist 色阶。白卡面分段胶囊与 UP 行式共用
+    同一套配色(三上下文并列的规则块),深色下验的就是那组令牌。
     """
     import re
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
     dark = css.split("body.dark{", 1)[1].split("}", 1)[0]
-    chip = css.split(".fc-head .uc-auto,.fav-folder .uc-auto{", 1)[1].split("}", 1)[0]
+    marker = ".up-list .uc-auto-pill,.fc-head .uc-auto-pill,.fav-folder .uc-auto-pill{"
+    assert marker in css, "白卡面分段配色应是三上下文并列的同一规则块"
+    chip = css.split(marker, 1)[1].split("}", 1)[0]
     color_name = re.search(r"(?<!-)color:var\((--[\w-]+)\)", chip).group(1)
-    bg_name = re.search(r"background-color:var\((--[\w-]+)\)", chip).group(1)
+    bg_name = re.search(r"background:var\((--[\w-]+)\)", chip).group(1)
     contrast = _css_contrast(dark, color_name, bg_name)
     assert contrast >= 4.5, \
         f"深色合集画质控件文字对比度仅 {contrast:.2f}:1({color_name} / {bg_name})"
@@ -2957,10 +3077,10 @@ def test_refresh_between_up_and_collection_has_interval():
 # ---------- 复查第三轮:交互与错误处理 ----------
 
 def test_collection_card_keydown_ignores_child_controls():
-    """卡片是 div[role=button],内部有 select;键盘事件必须只认卡片自身。
+    """卡片是 div[role=button],内部有分段控件;键盘事件必须只认卡片自身。
 
-    回归:select 聚焦时按 Enter 会冒泡到卡片 keydown → 直接进入合集,
-    而不是打开下拉。
+    回归:控件聚焦时按 Enter 会冒泡到卡片 keydown → 直接进入合集,
+    而不是操作控件。
     """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     for function_name in ("collectionCard", "collectionRow"):
@@ -2981,6 +3101,41 @@ def test_collection_card_keydown_ignores_child_controls():
             f"{page} 应复用共享卡片的键盘处理"
 
 
+def test_fav_folder_gram_cover_pipeline():
+    """收藏夹卡拼图封面:取数接口、前端规则、CSS 与后端路由四层都在位。
+
+    2026-11-18 用户要求:收藏夹卡默认展示最新收藏视频的封面拼图
+    (>=9 张 3x3、4-8 张 2x2、1-3 张单图),完全没有才落「暂无封面」。"""
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    body = _js_func_body(lib_js, "collectionCoverMedia")
+    assert "gram9" in body and "gram4" in body, "拼图规则(3x3/2x2)缺失"
+    assert "list.length >= 9" in body and "list.length >= 4" in body
+    fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
+    assert "/api/fav-folder-covers" in fav_js, "收藏页要异步拉拼图封面"
+    assert "patchFolderCovers" in fav_js, "拼图数据到货后就地补,不整页重渲染"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".fc-gram.gram9{grid-template-columns:repeat(3,1fr);" \
+        "grid-template-rows:repeat(3,1fr)}" in css
+    assert ".fc-gram.gram4{grid-template-columns:1fr 1fr;" \
+        "grid-template-rows:1fr 1fr}" in css
+    app_src = (_js_dir().parent.parent / "app.py").read_text(encoding="utf-8")
+    assert "@app.route(\"/api/fav-folder-covers\")" in app_src
+    api_src = (_js_dir().parent.parent / "bilibili_api.py").read_text(encoding="utf-8")
+    assert "def fetch_fav_folder_covers" in api_src
+
+
+def test_collection_fav_items_carry_publish_time():
+    """合集/收藏内容条目要带发布时间(pubtime),卡片与首页口径一致。"""
+    api_src = (_js_dir().parent.parent / "bilibili_api.py").read_text(encoding="utf-8")
+    for func_name, marker in (("fetch_season_content", "x/space/fav/season/list"),
+                              ("fetch_fav_content", "x/v3/fav/resource/list")):
+        start = api_src.find("def %s" % func_name)
+        body = api_src[start:api_src.find("\ndef ", start + 10)]
+        assert marker in body
+        assert 'view_at_key="pubtime"' in body, "%s 未映射发布时间" % func_name
+        assert "view_at_key=None" not in body, "%s 不能再丢弃时间" % func_name
+
+
 def test_collection_add_does_not_swallow_rate_limit():
     """限流与认证变更必须原样透出,不能被包装成「读不到内容」。"""
     src = (_js_dir().parent.parent / "app.py").read_text(encoding="utf-8")
@@ -2997,15 +3152,18 @@ def test_subscribe_success_reflected_even_if_quality_fails():
     2026-11-17 改开关交互后,原「add 后立刻 set-quality」的链路拆开了:
     开关开启走 add(默认最高画质)并立刻 patch 本地状态;换清晰度是独立的
     upAutoChanged,失败时只影响清晰度显示,不得回退开启状态。
+    2026-11-18 改乐观切换后,patch 提前到请求之前(先亮后请求,失败回滚),
+    本测试相应改为验证「乐观更新在 add 之前发生,且回滚只出现在 catch」。
     """
     subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
     body = _js_func_body(subs_js, "upAutoPick")
+    patch_idx = body.find("patchUp(mid, turnOff")
     add_idx = body.find("'/api/up-list/add'")
-    patch_idx = body.find("patchUp(mid, { auto: true")
-    assert add_idx > 0 and patch_idx > add_idx, "订阅成功后应立即更新本地状态"
-    # 换清晰度分支不得改开启状态:最后一次 set-quality 调用之后不再出现 auto: false
-    sq_idx = body.rfind("'/api/up-list/set-quality'")
-    assert "auto: false" not in body[sq_idx:], "换清晰度失败不应改变开启状态"
+    assert patch_idx > 0 and add_idx > patch_idx, \
+        "乐观更新必须先于 add 请求(先亮,失败再回滚)"
+    catch_idx = body.find("} catch (error) {")
+    assert catch_idx > add_idx, "catch 在请求之后,回滚只影响失败路径"
+    assert "patchUp(mid, prev)" in body[catch_idx:], "失败时回滚到操作前状态"
 
 
 def test_collection_items_parse_page_from_url():
@@ -3030,17 +3188,19 @@ def test_subs_extract_returns_array_for_sig():
 
 
 def test_subs_refresh_bypasses_cache():
-    """订阅页刷新按钮与加 UP 后都必须绕过缓存。
+    """订阅页刷新(顶栏分发与加 UP 后)都必须绕过缓存。
 
     回归:慢源数据被磁盘缓存与内存缓存挡住,用户点刷新看不到任何变化。
     """
     subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
-    html = _tpl()
+    app_js = (_js_dir() / "app.js").read_text(encoding="utf-8")
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     assert "force=1" in subs_js, "应支持 force 参数绕过缓存"
     assert "loadSubscriptions(true)" in subs_js, "加 UP 后应强制刷新"
-    assert 'onclick="refreshSubs()"' in html, "订阅页刷新按钮应走强制刷新"
-    assert 'onclick="refreshSubs()" title="刷新(绕过缓存)"' in html, \
-        "按钮提示应明确这里会绕过缓存,不能只显示普通「刷新」"
+    assert "refresh: refreshSubs" in subs_js, \
+        "订阅页应注册 refresh 控制器,顶栏刷新才走强制刷新路径"
+    assert "refreshCurrentPage" in lib_js and "refreshCurrentPage" in app_js, \
+        "顶栏刷新应统一经 refreshCurrentPage 分发到各页控制器"
 
 
 def test_subs_force_refresh_applies_data_directly():
@@ -3146,16 +3306,18 @@ def test_up_list_controls_escape_avatar_clip():
 
 
 def test_fav_row_shows_subscription_tag():
-    """行式收藏夹行也必须能看出「追更中」。
+    """收藏行不再挂「追更中」标签(2026-11-18 用户决策)。
 
-    回归:网格卡有 .uc-badge.on、行式什么都不挂,同一页两视图订阅状态可见性
-    不一致(2026-11-11 复查)。
+    历史回归(2026-11-11)曾要求网格/行式两视图订阅状态一致可见;
+    2026-11-18 用户明确:档位沙发本身已是订阅状态,网格与行式的
+    「追更中」标记都是重复信息,一并撤下——两视图仍然保持一致(都不挂)。
     """
     fav_js = (_js_dir() / "pages" / "fav.js").read_text(encoding="utf-8")
     body = _js_func_body(fav_js, "folderRow")
-    assert "collectionSub('fav', f.id)" in body, "行式标记应以订阅状态为条件"
-    assert '<span class="fav-tag">追更中</span>' in body, \
-        "订阅后应挂与合集行同款的「追更中」小标签"
+    assert "collectionSub('fav', f.id)" not in body, \
+        "角标撤下后不应再读订阅状态"
+    assert '<span class="fav-tag">追更中</span>' not in body, \
+        "收藏行不应再挂「追更中」小标签"
 
 
 def test_no_native_alert_left_in_frontend():
@@ -3193,8 +3355,8 @@ def test_overview_search_placeholder_matches_implementation():
 def test_frontend_assets_bumped_for_fix_batch():
     """改过的静态资源版本号必须前进,避免浏览器吃旧副本。"""
     html = _tpl()
-    assert "main.css?v=20261116v" in html and "app.js?v=20261116v" in html
-    assert "20261116u" not in html and "20261116t" not in html and "20261116s" not in html, "旧版本号不应残留"
+    assert "main.css?v=20261116x" in html and "app.js?v=20261116x" in html
+    assert "20261116w" not in html and "20261116v" not in html and "20261116u" not in html, "旧版本号不应残留"
 
 
 def test_downloads_head_has_single_new_download_entry():
@@ -3784,3 +3946,37 @@ def test_follow_write_invalidates_followings_cache(monkeypatch):
     body = body[:body.index("\ndef ")]
     assert "_invalidate_followings()" in body, \
         "modify_relation 成功后必须作废关注列表缓存"
+
+
+def test_face_player_top_quality_and_reveal_button_move():
+    """2026-11-18 三项:账号头像、播放默认最高档、Finder 按钮挪到播放键上方。
+
+    用户原话:头像一直没图;清晰度默认选最高(调低只该是网络卡);
+    文件夹按钮别挤时间胶囊,放播放键上方、做成一样大。
+    """
+    auth_src = (_js_dir().parent.parent / "bilibili_auth.py").read_text(encoding="utf-8")
+    start = auth_src.find("def get_login_status")
+    body = auth_src[start:auth_src.find("\ndef ", start + 10)]
+    assert '"face": (data.get("face") or "")' in body, "登录状态要带 nav 头像"
+    html = _tpl()
+    assert 'id="acct-face"' in html, "账号卡要有真实头像 img"
+    login_js = (_js_dir() / "login.js").read_text(encoding="utf-8")
+    assert "setAccountFace" in login_js, "登录状态渲染要落头像"
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert ".acct-avatar img{position:absolute" in css, "头像图要铺满圆框"
+
+    player_js = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    assert "markQualitySegs(0)" in player_js, "清晰度默认最高档(0 = 最高)"
+    assert "QUALITY_KEY" not in player_js, "档位跨会话记忆应退役"
+    assert "bd_play_quality" not in player_js, "旧记忆键应清干净"
+    assert "prevIndex" in player_js, "断流恢复要保持断流前档位"
+
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
+    assert "${durHtml}${playHtml}" not in lib_js, \
+        "thumb-row 不再塞 Finder 按钮(时间胶囊恢复独占)"
+    assert "${durHtml}${revealButton}" not in dl_js, \
+        "下载记录卡同样不再塞 Finder 按钮"
+    assert "${revealButton}${mainPlay}" in dl_js, "Finder 按钮提到播放键上方"
+    assert ".thumb-actions > .vi-reveal{position:static" in css, \
+        "Finder 圆钮要回到动作区流内并与播放键同尺寸"

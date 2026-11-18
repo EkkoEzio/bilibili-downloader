@@ -822,6 +822,12 @@ def up_list_add():
     if not mid:
         raise ApiError(400, "invalid_field",
                        "请输入 B 站主页链接或 UP 的 mid", field="input")
+    # 清单里已有且投稿游标齐全:直接返回,不再走 register_up 的 B 站拉取
+    # (主页卡+最新投稿两连发,实测 0.5-1.6s)。重新开启自动下载是高频操作,
+    # 没必要每次都打上游;游标缺失(异常状态)才需要补一次全量注册。
+    existing = next((u for u in up_list.list_ups() if int(u["mid"]) == mid), None)
+    if existing is not None and up_list.get_last_seen(mid):
+        return jsonify({"ok": True, "up": existing})
     user = bapi.register_up(mid)
     return jsonify({"ok": True, "up": user})
 
@@ -1039,6 +1045,28 @@ def fav_content():
     context = _request_auth_context()
     items = _account_call(bapi.fetch_fav_content, media_id, context=context)
     return jsonify({"ok": True, "items": items})
+
+
+# 收藏夹卡拼图封面:收藏夹列表接口 cover 常为空,用夹内最新收藏视频的封面
+# 拼图兜底。一夹一请求,不该每次进页都打,内存缓存 10 分钟(本地单用户应用,
+# 不按账号分键;切换账号后最多 10 分钟内仍是旧账号的封面)。
+_FAV_FOLDER_COVERS_TTL = 600.0
+_fav_folder_covers_cache: dict = {"at": 0.0, "payload": None}
+
+
+@app.route("/api/fav-folder-covers")
+@api_errors
+def fav_folder_covers():
+    now = time.monotonic()
+    payload = _fav_folder_covers_cache["payload"]
+    if payload and now - _fav_folder_covers_cache["at"] < _FAV_FOLDER_COVERS_TTL:
+        return jsonify(payload)
+    context = _request_auth_context()
+    folders = _account_call(bapi.fetch_fav_folders, context=context)
+    covers = _account_call(bapi.fetch_fav_folder_covers, folders, context=context)
+    payload = {"ok": True, "covers": covers}
+    _fav_folder_covers_cache.update({"at": now, "payload": payload})
+    return jsonify(payload)
 
 
 @app.route("/api/followings")

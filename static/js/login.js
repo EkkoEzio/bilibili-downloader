@@ -1,6 +1,7 @@
 /* 登录：状态刷新、扫码轮询、浏览器切换、cookies.txt 导入。 */
 import { getJSON, postText, postEmpty, isAbortError } from './net.js';
 import { icon } from './icons.js';
+import { safeHttpUrl } from './util.js';
 import { announce, confirmAction, toast, withPending } from './confirm.js';
 
 const STATUS_SUPERSEDED = Symbol('login-status-superseded');
@@ -33,9 +34,25 @@ try {
     if (sideText && dot) {
       sideText.textContent = last.uname;
       dot.className = 'dot ok';
+      setAccountFace(last.face);
     }
   }
 } catch {}
+
+/* 账号头像:nav 接口自带 face(2026-11-18 用户要求);加载失败回落占位图标。 */
+function setAccountFace(face) {
+  const img = document.getElementById('acct-face');
+  if (!img) return;
+  const url = safeHttpUrl(face || '', { httpsOnly: true });
+  if (!url) {
+    img.hidden = true;
+    img.removeAttribute('src');
+    return;
+  }
+  img.onerror = () => { img.hidden = true; img.removeAttribute('src'); };
+  img.src = url;
+  img.hidden = false;
+}
 
 function invalidateLoginStatus() {
   _statusSequence++;
@@ -127,7 +144,8 @@ function renderLoginStatus(status, networkError = '') {
   if (loggedIn) {
     const vip = r.vip ? ' · 大会员' : '';
     const uname = r.uname || '已登录账号';
-    try { localStorage.setItem('bd_acct_last', JSON.stringify({ uname })); } catch {}
+    try { localStorage.setItem('bd_acct_last', JSON.stringify({ uname, face: r.face || '' })); } catch {}
+    setAccountFace(r.face);
     sideText.textContent = uname;
     dot.className = 'dot ok';
     acctName.textContent = uname + vip;
@@ -136,6 +154,7 @@ function renderLoginStatus(status, networkError = '') {
     tabsWrap.style.display = 'none';
   } else {
     try { localStorage.removeItem('bd_acct_last'); } catch {}
+    setAccountFace('');
     sideText.textContent = networkError ? '状态未知' : '未登录';
     dot.className = 'dot warn';
     acctName.textContent = networkError ? '无法确认登录状态' : '未登录';

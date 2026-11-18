@@ -6,7 +6,7 @@
    品牌约束:强调色继续 B站粉(#fb7299 系),浅/深主题都不换;信息色采用
         Vercel Link Blue;成功/警示/错误仍保留独立语义色。
    结构约束:--card-min / --card-gap 仍是 lib.js 首屏条数的事实源;
-        .uc-badge / .uc-auto / .confirm-dialog 等测试锁定选择器原文保留。
+        .uc-badge / .uc-auto-pill / .confirm-dialog 等测试锁定选择器原文保留。
    ============================================================ */
 
 :root{
@@ -232,6 +232,15 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .vi-play-main:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .video-item.lv .vi-play-main{width:28px;height:28px}
 .video-item.lv .vi-play-main svg{width:11px;height:11px}
+/* 「在 Finder 中显示」提到播放键上方:做成与播放键同尺寸的圆钮(2026-11-18 用户要求) */
+.thumb-actions > .vi-reveal{position:static;inset:auto;width:34px;height:34px;border-radius:50%;
+  background:rgba(20,21,24,.62);color:#fff;border:1px solid rgba(255,255,255,.3);
+  backdrop-filter:blur(3px);display:grid;place-items:center;transition:background .16s,transform .16s}
+.thumb-actions > .vi-reveal svg{width:13px;height:13px;margin:0}
+.video-item:hover .thumb-actions > .vi-reveal{background:var(--accent);border-color:transparent}
+.thumb-actions > .vi-reveal:hover{background:var(--accent-hover);transform:scale(1.06)}
+.video-item.lv .thumb-actions > .vi-reveal{width:28px;height:28px}
+.video-item.lv .thumb-actions > .vi-reveal svg{width:11px;height:11px}
 /* 左下角统计胶囊:和时长胶囊同一套半透明小药丸语言 */
 .thumb-stats{position:absolute;left:8px;bottom:8px;z-index:5;
   display:flex;align-items:center;gap:5px}
@@ -365,21 +374,31 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .uc-badge.dl{color:#fff;background:var(--blue-solid)}
 .uc-actions{position:absolute;left:0;right:0;bottom:0;display:flex;align-items:center;gap:6px;padding:7px 9px;
   background:linear-gradient(to top,rgba(10,12,15,.72),rgba(10,12,15,0));z-index:2}
-/* 关注 UP 卡的自动下载档位:平铺分段胶囊(2026-11-17 用户要求,替代下拉/开关)。
-   「不下载 + 各画质」一排,点哪个切哪个,当前档高亮。两档配色按背景语境:
-   压在封面暗底上用半透明白,行式白底上用浅灰——与 .uc-auto 的分档思路一致。 */
-.uc-auto-row{display:flex;flex-wrap:wrap;align-items:center;gap:4px;flex:1 1 auto;min-width:0}
-.uc-auto-pill{flex:0 0 auto;height:24px;padding:0 9px;border-radius:12px;font-size:11.5px;
+/* 关注 UP 卡的自动下载档位:长沙发分段(2026-11-17 用户要求):相邻分段同底色
+   连成一条圆头长条,点哪个切哪个;替代散胶囊——修掉「不下载」选中灰底不显眼、
+   太长换行两个问题。圆头由容器圆角+overflow 裁出,分段本体不带上边框。
+   两档配色按背景语境:压在封面暗底上用半透明白,行式白底上用浅灰。 */
+.uc-auto-row{display:flex;flex-wrap:nowrap;align-items:center;gap:0;flex:1 1 auto;min-width:0;
+  overflow-x:auto;scrollbar-width:none;border-radius:999px}
+.uc-auto-row::-webkit-scrollbar{display:none}
+/* 长沙发两端圆头:首尾分段自带圆角。容器宽度大于分段链时右端裁不到
+   (UP 卡左圆右方,2026-11-18 用户打回),靠首尾自圆修复 */
+.uc-auto-row .uc-auto-pill:first-child{border-radius:999px 0 0 999px}
+.uc-auto-row .uc-auto-pill:last-child{border-radius:0 999px 999px 0}
+.uc-auto-pill{flex:0 0 auto;height:22px;padding:0 7px;font-size:11.5px;
   line-height:1;display:inline-flex;align-items:center;white-space:nowrap;cursor:pointer;
-  color:#fff;background:rgba(255,255,255,.18);border:1px solid rgba(255,255,255,.34);
+  color:rgba(255,255,255,.82);background:rgba(255,255,255,.14);border:0;
   transition:background .14s,color .14s,border-color .14s}
 .uc-auto-pill:hover{background:rgba(255,255,255,.3)}
 .uc-auto-pill.on{color:#fff;background:var(--accent-bright);border-color:transparent}
-.uc-auto-pill.off.on{color:var(--text-main);background:rgba(255,255,255,.85);border-color:transparent}
-.up-list .uc-auto-pill{color:var(--text-soft);background:var(--bg-soft);border-color:var(--line)}
-.up-list .uc-auto-pill:hover{background:var(--bg-hover);color:var(--text-main)}
-.up-list .uc-auto-pill.on{color:#fff;background:var(--accent-bright);border-color:transparent}
-.up-list .uc-auto-pill.off.on{color:var(--text-mute);background:var(--bg-soft);border-color:var(--line)}
+.uc-auto-pill.off.on{color:#171717;background:rgba(255,255,255,.92);border-color:transparent}
+/* 白卡面(UP 行式、合集/收藏卡的标题行与行式)分段配色:浅灰连条,当前档实底粉;
+   「不下载」选中改反色高亮(浅色主题黑底白字/深色主题白底黑字)——
+   原来灰底灰字几乎看不出来选中了 */
+.up-list .uc-auto-pill,.fc-head .uc-auto-pill,.fav-folder .uc-auto-pill{color:var(--text-soft);background:var(--bg-soft)}
+.up-list .uc-auto-pill:hover,.fc-head .uc-auto-pill:hover,.fav-folder .uc-auto-pill:hover{color:var(--text-main);background:var(--bg-hover)}
+.up-list .uc-auto-pill.on,.fc-head .uc-auto-pill.on,.fav-folder .uc-auto-pill.on{color:#fff;background:var(--accent-bright);border-color:transparent}
+.up-list .uc-auto-pill.off.on,.fc-head .uc-auto-pill.off.on,.fav-folder .uc-auto-pill.off.on{color:var(--bg-card);background:var(--text-main)}
 .uc-text{padding:11px 13px 13px}
 /* 名字行:名字截断在左,关注胶囊靠右固定(与视频卡 .vi-meta 的 space-between 一致) */
 .uc-name{display:flex;align-items:center;justify-content:space-between;gap:8px;font-size:13.5px;font-weight:600;white-space:nowrap}
@@ -428,34 +447,50 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .fav-tag{display:inline-flex;font-size:10.5px;color:var(--accent);background:var(--accent-soft);
   padding:1px 7px;border-radius:4px;margin-left:6px;vertical-align:1px}
 .fc-cover{position:relative;width:100%;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
+/* 档位沙发压在封面左下角(复用 UP 卡 .uc-actions 暗渐变条):右侧给「n 个视频」
+   角标留白,窄卡时沙发横向滚动兜底 */
+.fc-cover .uc-actions{padding-right:96px;padding-left:4px}
+/* 封面里的分段沙发:分段再收紧一档(11px 字号/6px 内距),7 档在 320px 最窄卡
+   减去右侧「n 个视频」避让后仍单行放下,不靠横向滚动 */
+.fc-cover .uc-auto-pill{height:22px;padding:0 6px;font-size:11px}
+/* 标题下元信息行(视频卡 .vi-meta 同款语言):UP 名 · 更新时间 · 关注胶囊 */
+.fc-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;
+  margin-top:4px;font-size:12px;color:var(--text-mute);min-width:0}
+.fc-head .fc-meta{flex:0 0 100%}
+.fc-ident{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-soft);font-size:12px}
+/* UP 名与视频卡 .vi-ident a 同款:同字色同字号,悬停品牌粉 */
+.fc-up{color:var(--text-soft);text-decoration:none}
+.fc-up:hover{color:var(--accent)}
 .fc-cover img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+/* 收藏夹卡拼图封面(2026-11-18):>=9 张 3x3、4-8 张 2x2,缝隙 2px 露底色;
+   .fc-cover img 是绝对定位铺满,网格里的图要回到网格流内(同优先级,后写的赢) */
+.fc-gram{position:absolute;inset:0;display:grid;gap:2px;background:var(--bg-soft)}
+.fc-gram.gram9{grid-template-columns:repeat(3,1fr);grid-template-rows:repeat(3,1fr)}
+.fc-gram.gram4{grid-template-columns:1fr 1fr;grid-template-rows:1fr 1fr}
+.fc-gram img{position:static;width:100%;height:100%;object-fit:cover;min-width:0;min-height:0;display:block}
 .fc-placeholder{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;
   gap:6px;color:var(--text-mute);background:linear-gradient(135deg,var(--bg-soft),var(--line))}
 .fc-placeholder svg{width:26px;height:26px;opacity:.5}
 .fc-placeholder span{font-size:12px}
-/* 卡片正文：标题与画质控件同一行。控件原先自占一行、前面还跟一枚类型小字
-   （「追更中」/「收藏夹」），「小字 + 28px 描边下拉」两个不等重的块并排，整行
-   像硬凑在一起（2026-11-10 实拍打回）。类型小字在这两页是纯冗余——追更合集页
-   整页都是合集、我的收藏页整页都是收藏夹；控件收进标题行，并改用标签语言：
-   浅底小圆角 20px + 自绘箭头，粉底=追更中、灰底=不下载，状态即控件本身。 */
-.fc-head{display:flex;align-items:center;gap:8px;padding:11px 13px 12px}
+/* 卡片正文：标题与自动下载分段同一行。控件原先自占一行、前面还跟一枚类型小字
+   （「追更中」/「收藏夹」），2026-11-10 收进标题行；2026-11-17 起与关注 UP 卡
+   同一套平铺分段胶囊（quality.js 共享字典，下拉退役），白卡面配色见上方
+   .up-list/.fc-head/.fav-folder 并列规则块。 */
+.fc-head{display:flex;flex-wrap:wrap;align-items:center;gap:8px;padding:11px 13px 12px}
 .fc-title{flex:1;min-width:0;font-size:13.5px;font-weight:600;
   display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-.fc-head .uc-auto,.fav-folder .uc-auto{height:20px;padding:0 18px 0 7px;border:none;
-  border-radius:5px;font-size:11px;color:var(--text-soft);background-color:var(--bg-soft);
-  background-size:10px 10px;background-position:right 4px center;flex:0 0 auto;
-  transition:background-color .12s}
-.fc-head .uc-auto:hover,.fav-folder .uc-auto:hover{background-color:var(--bg-hover)}
-.fc-head .uc-auto.on,.fav-folder .uc-auto.on{color:var(--accent);background-color:var(--accent-soft)}
-.fc-head .uc-auto:disabled,.fav-folder .uc-auto:disabled{opacity:.55}
+/* 7 颗胶囊的 max-content ≈ 卡片内容宽,与标题同行会把它挤到 1px(实测):
+   分段整行 flex-basis 100% 强制换行,标题独占一行(两行截断),分段在标题下方 */
+.fc-head .uc-auto-row{flex:0 0 100%}
 /* 合集卡的「追更中」角标:与关注 UP 卡的「已关注」共用同一套 .uc-badge
    (绝对定位钉在封面右上角,粉底白字=在追更);封面右下角仍是「N 个视频」计数,
    两个角互不干扰,各给一层 z-index 压住封面图。 */
 .fc-cover .uc-badge,.thumb-wrap .uc-badge{z-index:2}
 .fc-cover .fc-count{position:absolute;right:8px;bottom:8px;z-index:2;background:rgba(20,21,24,.72);color:#fff;
   font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
-/* 行式列表里控件固定成右侧一列，逐行扫画质时对得齐 */
-.fav-folder .uc-auto{min-width:96px}
+/* 行式列表里分段固定成右侧一列:单行横滚,不挤名称列,逐行扫档位时对得齐 */
+.fav-folder .uc-auto-row{flex:0 1 auto;min-width:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
+.fav-folder .uc-auto-row::-webkit-scrollbar{display:none}
 
 /* Vercel 的技术标签一律走等宽字体:时长、计数、播放/点赞、任务元信息。
    这是本套规范与 B 站原生界面最直观的差异。 */
@@ -564,8 +599,9 @@ body.dark .toast{background:#0c0e12;border:1px solid var(--line)}
 
 /* 账号卡 */
 .acct-card{display:flex;align-items:center;gap:13px;background:var(--bg);border-radius:12px;padding:14px;margin-bottom:16px}
-.acct-avatar{width:44px;height:44px;border-radius:50%;background:var(--accent-soft);color:var(--accent);
+.acct-avatar{position:relative;overflow:hidden;width:44px;height:44px;border-radius:50%;background:var(--accent-soft);color:var(--accent);
   display:grid;place-items:center;flex-shrink:0}
+.acct-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .acct-avatar svg{width:20px;height:20px}
 .acct-name{font-size:14.5px;font-weight:700}
 .acct-sub{font-size:12px;color:var(--text-mute);margin-top:2px;line-height:1.5}
@@ -690,14 +726,19 @@ body.drawer-open{overflow:hidden}
 .pl-seek::-moz-range-progress{height:4px;border-radius:2px;background:var(--accent-bright)}
 .pl-seek::-moz-range-thumb{width:11px;height:11px;border:0;border-radius:50%;background:#fff}
 .pl-field-vol input[type="range"]{width:120px;accent-color:var(--accent-bright)}
-/* 倍速 / 清晰度:一排胶囊,点一下直接切档。
+/* 倍速 / 清晰度:长沙发分段(2026-11-17 用户要求,与 UP/合集/收藏档位统一样式):
+   相邻分段同底色连成一条圆头长条,点一下直接切档,选中段实底粉。
    档位有限,平铺出来比滑条好——想回到 1× 只需点一下,不用把滑块挪回去。 */
-.pl-segs{display:flex;align-items:center;gap:4px;flex-wrap:wrap}
-.pl-seg{height:24px;padding:0 9px;border-radius:12px;font-size:11.5px;
+.pl-segs{display:flex;align-items:center;gap:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;max-width:100%;border-radius:999px}
+.pl-segs::-webkit-scrollbar{display:none}
+/* 播放器分段同款:首尾自圆,容器更宽时右端不出现方角 */
+.pl-segs .pl-seg:first-child{border-radius:999px 0 0 999px}
+.pl-segs .pl-seg:last-child{border-radius:0 999px 999px 0}
+.pl-seg{height:22px;padding:0 10px;font-size:11.5px;
   font-family:var(--mono);line-height:1;display:inline-flex;align-items:center;
-  color:rgba(255,255,255,.72);background:rgba(255,255,255,.1);
-  border:1px solid transparent;transition:background .14s,color .14s}
-.pl-seg:hover{background:rgba(255,255,255,.22);color:#fff}
+  color:rgba(255,255,255,.72);background:rgba(255,255,255,.12);
+  border:0;transition:background .14s,color .14s}
+.pl-seg:hover{background:rgba(255,255,255,.2);color:#fff}
 .pl-seg.on{background:var(--accent-bright);color:#fff;font-weight:600}
 .pl-seg.on:hover{background:var(--accent-hover)}
 .pl-btn-sm{height:28px;padding:0 10px;font-size:12px}

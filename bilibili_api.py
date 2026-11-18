@@ -298,7 +298,9 @@ def fetch_watchlater(*, context=None) -> list[dict]:
     data = _safe_json(resp)
     if not data or data.get("code") != 0:
         raise RuntimeError((data or {}).get("message", "获取稍后再看失败"))
-    out = [_video_item(it, view_at_key="tview_at")
+    # toview 条目自带 pubdate(发布时间):与首页卡片同一口径展示。
+    # 原映射 tview_at 在该接口里不存在,发布时间一直显示为空(2026-11-18 用户反馈)。
+    out = [_video_item(it, view_at_key="pubdate")
            for it in (data.get("data", {}) or {}).get("list", []) or []]
     _ensure_context_current(context)
     return out
@@ -340,7 +342,11 @@ def fetch_collected_seasons(max_pages: int = 5, *, context=None) -> list[dict]:
                   "cover": (folder.get("cover") or "").replace("http:", "https:"),
                   # 合集更新时间:前端按「自动下载优先 → 组内时间倒序」排序要用,
                   # 接口本来就带,解析时不再丢弃(零额外请求)。
-                  "mtime": _int_or_zero(folder.get("mtime"))}
+                  "mtime": _int_or_zero(folder.get("mtime")),
+                  # 合集 UP:卡片元信息行展示作者与关注按钮用,列表接口自带,
+                  # 同样零额外请求;取不到就是空,前端自行隐藏。
+                  "uploader": ((folder.get("upper") or {}).get("name")) or "",
+                  "uploader_mid": (folder.get("upper") or {}).get("mid")}
                  for folder in data.get("list") or []]
         return items, bool(data.get("has_more"))
 
@@ -355,7 +361,9 @@ def fetch_season_content(season_id: int, ps: int = 20, max_pages: int = 30,
     """拉取合集内的视频。"""
     def parse(data, _fetched):
         items = [_video_item(media, owner_key="upper", pic_key="cover",
-                             view_at_key=None, mark_invalid=True)
+                             # 发布时间:合集内容接口条目自带 pubtime(2026-11-18 实测),
+                             # 卡片元信息行与首页口径一致,零额外请求。
+                             view_at_key="pubtime", mark_invalid=True)
                  for media in data.get("medias") or []]
         return items, bool(data.get("has_more"))
 
@@ -369,13 +377,54 @@ def fetch_fav_content(media_id: int, ps: int = 20, max_pages: int = 20,
     """拉取某个收藏夹内的视频。"""
     def parse(data, _fetched):
         items = [_video_item(media, owner_key="upper", pic_key="cover",
-                             view_at_key=None, mark_invalid=True)
+                             # 发布时间:收藏夹内容接口条目自带 pubtime
+                             # (2026-11-18 实测),与首页卡片口径一致,零额外请求。
+                             view_at_key="pubtime", mark_invalid=True,
+                             # 收藏时间:收藏夹卡「最近收藏 x天前」从详情学习,
+                             # 列表接口没有该字段,不额外发请求。
+                             fav_at=media.get("fav_time") or 0)
                  for media in data.get("medias") or []]
         return items, bool(data.get("has_more"))
 
     return _paged_get("https://api.bilibili.com/x/v3/fav/resource/list",
                       {"media_id": media_id, "order": "mtime"}, what="收藏夹内容",
                       max_pages=max_pages, ps=ps, parse=parse, context=context)
+
+
+def fetch_fav_folder_covers(folders, *, context=None) -> list[dict]:
+    """每个收藏夹最新收藏的封面(收藏夹卡拼图封面用)。
+
+    收藏夹列表接口(created/list-all)的 cover 常为空,卡片会落到
+    「暂无封面」;这里按收藏时间倒序(order=mtime)取每个夹最近一批
+    视频的封面,一夹一请求,单夹失败不影响其他夹。"""
+    context, cookiejar = _auth_session(context)
+    if cookiejar is None:
+        raise NotLoggedInError("未登录,无法获取收藏夹封面")
+    out = []
+    for index, folder in enumerate(folders or []):
+        fid = folder.get("id")
+        covers: list[str] = []
+        if fid and (folder.get("media_count") or 0) > 0:
+            try:
+                resp = _get("https://api.bilibili.com/x/v3/fav/resource/list",
+                            cookies=cookiejar, headers=BROWSER_HEADERS,
+                            params={"media_id": fid, "order": "mtime",
+                                    "pn": 1, "ps": 18},
+                            timeout=12)
+                data = _safe_json(resp)
+                for media in ((data or {}).get("data") or {}).get("medias") or []:
+                    pic = (media.get("cover") or "").replace("http:", "https:")
+                    if pic:
+                        covers.append(pic)
+                    if len(covers) >= 9:
+                        break
+            except Exception:
+                covers = []
+        out.append({"id": fid, "covers": covers})
+        if index < len(folders) - 1:
+            time.sleep(0.3)
+    _ensure_context_current(context)
+    return out
 
 
 def fetch_followings(page: int = 1, size: int = 50, *, context=None) -> list[dict]:
@@ -585,7 +634,9 @@ def modify_relation(mid: int, action: str, *, context=None) -> None:
         governor.note_api_code(data.get("code"),
                                endpoint=_RELATION_MODIFY_ENDPOINT)
         code = data.get("code")
-        already = (code == 22013 and act == 1)
+        # B 站对「重复关注」实际返回 22014(22013 是「考虑一下」类别的旧认知),
+        # 两个 code 都按成功处理——重复关注是幂等操作,不该报错(2026-11-17 实测)
+        already = (code in (22013, 22014) and act == 1)
         if code != 0 and not already:
             raise RuntimeError(data.get("message") or "操作失败")
         _ensure_context_current(context)

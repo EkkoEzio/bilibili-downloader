@@ -12,6 +12,8 @@ import { icon } from '../icons.js';
 import { escapeHtml, escapeAttr, safeDecimalId, safeHttpUrl, nonNegativeInt,
          formatDay } from '../util.js';
 import { loadAutoRefreshStatus } from '../settings.js';
+import { AUTO_QUALITY_SEGMENTS as UP_QUALITY_SEGMENTS,
+         normAutoQuality as _normQuality } from '../quality.js';
 import { announce, toast, withPending } from '../confirm.js';
 import { syncFollowState } from '../follow.js';
 import { registerSearchTarget, isSearchMode } from '../search.js';
@@ -169,21 +171,9 @@ document.addEventListener('mouseout', (event) => {
   _signTipFor = null;
 });
 
-/* 自动下载档位:纯分辨率(""=最高)+ 仅音频。2026-11-17 用户定稿:去掉 60 帧独立
-   档,只选分辨率(最高/4K/2K/1080/720);同分辨率默认最高帧率(144→60→30),
-   没有所选分辨率时自动降档到所选以下最高——两者都由后端
-   quality.resolve_quality_label 在挑流时落实。仅音频保留(挑流走音频专用路径)。
-   档位集合与 up_list.QUALITY_CHOICES 一致(测试绑定两侧)。
-   「不下载」文案为「不自动下载」(2026-11-17 用户改名)。 */
-const UP_QUALITY_SEGMENTS = [
-  ["__off", "不自动下载"], ["", "最高"], ["2160P", "4K"], ["2K", "2K"], ["1080", "1080"], ["720", "720"], ["音频", "仅音频"],
-];
-/* 存量旧档位(60 帧独立档)归一到新分辨率档,与后端 _norm_quality 同一套映射 */
-const _LEGACY_QUALITY = { "1080P60": "1080", "1080P": "1080", "720P60": "720", "720P": "720" };
-function _normQuality(q) {
-  q = String(q || "");
-  return UP_QUALITY_SEGMENTS.some(([v]) => v === q) ? q : (_LEGACY_QUALITY[q] ?? "");
-}
+/* 自动下载档位:纯分辨率(""=最高)+ 仅音频的平铺分段(2026-11-17 用户定稿)。
+   档位清单与旧档归一在 quality.js 的 AUTO_QUALITY_SEGMENTS/normAutoQuality——
+   追更合集、我的收藏的分段与这里是同一份字典(测试绑定两侧)。 */
 
 function upAutoControlHtml(u) {
   const mid = u.mid;
@@ -275,6 +265,20 @@ function advanceUps() {
 
 /* ---------- 卡片动作 ---------- */
 
+/* 就地同步一行分段的高亮(切档收尾用,不整页重渲染)。 */
+function syncUpRow(row, mid) {
+  if (!row) return;
+  const up = _mergedUps.find(u => u.mid === mid);
+  if (!up) return;
+  row.querySelectorAll('.uc-auto-pill').forEach((el) => {
+    const value = String(el.dataset.value || '');
+    const on = value === '__off' ? !up.auto
+      : (up.auto && _normQuality(up.quality || '') === value);
+    el.classList.toggle('on', on);
+    el.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+}
+
 export async function upAutoPick(btn) {
   const mid = safeDecimalId(btn.dataset.mid);
   const value = String(btn.dataset.value || '');
@@ -282,33 +286,38 @@ export async function upAutoPick(btn) {
   const up = _mergedUps.find(u => u.mid === mid);
   const wasAuto = !!(up && up.auto);
   const turnOff = value === '__off';
-  // 点的就是当前档:不重复请求
-  if (turnOff === !wasAuto) { return; }
-  if (!turnOff && wasAuto && (up.quality || '') === value) { return; }
+  // 点的就是当前档:不重复请求(不能写 turnOff === !wasAuto:订阅状态点画质档
+  // 会把换档点击也吞掉,同合集卡守卫修复)
+  if (!wasAuto && turnOff) { return; }
+  if (wasAuto && (up.quality || '') === value) { return; }
+  const row = btn.closest('.uc-auto-row');
+  if (row && row.dataset.busy) { return; }   // 上一发还在路上,不叠加
+  if (row) row.dataset.busy = '1';
+  const prev = { auto: wasAuto, quality: up ? (up.quality || '') : '' };
+  // 乐观先亮(2026-11-18:换档本身 3ms,卡的是「订阅/重订阅」分支要打 B 站;
+  // 高亮先落,失败回滚,视觉上永远即时响应)
+  patchUp(mid, turnOff ? { auto: false, quality: '' } : { auto: true, quality: value });
+  keepVisible(mid);
+  syncUpRow(row, mid);
   btn.disabled = true;
   try {
     if (turnOff) {
       const r = await postJSON('/api/up-list/remove', { mid: parseInt(mid, 10) });
       if (!r.ok) throw new Error(r.error || '移除失败');
-      // 位置不跳、卡片不立刻消失(2026-11-17 用户要求):切换即时生效但不重排;
-      // 未关注的 UP 停掉自动下载后,本地清单已移除,刷新后卡片自然消失。
-      patchUp(mid, { auto: false, quality: '' });
-      keepVisible(mid);
+      // 位置不跳、卡片不立刻消失:停用后本地清单已移除,刷新后卡片自然消失。
       announce('已停止自动下载');
     } else if (!wasAuto) {
       const r = await postJSON('/api/up-list/add', { input: mid });
       if (!r.ok) throw new Error(r.error || '添加失败');
-      patchUp(mid, { auto: true, quality: value });
-      keepVisible(mid);
       if (value) {
         const q = await postJSON('/api/up-list/set-quality',
                                  { mid: parseInt(mid, 10), quality: value });
         if (!q.ok) {
-          // 后端拒绝了该档位(归一成最高画质),本地不能继续显示用户选的档:
-          // 否则提示说「当前为最高画质」,分段却停在用户选的那档。
+          // 后端拒绝了该档位(归一成最高画质):本地回落到「最高」,
+          // 不能让分段停在用户选的那档(否则提示与高亮互相矛盾)。
           patchUp(mid, { quality: '' });
+          syncUpRow(row, mid);
           announce('已开启自动下载，但清晰度设置失败（当前为最高）', true);
-          renderUps();
           return;
         }
       }
@@ -317,15 +326,17 @@ export async function upAutoPick(btn) {
       const r = await postJSON('/api/up-list/set-quality',
                                { mid: parseInt(mid, 10), quality: value });
       if (!r.ok) throw new Error(r.error || '设置失败');
-      patchUp(mid, { quality: value });
       announce('已更新自动下载清晰度');
     }
   } catch (error) {
+    // 回滚到操作前的状态,高亮跟手
+    patchUp(mid, prev);
     announce(error.message || '操作失败', true);
     toast(error.message || '操作失败');
   } finally {
     btn.disabled = false;
-    renderUps();
+    if (row) delete row.dataset.busy;
+    syncUpRow(row, mid);
   }
 }
 
@@ -410,6 +421,8 @@ registerSearchTarget('subs', {
 registerPage('subs', {
   load: loadSubscriptions,
   retry: loadSubscriptions,
+  // 顶栏刷新走这里:订阅是慢源,刷新必须绕过缓存(refreshSubs=force)
+  refresh: refreshSubs,
   render: () => { renderUps(); maybeFillScreen(); },
   infinite: 'own',
   advanceChunk: advanceUps,

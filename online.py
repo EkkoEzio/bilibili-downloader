@@ -26,7 +26,10 @@ from quality import classify_formats
 log = logging.getLogger("bd.online")
 
 # CDN 直链自带 e= 过期参数(约 2 小时),再留出余量。
+# TTL 按「最近一次取用」滑动续期:正在看的视频不会在 30 分钟处断流;
+# 绝对上限防止续过 CDN 直链自身的约 2 小时有效期(续过了上游会 403)。
 TOKEN_TTL_SECONDS = 30 * 60
+TOKEN_MAX_SECONDS = 105 * 60
 # 解析结果缓存:同一个视频反复点播放不必每次跑 yt-dlp(要几秒)。
 PARSE_TTL_SECONDS = 10 * 60
 
@@ -46,20 +49,28 @@ def _cleanup(now: float) -> None:
 
 def _register(url: str, headers: dict) -> str:
     token = secrets.token_urlsafe(24)
+    now = time.time()
     with _lock:
-        _tokens[token] = {"url": url, "headers": headers,
-                          "expires": time.time() + TOKEN_TTL_SECONDS}
+        _tokens[token] = {"url": url, "headers": headers, "created": now,
+                          "expires": now + TOKEN_TTL_SECONDS}
     return token
 
 
 def lookup(token: str) -> Optional[dict]:
-    """token → 上游 URL 与请求头;过期即视为不存在。"""
+    """token → 上游 URL 与请求头;过期即视为不存在。
+
+    每次取流/取段都会经过这里,顺带把 TTL 续到「现在 + 30 分钟」:
+    播放中的视频源源不断发 Range 请求,token 就一直活着——这正是
+    「播到一半自动暂停」(30 分钟整 token 死透、下一取段 404)的修复。
+    """
     now = time.time()
     with _lock:
         item = _tokens.get(token)
         if not item or item["expires"] <= now:
             _tokens.pop(token, None)
             return None
+        item["expires"] = min(now + TOKEN_TTL_SECONDS,
+                              item.get("created", now) + TOKEN_MAX_SECONDS)
         return dict(item)
 
 

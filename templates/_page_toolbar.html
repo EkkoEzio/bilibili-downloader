@@ -1,4 +1,6 @@
-{% macro lib_toolbar(placeholder, refresh, refresh_title='刷新', search_id='', search_style='', view_id='') %}
+{# 刷新/视图切换/昼夜切换已收进顶栏(齿轮左侧,2026-11-18 用户要求),
+   工具条只留搜索框;search_id/search_style 保留给收藏夹首屏隐藏搜索。 #}
+{% macro lib_toolbar(placeholder, search_id='', search_style='') %}
 <div class="ph-right">
   <div class="search-wrap">
     <svg class="search-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
@@ -7,10 +9,5 @@
       {%- if search_style %} style="{{ search_style }}"{% endif %}>
     <button class="search-clear" type="button" hidden aria-label="清除">×</button>
   </div>
-  <button class="ghost icon-only" onclick="{{ refresh }}" title="{{ refresh_title }}">
-    <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-  </button>
-  <button class="ghost icon-only view-btn" onclick="toggleLibView()" title="切换列表/网格视图"
-    {%- if view_id %} id="{{ view_id }}"{% endif %}></button>
 </div>
 {% endmacro %}

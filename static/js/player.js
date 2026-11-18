@@ -17,7 +17,6 @@ import { formatBytes, formatDuration, bvFromUrl, pageFromUrl } from './util.js';
 const POS_PREFIX = 'bd_play_pos:';
 const SPEED_KEY = 'bd_play_speed';
 const VOLUME_KEY = 'bd_play_volume';
-const QUALITY_KEY = 'bd_play_quality';
 const SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 15;
 // 倍速档位:平铺成胶囊,点一下就切(不用滑条来回挪)
@@ -31,6 +30,9 @@ let currentMode = '';
 let lastFocus = null;
 let lastSaveAt = 0;
 let onlineState = { qualities: [], index: 0, audioToken: '' };
+let onlineUrl = '';          // 在线播放的原始链接:断流自恢复时重新解析用
+let onlineMeta = {};         // 打开播放器时的卡片元信息,恢复时还原标题
+let onlineRecoverLeft = 0;   // 剩余自动恢复次数,起播成功即回满
 
 function byId(id) { return document.getElementById(id); }
 
@@ -244,6 +246,7 @@ function wireVideoEvents() {
   const v = video();
   if (!v) return;
   v.onplay = () => {
+    onlineRecoverLeft = 2;   // 真正播起来,恢复额度回满
     setPlayIcon(true);
     const a = audio();
     if (a && !a.hidden && a.src) {
@@ -256,6 +259,11 @@ function wireVideoEvents() {
     setPlayIcon(false);
     const a = audio();
     if (a && !a.hidden) a.pause();
+  };
+  v.onerror = () => {
+    // 在线流断了(token 过期/上游断开)时浏览器只会无声停住,看起来像「自动暂停」;
+    // 这里自动重新解析并从当前进度续播,重复失败才提示手动重开。
+    if (currentMode === 'online' && isOpen()) recoverOnlineStream();
   };
   v.onseeked = () => {
     syncAudioToVideo();
@@ -345,13 +353,9 @@ function fillQualities(payload, meta) {
     button.setAttribute('aria-pressed', 'false');
     slider.appendChild(button);
   });
-  // 沿用上次选的档位(档位名一致且存在时才用)
-  const remembered = localStorage.getItem(QUALITY_KEY) || '';
-  const preferred = onlineState.qualities.findIndex(q => q.label === remembered);
-  // 默认 1080P:4K 单条流动辄 1GB 以上,首屏缓冲明显更慢,想看清爽可以自己往上点
-  const fallback = onlineState.qualities.findIndex(q => q.label === '1080P');
-  const startIndex = preferred >= 0 ? preferred : (fallback >= 0 ? fallback : 0);
-  markQualitySegs(startIndex);
+  // 默认最高档(qualities 按高度降序,0 = 最高):桌面宽带不人为压档,
+  // 网络卡顿交给断流自恢复兜底,再卡就手动降一档(2026-11-18 用户要求)
+  markQualitySegs(0);
   wrap.hidden = total === 0;
   if (payload.duration && !meta.duration) {
     setHeader({ ...meta, duration: payload.duration });
@@ -428,8 +432,6 @@ function markQualitySegs(index) {
     button.classList.toggle('on', on);
     button.setAttribute('aria-pressed', on ? 'true' : 'false');
   });
-  const current = onlineState.qualities[index];
-  if (current) localStorage.setItem(QUALITY_KEY, current.label);
 }
 
 function playOnlineAt(index, { keepTime = true, autoplay = true } = {}) {
@@ -463,6 +465,37 @@ function playOnlineAt(index, { keepTime = true, autoplay = true } = {}) {
   markQualitySegs(index);
 }
 
+/* 断流自恢复:重新解析拿新 token,再从断点续播(playOnlineAt 的 keepTime
+   会先读 v.currentTime 再换 src)。额度 2 次,防死循环;用尽就明说。 */
+function recoverOnlineStream() {
+  const v = video();
+  if (!v || currentMode !== 'online' || !isOpen()) return;
+  if (!onlineUrl || onlineRecoverLeft <= 0) {
+    setTip('播放流断开了,请重新打开这个视频');
+    return;
+  }
+  onlineRecoverLeft -= 1;
+  const url = onlineUrl;
+  setTip('播放中断,正在自动恢复…');
+  fetch(`/api/online/qualities?url=${encodeURIComponent(url)}`,
+         { headers: { Accept: 'application/json' } })
+    .then(r => r.json())
+    .then((payload) => {
+      if (currentMode !== 'online') return;
+      if (!payload || !payload.ok || !payload.qualities || !payload.qualities.length) {
+        setTip('自动恢复失败:解析不到可播放的清晰度,请重新打开');
+        return;
+      }
+      // 断流前在哪一档,恢复后就还在哪一档(fillQualities 会重置回默认最高)
+      const prevIndex = Math.max(0, Math.min(Number(onlineState.index) || 0,
+        (payload.qualities || []).length - 1));
+      fillQualities(payload, onlineMeta);
+      markQualitySegs(prevIndex);
+      playOnlineAt(prevIndex, { keepTime: true, autoplay: true });
+    })
+    .catch(() => { if (currentMode === 'online') setTip('自动恢复失败,请重新打开这个视频'); });
+}
+
 export function openOnlinePlayer(url, meta = {}) {
   const bv = bvFromUrl(url);
   const v = video();
@@ -470,6 +503,9 @@ export function openOnlinePlayer(url, meta = {}) {
 
   currentId = '';
   currentMode = 'online';
+  onlineUrl = url;
+  onlineMeta = meta;
+  onlineRecoverLeft = 2;
   buildSpeedSegs();
   setMode('online');
   setHeader(meta);
@@ -495,7 +531,7 @@ export function openOnlinePlayer(url, meta = {}) {
       }
       fillQualities(payload, meta);
       const index = onlineState.index;
-      // 记住用户滑到哪一档,下次进来沿用
+      // 顶部提示当前档;档位不再跨会话记忆,每次起播默认最高(2026-11-18 用户要求)
       const chosen = onlineState.qualities[index];
       const label = chosen ? chosen.label : '';
       setTip(label ? `${label} · 按你的登录态播放` : '');
@@ -534,6 +570,9 @@ export function closeLocalPlayer() {
   currentId = '';
   currentMode = '';
   onlineState = { qualities: [], index: 0, audioToken: '' };
+  onlineUrl = '';
+  onlineMeta = {};
+  onlineRecoverLeft = 0;
   if (lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
   lastFocus = null;
 }

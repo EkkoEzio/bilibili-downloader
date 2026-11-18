@@ -627,6 +627,8 @@ def get_login_status() -> dict:
         return {
             "logged_in": logged_in,
             "uname": data.get("uname", ""),
+            # 头像:nav 自带,给账号卡展示(2026-11-18 用户要求)
+            "face": (data.get("face") or "").replace("http:", "https:"),
             "vip": data.get("vipStatus", 0) == 1,
             "vip_type": data.get("vipType", 0),
             **_public_context_fields(context),

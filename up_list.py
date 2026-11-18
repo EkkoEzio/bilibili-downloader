@@ -121,7 +121,7 @@ def list_ups() -> list[dict]:
         # 旧值(1080P60/480P 等已下线/改名档位)留在存量记录里会变成「界面显示
         # 一个档位、实际按另一个挑流」:读时统一映射到当前档位(1080P60→1080
         # 等,见 _LEGACY_QUALITY),与前端 subscriptions.js 的 _normQuality 同一套。
-        # 合集/收藏订阅不受此改版影响(旧精确标签原样保留,见 COLLECTION_QUALITY_CHOICES)。
+        # 合集/收藏订阅的旧标签同样归一(见 list_collections)。
         u["quality"] = _norm_quality(u.get("quality"))
     return ups
 
@@ -308,12 +308,10 @@ def reset_seen(mid: int) -> None:
 #   首次添加时以当前全部条目为基线,之后只处理新出现的 bvid。
 
 COLLECTION_KINDS = ("season", "fav")
-# 合集/收藏夹订阅的清晰度仍用旧「精确标签」下拉(与手动下载 quality.js
-# QUALITY_OPTIONS 同一套值),不随 2026-11-17 UP 订阅「纯分辨率档」改版:
-# 下拉里选 1080P60 就存 1080P60,读/写原样保留;下载时 resolve_quality_label
-# 对非分辨率档原样透传,继续走 best_video_audio_choice 的精确匹配。
-# (发版核对时发现的回归:曾误用 UP 新档位表校验合集值,旧标签会被静默清空。)
-COLLECTION_QUALITY_CHOICES = ("", "2160P", "1080P60", "1080P", "720P60", "720P", "音频")
+# 合集/收藏夹订阅的清晰度与 UP 订阅同一套「纯分辨率档」(2026-11-17 起三处
+# 分段共用 quality.js AUTO_QUALITY_SEGMENTS,下拉退役):写入/读取都用
+# _norm_quality 归一——存量订阅里留着的旧精确标签(1080P60 等)映射到对应
+# 分辨率档,已下线档位回落最高;下载时 resolve_quality_label 按档位解析挑流。
 MAX_COLLECTIONS = 100
 COLLECTION_SEEN_MAX = 300
 
@@ -342,9 +340,8 @@ def list_collections() -> list[dict]:
         entry = dict(item)
         entry["kind"] = kind
         entry["id"] = cid
-        entry.setdefault("quality", "")
-        if entry["quality"] not in COLLECTION_QUALITY_CHOICES:
-            entry["quality"] = ""
+        # 旧精确标签/已下线档位读时归一到当前档位体系(与前端 normAutoQuality 同一套)
+        entry["quality"] = _norm_quality(entry.get("quality"))
         entry.setdefault("seen_bvids", [])
         out.append(entry)
     return out
@@ -358,7 +355,7 @@ def add_collection(kind: str, cid: int, title: str = "", cover: str = "",
     if kind not in COLLECTION_KINDS:
         raise ValueError(f"非法订阅类型:{kind}")
     cid = int(cid)
-    quality = quality if quality in COLLECTION_QUALITY_CHOICES else ""
+    quality = _norm_quality(quality)
     raw_baseline = [str(v) for v in (seen_bvids or []) if v]
     if len(raw_baseline) > COLLECTION_SEEN_MAX:
         # 与轮询侧保持一致:超限明确失败,不静默截断(截断会让被裁掉的旧条目
@@ -412,7 +409,7 @@ def remove_collection(kind: str, cid: int) -> bool:
 
 
 def set_collection_quality(kind: str, cid: int, quality: str) -> bool:
-    quality = quality if quality in COLLECTION_QUALITY_CHOICES else ""
+    quality = _norm_quality(quality)
     kind = str(kind or "")
     cid = int(cid)
     with _lock:

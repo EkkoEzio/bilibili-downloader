@@ -143,13 +143,19 @@ document.addEventListener('keydown', (event) => {
   const input = event.target.closest?.('.lib-search');
   if (!input) return;
   const pageName = input.closest('.page')?.dataset.page || '';
+  if (event.key === 'Escape') {
+    // 统一(2026-11-17 用户要求):任何页面的搜索框 Esc 都清空并还原列表。
+    // 没注册搜索目标的页面(观看历史等)由 input 事件走内联 applyLibFilter 复位过滤;
+    // 有目标的页面照旧退出站内搜索态。清空按钮(lib.js 委托)走同一条 input 路径。
+    input.value = '';
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    if (targets.has(pageName)) exitSearch(pageName);
+    return;
+  }
   if (!targets.has(pageName)) return;
   if (event.key === 'Enter') {
     event.preventDefault();
     runSearch(pageName);
-  } else if (event.key === 'Escape') {
-    input.value = '';
-    exitSearch(pageName);
   }
 });
 
