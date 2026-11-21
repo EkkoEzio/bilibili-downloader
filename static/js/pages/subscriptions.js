@@ -238,7 +238,7 @@ function renderUps() {
   if (ups.length === 0) {
     d.list.innerHTML = emptyStateHtml(
       q || isSearchMode('subs') ? '没有匹配结果（试试其他关键词）'
-        : '还没有关注的 UP。在上方粘贴 UP 主页链接添加自动下载，或到 B 站关注后刷新。');
+        : '还没有关注的 UP。搜索 UP 主后点清晰度档位即可开启自动下载，或到 B 站关注后刷新。');
   } else {
     if (!_mergedShown) _mergedShown = upCardChunk();
     const shown = q ? ups : ups.slice(0, _mergedShown);
@@ -359,23 +359,6 @@ export async function upToggleFollow(mid, followedNow, button = null) {
     announce(error.message || '操作失败', true);
     toast(error.message || '操作失败');
   }
-}
-
-export async function upAdd() {
-  const input = document.getElementById('up-add-input');
-  const button = document.getElementById('up-add-btn');
-  const value = input.value.trim();
-  if (!value) { toast('请粘贴 UP 主页链接或 mid'); return; }
-  try {
-    await withPending(button, '添加中…', async () => {
-      const r = await postJSON('/api/up-list/add', { input: value });
-      if (!r.ok) throw new Error(r.error || '添加失败');
-      input.value = '';
-      announce(`已加入自动下载清单：${r.up.uname || ('UP ' + r.up.mid)}`);
-      // 强制刷新:本地清单变化后磁盘缓存里的列表已过期,不绕缓存看不到新卡片
-      if (state.mode === 'subs') loadSubscriptions(true);
-    });
-  } catch (error) { toast(error.message); }
 }
 
 export async function upCheckNow(btn) {

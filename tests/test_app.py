@@ -968,9 +968,16 @@ def test_frontend_modal_uses_theme_vars():
 
 
 def test_frontend_audio_and_quality_config():
-    """清晰度:批量下拉有仅音频;UP 清单可配每个 UP 的默认清晰度。"""
+    """清晰度:批量档位是分段沙发(复用自动下载档位字典、滤掉不下载档);
+    UP 清单可配每个 UP 的默认清晰度。"""
     html = _tpl()
-    assert '<option value="音频">' in html, "清晰度下拉应有仅音频"
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
+    assert 'id="ab-quality"' in html, "批量操作条应有档位沙发容器"
+    assert "AUTO_QUALITY_SEGMENTS" in lib_js and "'__off'" in lib_js, \
+        "批量沙发应复用自动下载档位字典并滤掉不下载档"
+    assert "ab-quality" in dl_js and ".lib-quality" not in dl_js, \
+        "批量下载应从沙发容器读档位,旧下拉读取口径应移除"
     assert "upAutoPick" in html and "up-list/set-quality" in html, \
         "UP 管理应有默认清晰度设置(平铺分段直接点选)"
     assert "/api/up-list/set-quality" in html
@@ -1011,8 +1018,9 @@ def test_frontend_feed_and_subs_are_separate_pages():
 
 
 def test_frontend_topbar_pages():
-    """顶栏八个页面,顺序:首页推荐/关注动态/关注 UP/追更合集/我的收藏/稍后再看/
-    观看历史/下载记录;右侧操作区设置在前、账号在后,新建下载常驻。"""
+    """顶栏八个页面,顺序:首页/动态/UP/合集/收藏/待看/
+    历史/下载;右侧操作区视图/昼夜/账号头像(2026-11-21 起新建下载收进下载页
+    页头、刷新钮删除;设置齿轮与头像同调 openDrawer('account'),删齿轮留头像为唯一入口)。"""
     html = _tpl()
     assert 'class="topbar"' in html, "应使用顶栏导航(2026-11-10 终选 B 版)"
     tags = [f'data-page="{p}"' for p in
@@ -1020,12 +1028,14 @@ def test_frontend_topbar_pages():
     pos = [html.find(t) for t in tags]
     assert all(p >= 0 for p in pos), f"缺顶栏页面:{[t for t, p in zip(tags, pos) if p < 0]}"
     assert pos == sorted(pos), "顶栏页面顺序不对"
-    for label in ("首页推荐", "关注动态", "关注 UP", "追更合集", "我的收藏", "稍后再看", "观看历史", "下载记录"):
+    for label in ("首页", "动态", "UP", "合集", "收藏", "待看", "历史", "下载"):
         assert label in html
-    right = html[html.find('class="tb-right"'):]
+    right = html[html.find('class="tb-right"'):html.find('</header>')]
     assert "openDrawer('account')" in right, "顶栏右侧应有账号入口"
-    assert "openDrawer('newdl')" in right, "顶栏右侧应有新建下载入口"
+    assert "openDrawer('newdl')" not in right, "新建下载已收进下载页页头,顶栏不再有入口"
     assert "openDrawer('settings')" not in html, "设置已并回账号抽屉,不再单独入口"
+    assert 'title="设置"' not in html, "设置齿轮已删:与头像同调 openDrawer('account'),重复入口"
+    assert html.count('onclick="openDrawer(\'account\')"') == 1, "账号抽屉顶栏入口唯一:头像"
 
 
 def test_frontend_no_emoji_icons():
@@ -1060,11 +1070,14 @@ def test_frontend_empty_parse_clears_stale_result():
 
 
 def test_frontend_unified_toolbar():
-    """各列表页工具条只留搜索;刷新/视图/昼夜收进顶栏。"""
+    """各列表页工具条只留搜索;视图/昼夜收进顶栏(刷新按钮已删,走 Cmd/Ctrl+R)。"""
     html = _tpl()
-    assert html.count("lib-search") >= 5
-    for bid in ("tb-refresh", "tb-view", "tb-theme"):
+    # 2026-11-21 搜索栏收进顶栏:模板只渲染一只搜索输入框
+    assert html.count('class="search-input lib-search"') == 1, "搜索框唯一,收进顶栏"
+    assert 'id="tb-search"' in html, "顶栏应有搜索框"
+    for bid in ("tb-view", "tb-theme"):
         assert f'id="{bid}"' in html, f"顶栏应有 {bid} 按钮"
+    assert 'id="tb-refresh"' not in html, "顶栏刷新按钮已删(与 Cmd/Ctrl+R 同函数,重复入口)"
     assert "toggleTheme" in html, "顶栏昼夜切换应绑定 toggleTheme"
     theme_js = (_js_dir() / "theme.js").read_text(encoding="utf-8")
     assert "export function toggleTheme" in theme_js, "theme.js 应导出 toggleTheme"
@@ -1146,30 +1159,35 @@ def test_frontend_fast_sources_auto_apply():
 
 
 def test_frontend_uplist_drawer_removed():
-    """UP 清单抽屉已删:管理功能在独立的「关注 UP」页。"""
+    """UP 清单抽屉已删:管理功能在独立的「关注 UP」页;粘贴添加入口也已删(全站搜索+档位沙发覆盖添加)。"""
     html = _tpl()
     assert "dpanel-uplist" not in html, "抽屉应删除"
     assert "管理 UP 清单" not in html
     assert 'id="up-check-btn"' in html, "订阅页应有「立即检查」按钮"
-    assert 'id="up-add-input"' in html
+    assert 'id="up-add-input"' not in html, "粘贴添加入口已删:添加走全站搜索+档位沙发"
+    assert "up-add-btn" not in html
     assert "upAutoControlHtml" in html, "UP 卡片应带清晰度/移除控件"
 
 
 def test_frontend_unified_toolbar_everywhere():
-    """八个页面工具条统一只留搜索;刷新/视图/昼夜收进顶栏且顺序固定。"""
+    """搜索框唯一且收进顶栏;视图/昼夜收进顶栏且顺序固定;刷新按钮已删(2026-11-21)。"""
     html = _tpl()
-    assert html.count('class="search-input lib-search"') == 8
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert html.count('class="search-input lib-search"') == 1
+    assert html.index('id="tb-search"') < html.index('id="tb-view"'), \
+        "顶栏顺序应为 搜索→视图→昼夜→账号头像"
     assert 'class="ghost icon-only view-btn"' not in html, \
         "各页刷新/视图按钮应已撤下,统一收进顶栏"
-    # 顶栏顺序:刷新 → 视图切换 → 昼夜切换 → 设置齿轮
-    i_r = html.index('id="tb-refresh"')
+    # 顶栏顺序:视图切换 → 昼夜切换 → 账号头像(刷新已删走 Cmd/Ctrl+R;设置齿轮已删,头像为账号抽屉唯一入口)
     i_v = html.index('id="tb-view"')
     i_t = html.index('id="tb-theme"')
-    i_s = html.index('title="设置"')
-    assert i_r < i_v < i_t < i_s, "顶栏顺序应为 刷新→视图→昼夜→设置"
-    assert 'onclick="refreshCurrentPage()"' in html, "刷新应统一走页面分发"
-    # 总览只按名称过滤,占位符不再承诺 UP 主/标题(2026-11-11 复查)
-    assert "搜索收藏夹名称" in html
+    i_a = html.index('class="tb-acct"')
+    assert i_v < i_t < i_a, "顶栏顺序应为 视图→昼夜→账号头像"
+    assert 'id="tb-refresh"' not in html and 'onclick="refreshCurrentPage()"' not in html, \
+        "顶栏刷新按钮已删,刷新只走 Cmd/Ctrl+R 拦截"
+    # 总览只按名称过滤,占位符不再承诺 UP 主/标题(2026-11-11 复查;
+    # 2026-11-21 占位符映射表随搜索框收进顶栏,落在 lib.js)
+    assert "搜索收藏夹名称" in lib_js
 
 
 def test_launcher_reports_port_conflict_and_only_cleans_own_child():
@@ -1219,7 +1237,7 @@ def test_frontend_queue_merged_into_downloads():
     assert "openDrawer('queue')" not in html
     assert "taskCardHtml" in html, "进行中/失败任务应渲染成进度卡"
     assert "updateTaskCard" in html, "SSE 应就地更新任务卡"
-    assert 'id="dl-badge"' in html, "进行中任务数显示在侧边栏「下载记录」角标"
+    assert 'id="dl-badge"' in html, "进行中任务数显示在侧边栏「下载」角标"
     assert 'id="ab-del-rec"' in html and 'id="ab-del-file"' in html
     assert "delSelected" in html and "clearAllRecords" in html
 
@@ -3200,7 +3218,7 @@ def test_subs_refresh_bypasses_cache():
     assert "refresh: refreshSubs" in subs_js, \
         "订阅页应注册 refresh 控制器,顶栏刷新才走强制刷新路径"
     assert "refreshCurrentPage" in lib_js and "refreshCurrentPage" in app_js, \
-        "顶栏刷新应统一经 refreshCurrentPage 分发到各页控制器"
+        "刷新应统一经 refreshCurrentPage 分发到各页控制器(Cmd/Ctrl+R 拦截)"
 
 
 def test_subs_force_refresh_applies_data_directly():
@@ -3355,15 +3373,17 @@ def test_overview_search_placeholder_matches_implementation():
 def test_frontend_assets_bumped_for_fix_batch():
     """改过的静态资源版本号必须前进,避免浏览器吃旧副本。"""
     html = _tpl()
-    assert "main.css?v=20261116x" in html and "app.js?v=20261116x" in html
-    assert "20261116w" not in html and "20261116v" not in html and "20261116u" not in html, "旧版本号不应残留"
+    assert "main.css?v=20261121d" in html and "app.js?v=20261121a" in html
+    assert "20261116x" not in html and "20261116w" not in html and "20261116v" not in html, "旧版本号不应残留"
 
 
 def test_downloads_head_has_single_new_download_entry():
-    """下载记录页头不再重复一颗「新建下载」(顶栏已有唯一入口)。"""
+    """「新建下载」唯一入口在下载页页头(2026-11-21 从顶栏移入,顶栏不再有)。"""
     html = _tpl()
-    page = html[html.index('data-page="downloads"'):html.index('data-page="history"')]
-    assert "openDrawer('newdl')" not in page, "页头不应再有新建下载按钮"
+    page = html[html.index('<div class="page" data-page="downloads">'):html.index('<div class="page" data-page="history">')]
+    assert "openDrawer('newdl')" in page, "下载页页头应有新建下载按钮"
+    topbar = html[html.find('class="tb-right"'):html.find('</header>')]
+    assert "openDrawer('newdl')" not in topbar, "顶栏不应再有新建下载入口"
 
 
 def test_duration_seconds_parses_bilibili_length_string():
@@ -3592,17 +3612,17 @@ def test_checked_badge_lives_on_hit_target():
 def test_sub_info_row_height_uniform_across_pages():
     """所有页面的 sub-info 信息行必须预留同一高度,首列卡片起始位置才跨页一致。
 
-    2026-11-17 用户报障:下载页首列卡片比其他页低一截。实测各页 page-head 都是
-    32px,差异全在信息行——下载页这一行里有 28px 的 quiet 按钮(清除已结束记录/
-    清除失败/失效记录),其余页只有 ~19px 文字;min-height:20px 时下载页整行被
-    撑到 28px,首行卡片 top=162px,其余页 154px,整整低 8px。信息行统一预留
-    28px(控件紧凑档高度),所有页面对齐到同一基线,按钮档位不动。
+    2026-11-17 用户报障:下载页首列卡片比其他页低一截。差异全在信息行——下载页
+    这一行里有按钮,其余页只有 ~19px 文字;min-height 按文字给时下载页整行被按钮
+    撑高,首行卡片 top=162px,其余页 154px,整整低 8px。2026-11-21 下载页清除
+    按钮改 ghost(32px,与 UP 页「立即检查新视频」同款),统一预留改用 var(--ctl-h)
+    跟随控件档,不再硬编码像素。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
     rule = css[css.index(".sub-info{"):]
     rule = rule[:rule.index("}")]
-    assert "min-height:28px" in rule, "sub-info 行高必须统一预留 28px(下载页 si-actions 按钮档)"
-    assert "min-height:20px" not in rule, "旧 20px 行高会被下载页 28px 按钮撑破,首列卡片跨页错位 8px"
+    assert "min-height:var(--ctl-h)" in rule, "sub-info 行高必须统一预留控件档 var(--ctl-h)(下载页 ghost 按钮档)"
+    assert "min-height:28px" not in rule and "min-height:20px" not in rule, "硬编码的旧行高会被按钮撑破,首列卡片跨页错位"
 
 
 # ---------- 在线播放:登录态直链 ----------
@@ -3687,6 +3707,106 @@ def test_online_resolve_keeps_logged_in_qualities(monkeypatch):
         ("1080P", "30112"), ("720P", "30064")], \
         "同高度要留码率最高的那条,并按高度从高到低排"
     assert online._pick_audio(formats)["format_id"] == "30280"
+
+
+def test_online_resolve_fast_path_direct_api(monkeypatch):
+    """直连 view+playurl 快速路径:不跑 yt-dlp,产出与旧路径同构的 token payload。"""
+    import json as _json
+
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid: {
+        "bvid": bvid, "cid": 111, "title": "示例视频", "duration": 120,
+        "pages": [{"page": 1, "cid": 111, "duration": 120}],
+    })
+    monkeypatch.setattr(bapi, "fetch_playurl", lambda bvid, cid: {
+        "accept_quality": [116, 112, 80, 64, 32, 16],
+        "dash": {
+            "video": [
+                {"id": 80, "height": 1080, "bandwidth": 2000000,
+                 "baseUrl": "https://upos-cd/v80.m4s"},
+                {"id": 116, "height": 1080, "bandwidth": 3000000,
+                 "baseUrl": "https://upos-cd/v116.m4s"},
+                {"id": 112, "height": 1080, "bandwidth": 2500000,
+                 "baseUrl": "https://upos-cd/v112.m4s"},
+                {"id": 64, "height": 720, "bandwidth": 800000,
+                 "baseUrl": "https://upos-cd/v64.m4s"},
+            ],
+            "audio": [
+                {"id": 30216, "bandwidth": 64000, "baseUrl": "https://upos-cd/a16.m4s"},
+                {"id": 30280, "bandwidth": 320000, "baseUrl": "https://upos-cd/a80.m4s"},
+            ],
+        },
+    })
+
+    def no_ytdlp(url):
+        raise AssertionError("快速路径命中时不得回落 yt-dlp")
+
+    monkeypatch.setattr(parsing, "parse_video_with_info", no_ytdlp)
+    payload = online.resolve("https://www.bilibili.com/video/BV1fast1xTst")
+    assert payload["ok"] is True
+    assert payload["title"] == "示例视频"
+    assert payload["duration"] == 120
+    assert [q["label"] for q in payload["qualities"]] == ["1080P60", "1080P", "720P"], \
+        "116 独立成 1080P60 档;112/80 同高度只留码率最高的 112;按高度降序"
+    assert payload["audio"]
+    assert "upos-cd" not in _json.dumps(payload), "token 化后不得泄漏 CDN 地址"
+
+
+def test_online_resolve_falls_back_to_ytdlp_when_api_unavailable(monkeypatch):
+    """view/playurl 失败(番剧/风控/未登录)时回落 yt-dlp,行为与旧版一致。"""
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid: None)
+
+    summary = {"title": "yt-dlp 解析", "duration": 60, "formats": [
+        {"kind": "video", "label": "720P", "format_id": "30064",
+         "height": 720, "tbr": 600},
+        {"kind": "audio", "label": "音频", "format_id": "30216", "tbr": 60},
+    ]}
+    info = {"duration": 60, "formats": [
+        {"format_id": "30064", "url": "https://upos-fb/v64.m4s", "height": 720,
+         "http_headers": {"Referer": "https://www.bilibili.com"}},
+        {"format_id": "30216", "url": "https://upos-fb/a16.m4s", "http_headers": {}},
+    ]}
+    monkeypatch.setattr(parsing, "parse_video_with_info", lambda url: (summary, info))
+    payload = online.resolve("https://www.bilibili.com/video/BV1fbck1xTst")
+    assert [q["label"] for q in payload["qualities"]] == ["720P"]
+    assert payload["audio"]
+
+
+def test_online_resolve_api_path_honors_page_param(monkeypatch):
+    """多 P 链接按 ?p=N 取对应分 P 的 cid 与时长。"""
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    picked = {}
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid: {
+        "bvid": bvid, "cid": 1, "title": "多P", "duration": 300,
+        "pages": [
+            {"page": 1, "cid": 11, "duration": 100},
+            {"page": 2, "cid": 22, "duration": 200},
+        ],
+    })
+
+    def fake_playurl(bvid, cid):
+        picked["cid"] = cid
+        return {"dash": {"video": [{"id": 80, "height": 1080, "bandwidth": 1,
+                                    "baseUrl": "https://upos-pg/v.m4s"}],
+                         "audio": []}}
+
+    monkeypatch.setattr(bapi, "fetch_playurl", fake_playurl)
+    monkeypatch.setattr(
+        parsing, "parse_video_with_info",
+        lambda url: (_ for _ in ()).throw(AssertionError("不应回落 yt-dlp")))
+    payload = online.resolve("https://www.bilibili.com/video/BV1page2xTst?p=2")
+    assert picked["cid"] == 22, "?p=2 必须取第 2 分 P 的 cid"
+    assert payload["duration"] == 200
 
 
 # ---------- 卡片封面布局 / 关注 / 滑条 ----------
@@ -3977,6 +4097,12 @@ def test_face_player_top_quality_and_reveal_button_move():
         "thumb-row 不再塞 Finder 按钮(时间胶囊恢复独占)"
     assert "${durHtml}${revealButton}" not in dl_js, \
         "下载记录卡同样不再塞 Finder 按钮"
-    assert "${revealButton}${mainPlay}" in dl_js, "Finder 按钮提到播放键上方"
-    assert ".thumb-actions > .vi-reveal{position:static" in css, \
-        "Finder 圆钮要回到动作区流内并与播放键同尺寸"
+    assert "<span class=\"vi-meta-actions\">${locateHtml}${followChip}</span>" in lib_js, \
+        "Finder 钮与关注胶囊同排放元信息行(2026-11-19 用户要求,网格/列表两态通用)"
+    assert "<span class=\"vi-meta-actions\">${revealButton}${followChip}</span>" in dl_js, \
+        "任务卡的 Finder 钮同样进元信息行右侧组"
+    assert "${revealButton}${mainPlay}" not in dl_js, "封面动作柱不再叠 Finder 钮"
+    assert ".vi-locate{" in css and ".vi-meta-actions{" in css, \
+        "元信息行 Finder 钮要有自己的内联样式"
+    assert ".thumb-actions > .vi-reveal" not in css, \
+        "封面动作柱里的 Finder 圆钮规则应随搬迁退役"

@@ -8,11 +8,16 @@ B 站认不出登录态,只给 360P/480P;而且 iframe 里的进度条、倍速�
 DASH 的音视频是分开的两条流,浏览器 <video> 不会自动把两条合起来,所以
 前端用 <video> + <audio> 同步播放;后端只负责把两条流按需转发。
 
+解析走两条路:普通 BV 视频优先直连 view + playurl 两个轻接口(合计约
+0.5s);yt-dlp 完整提取要 2s+ 且是秒级 CPU 大户,只作番剧/异常时的回落,
+行为与旧路径一致。
+
 安全:前端拿不到也不会构造 CDN URL——只拿到一个内存 token,映射关系
 只存在于本进程。转发时固定补上 B 站要求的 Referer/UA(实测视频轨缺
 Referer 直接 403),因此不存在拿本接口当任意 URL 代理的可能。
 """
 import logging
+import re
 import secrets
 import threading
 import time
@@ -20,7 +25,10 @@ from typing import Optional
 
 import requests
 
+import bilibili_api
 import parsing
+import quality
+from bilibili_auth import BROWSER_HEADERS
 from quality import classify_formats
 
 log = logging.getLogger("bd.online")
@@ -35,6 +43,13 @@ PARSE_TTL_SECONDS = 10 * 60
 
 _CHUNK = 64 * 1024
 _UPSTREAM_TIMEOUT = (10, 60)
+
+# 顶层 requests.api.get 的原始实现:测试把顶层 requests.get 换成桩时让路,
+# 生产才走连接池会话(与 bilibili_api._get 同一套兼容模式)。
+_requests_get = requests.get
+# CDN 转发用带连接池的会话:拖进度条会产生大量 Range 请求,复用 TCP/TLS
+# 连接,省去每次 0.1s 级的握手(2026-11-17 对 API 会话的同类实测)。
+_CDN_SESSION = requests.Session()
 
 _lock = threading.Lock()
 _tokens: dict[str, dict] = {}          # token -> {"url", "headers", "expires"}
@@ -111,14 +126,124 @@ def _format_map(info: dict) -> dict:
             if isinstance(f, dict)}
 
 
+# 直连解析只覆盖普通 BV 视频;番剧(/bangumi/)、课程(/cheese/)等 URL
+# 不匹配,直接走 yt-dlp 老路。
+_BV_RE = re.compile(r"bilibili\.com/video/(BV[0-9A-Za-z]{10})")
+_PAGE_RE = re.compile(r"[?&]p=(\d+)")
+
+
+def _cdn_headers() -> dict:
+    """CDN 直链要求的请求头(缺 Referer 视频轨 403),与 yt-dlp http_headers 等效。"""
+    return {
+        "User-Agent": BROWSER_HEADERS.get("User-Agent", ""),
+        "Referer": "https://www.bilibili.com/",
+    }
+
+
+def _resolve_via_api(url: str) -> Optional[dict]:
+    """快速路径:直连 view + playurl 解析普通 BV 视频,实测合计约 0.5s。
+
+    yt-dlp 完整提取一次要 2.4-2.6s(2026-11-20 实测)且是进程级 CPU 大户,
+    是在线起播等待的主因。这里任何失败(番剧/充电/风控/未登录/结构意外)都
+    返回 None,由 resolve 回落到 yt-dlp,行为与旧路径完全一致。
+    """
+    match = _BV_RE.search(url or "")
+    if not match:
+        return None
+    bvid = match.group(1)
+    page_match = _PAGE_RE.search(url or "")
+    page = int(page_match.group(1)) if page_match else 1
+    try:
+        view = bilibili_api.fetch_video_view(bvid)
+        if not view:
+            return None
+        pages = [p for p in (view.get("pages") or []) if isinstance(p, dict)]
+        cid = 0
+        part = {}
+        if pages and 1 <= page <= len(pages):
+            part = pages[page - 1]
+            cid = part.get("cid") or 0
+        cid = cid or view.get("cid") or (pages[0].get("cid") if pages else 0)
+        if not cid:
+            return None
+
+        playurl = bilibili_api.fetch_playurl(bvid, cid)
+        dash = (playurl or {}).get("dash") or {}
+        video_entries = [v for v in (dash.get("video") or [])
+                         if isinstance(v, dict) and (v.get("baseUrl") or v.get("base_url"))]
+        audio_entries = [a for a in (dash.get("audio") or [])
+                         if isinstance(a, dict) and (a.get("baseUrl") or a.get("base_url"))]
+        if not video_entries:
+            return None
+
+        headers = _cdn_headers()
+        # 同标签(同高度)只留码率最高的一条:与 yt-dlp 路径的归一化行为一致。
+        # 杜比/FLAC 是 dash.dolby/dash.flac 里的独立轨,这里不取——<audio> 对
+        # 它们的解码支持不稳,标准 AAC 轨才是旧路径的实际口径。
+        by_label: dict[str, tuple[int, dict]] = {}
+        for entry in video_entries:
+            label = quality._format_label({"quality": entry.get("id")},
+                                          entry.get("height"))
+            bandwidth = entry.get("bandwidth") or 0
+            current = by_label.get(label)
+            if current is None or bandwidth > current[0]:
+                by_label[label] = (bandwidth, entry)
+
+        qualities = []
+        for label, (_bandwidth, entry) in by_label.items():
+            qualities.append({
+                "label": label,
+                "height": entry.get("height") or 0,
+                "token": _register(entry.get("baseUrl") or entry.get("base_url") or "",
+                                   headers),
+            })
+        qualities.sort(key=lambda q: (-(q["height"] or 0),
+                                      0 if "P60" in q["label"] else 1))
+
+        audio_token = ""
+        best_audio = None
+        for entry in audio_entries:
+            if best_audio is None or (entry.get("bandwidth") or 0) > (best_audio.get("bandwidth") or 0):
+                best_audio = entry
+        if best_audio:
+            audio_token = _register(best_audio.get("baseUrl") or best_audio.get("base_url") or "",
+                                    headers)
+
+        return {
+            "ok": True,
+            "duration": part.get("duration") or view.get("duration") or 0,
+            "title": view.get("title") or "",
+            "qualities": qualities,
+            "audio": audio_token,
+        }
+    except Exception:
+        log.warning("在线播放直连解析异常,回落 yt-dlp", exc_info=True)
+        return None
+
+
 def resolve(url: str) -> dict:
-    """解析出各清晰度的视频轨与音频轨 token。结果按 URL 缓存一小段时间。"""
+    """解析出各清晰度的视频轨与音频轨 token。结果按 URL 缓存一小段时间。
+
+    先走直连 API 快速路径(约 0.5s),失败回落 yt-dlp(2.5s+,行为不变)。
+    """
     now = time.time()
     with _lock:
         cached = _parse_cache.get(url)
         if cached and cached["expires"] > now:
             return cached["payload"]
 
+    payload = _resolve_via_api(url)
+    if payload is None:
+        payload = _resolve_via_ytdlp(url)
+
+    with _lock:
+        _cleanup(now)
+        _parse_cache[url] = {"payload": payload, "expires": now + PARSE_TTL_SECONDS}
+    return payload
+
+
+def _resolve_via_ytdlp(url: str) -> dict:
+    """yt-dlp 路径(旧行为):番剧、直连 API 失败时的回落。"""
     # 一次提取同时拿归一化档位与直链 formats:原先这里连跑两遍 yt-dlp,
     # 每个预热请求双倍秒级 CPU,会拖慢同进程的其它接口(搜索实测被堵 23s)。
     summary, info = parsing.parse_video_with_info(url)
@@ -151,9 +276,6 @@ def resolve(url: str) -> dict:
         "qualities": qualities,
         "audio": audio_token,
     }
-    with _lock:
-        _cleanup(now)
-        _parse_cache[url] = {"payload": payload, "expires": now + PARSE_TTL_SECONDS}
     return payload
 
 
@@ -169,9 +291,10 @@ def open_upstream(token: str, range_header: Optional[str]):
         headers["Referer"] = "https://www.bilibili.com"
     if range_header:
         headers["Range"] = range_header
+    getter = requests.get if requests.get is not _requests_get else _CDN_SESSION.get
     try:
-        upstream = requests.get(item["url"], headers=headers, stream=True,
-                                timeout=_UPSTREAM_TIMEOUT)
+        upstream = getter(item["url"], headers=headers, stream=True,
+                          timeout=_UPSTREAM_TIMEOUT)
     except requests.RequestException as exc:
         log.warning("在线播放上游请求失败: %s", exc)
         return None, ("上游请求失败", "upstream_error")

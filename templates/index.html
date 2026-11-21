@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-{% from "_page_toolbar.html" import lib_toolbar %}
 <html lang="zh-CN">
 <head>
 <meta charset="UTF-8">
@@ -8,7 +7,7 @@
 <meta name="referrer" content="no-referrer">
 <meta name="color-scheme" content="light dark">
 <title>bilibili download</title>
-<link rel="stylesheet" href="/static/css/main.css?v=20261116x">
+<link rel="stylesheet" href="/static/css/main.css?v=20261121d">
 </head>
 <body>
 <a class="skip-link" href="#main-content">跳到主要内容</a>
@@ -24,60 +23,59 @@
       <span>bilibili 下载</span>
     </div>
     <nav id="nav" aria-label="主导航">
-      <button type="button" class="nav-item active" data-page="home" aria-label="首页推荐" aria-current="page" onclick="goPage('home')">
+      <button type="button" class="nav-item active" data-page="home" aria-label="首页" aria-current="page" onclick="goPage('home')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
-        <span>首页推荐</span>
+        <span>首页</span>
       </button>
-      <button type="button" class="nav-item" data-page="feed" aria-label="关注动态" onclick="goPage('feed')">
+      <button type="button" class="nav-item" data-page="feed" aria-label="动态" onclick="goPage('feed')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 11a9 9 0 0 1 9 9"/><path d="M4 4a16 16 0 0 1 16 16"/><circle cx="5" cy="19" r="1" fill="currentColor" stroke="none"/></svg>
-        <span>关注动态</span>
+        <span>动态</span>
       </button>
-      <button type="button" class="nav-item" data-page="subs" aria-label="关注 UP" onclick="goPage('subs')">
+      <button type="button" class="nav-item" data-page="subs" aria-label="UP" onclick="goPage('subs')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
-        <span>关注 UP</span>
+        <span>UP</span>
       </button>
-      <button type="button" class="nav-item" data-page="seasons" aria-label="追更合集" onclick="goPage('seasons')">
+      <button type="button" class="nav-item" data-page="seasons" aria-label="合集" onclick="goPage('seasons')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polygon points="12 2 2 7 12 12 22 7 12 2"/><polyline points="2 17 12 22 22 17"/><polyline points="2 12 12 17 22 12"/></svg>
-        <span>追更合集</span>
+        <span>合集</span>
       </button>
-      <button type="button" class="nav-item" data-page="fav" aria-label="我的收藏" onclick="goPage('fav')">
+      <button type="button" class="nav-item" data-page="fav" aria-label="收藏" onclick="goPage('fav')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"/></svg>
-        <span>我的收藏</span>
+        <span>收藏</span>
       </button>
-      <button type="button" class="nav-item" data-page="later" aria-label="稍后再看" onclick="goPage('later')">
+      <button type="button" class="nav-item" data-page="later" aria-label="待看" onclick="goPage('later')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
-        <span>稍后再看</span>
+        <span>待看</span>
       </button>
-      <button type="button" class="nav-item" data-page="history" aria-label="观看历史" onclick="goPage('history')">
+      <button type="button" class="nav-item" data-page="history" aria-label="历史" onclick="goPage('history')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></svg>
-        <span>观看历史</span>
+        <span>历史</span>
       </button>
-      <button type="button" class="nav-item" data-page="downloads" aria-label="下载记录" onclick="goPage('downloads')">
+      <button type="button" class="nav-item" data-page="downloads" aria-label="下载" onclick="goPage('downloads')">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></svg>
-        <span>下载记录</span>
+        <span>下载</span>
         <span class="nav-badge" id="dl-badge" style="display:none;"></span>
       </button>
     </nav>
+    <div class="tb-search search-wrap" role="search">
+      <svg class="search-icon" aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+      <input type="text" id="tb-search" class="search-input lib-search" aria-label="搜索当前页面" placeholder="搜索" autocomplete="off" oninput="applyLibFilter()">
+      <button class="search-clear" type="button" hidden aria-label="清除">×</button>
+    </div>
     <div class="tb-right">
-      <button class="primary tb-btn" onclick="openDrawer('newdl')">
-        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
-        <span>新建下载</span>
-      </button>
-      <button class="tb-ic" id="tb-refresh" onclick="refreshCurrentPage()" title="刷新当前页" aria-label="刷新当前页">
-        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
-      </button>
       <button class="tb-ic view-btn" id="tb-view" onclick="toggleLibView()" title="切换列表/网格视图" aria-label="切换列表/网格视图">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="14" y="14" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/></svg>
       </button>
       <button class="tb-ic" id="tb-theme" onclick="toggleTheme()" title="切换昼夜模式" aria-label="切换昼夜模式">
         <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="currentColor" stroke="none"><path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/></svg>
       </button>
-      <button class="tb-ic" onclick="openDrawer('account')" title="设置" aria-label="设置">
-        <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.6-2-3.4-2.4 1a7 7 0 0 0-2-1.2L14 3h-4l-.5 2.6a7 7 0 0 0-2 1.2l-2.4-1-2 3.4 2 1.6A7 7 0 0 0 5 12a7 7 0 0 0 .1 1.2l-2 1.6 2 3.4 2.4-1a7 7 0 0 0 2 1.2L10 21h4l.5-2.6a7 7 0 0 0 2-1.2l2.4 1 2-3.4-2-1.6A7 7 0 0 0 19 12z"/></svg>
-      </button>
+      <!-- 设置齿轮已删(2026-11-21):与头像同调 openDrawer('account'),头像为账号抽屉唯一入口 -->
       <button class="tb-acct" onclick="openDrawer('account')" title="账号" aria-label="账号">
-        <i class="dot" id="account-dot"></i>
-        <span id="account-side-text">未登录</span>
+        <span class="acct-ava">
+          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <img id="acct-face-top" alt="" hidden>
+          <i class="dot" id="account-dot"></i>
+        </span>
       </button>
     </div>
   </header>
@@ -89,25 +87,27 @@
       <!-- ===== 页面:首页推荐(B 站首页个性化推荐流) ===== -->
       <div class="page active" data-page="home">
         <div class="page-head">
-          <h1 class="sr-only">首页推荐</h1>
-          {{ lib_toolbar('搜全站视频，回车搜索') }}
+          <h1 class="sr-only">首页</h1>
+          <div class="sub-info" id="meta-home"></div>
         </div>
-        <div class="sub-info" id="meta-home"></div>
         <div id="list-home" class="lib-list"></div>
       </div>
 
       <!-- ===== 页面:下载记录(已完成下载的视频网格) ===== -->
       <div class="page" data-page="downloads">
         <div class="page-head">
-          <h1 class="sr-only">下载记录</h1>
-          {{ lib_toolbar('搜索标题 / UP 主') }}
-        </div>
-        <div class="sub-info">
-          <span id="dl-stats-line"></span><span id="meta-downloads"></span>
-          <span class="si-actions">
-            <button class="quiet" id="clear-terminal-btn" onclick="clearAllRecords()">清除已结束记录</button>
-            <button class="quiet" id="clean-invalid-btn" onclick="clearInvalidRecords()">清除失败/失效记录</button>
-          </span>
+          <h1 class="sr-only">下载</h1>
+          <div class="sub-info">
+            <span id="dl-stats-line"></span><span id="meta-downloads"></span>
+            <span class="si-actions">
+              <button class="primary" onclick="openDrawer('newdl')">
+                <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+                <span>新建下载</span>
+              </button>
+              <button class="ghost" id="clear-terminal-btn" onclick="clearAllRecords()">清除已结束记录</button>
+              <button class="ghost" id="clean-invalid-btn" onclick="clearInvalidRecords()">清除失败/失效记录</button>
+            </span>
+          </div>
         </div>
         <div id="list-downloads" class="lib-list"></div>
       </div>
@@ -115,37 +115,32 @@
       <!-- ===== 页面:观看历史 ===== -->
       <div class="page" data-page="history">
         <div class="page-head">
-          <h1 class="sr-only">观看历史</h1>
-          {{ lib_toolbar('搜索标题 / UP 主') }}
+          <h1 class="sr-only">历史</h1>
+          <div class="sub-info" id="meta-history"></div>
         </div>
-        <div class="sub-info" id="meta-history"></div>
         <div id="list-history" class="lib-list"></div>
       </div>
 
       <!-- ===== 页面:关注动态 ===== -->
       <div class="page" data-page="feed">
         <div class="page-head">
-          <h1 class="sr-only">关注动态</h1>
-          {{ lib_toolbar('搜索标题 / UP 主') }}
+          <h1 class="sr-only">动态</h1>
+          <div class="sub-info" id="meta-feed"></div>
         </div>
-        <div class="sub-info" id="meta-feed"></div>
         <div id="list-feed" class="lib-list"></div>
       </div>
 
       <!-- ===== 页面:关注 UP(自动下载订阅管理) ===== -->
       <div class="page" data-page="subs">
         <div class="page-head">
-          <h1 class="sr-only">关注 UP</h1>
-          {{ lib_toolbar('搜全站 UP 主，回车搜索') }}
-          <div class="ph-add" aria-label="添加 UP 订阅">
-            <input type="text" id="up-add-input" class="tb-input" aria-label="UP 主页链接或 mid" placeholder="粘贴 UP 主页链接或 mid;加入后新投稿自动进入下载队列">
-            <button class="primary" id="up-add-btn" onclick="upAdd()">添加</button>
+          <h1 class="sr-only">UP</h1>
+          <div class="sub-info">
+            <span id="meta-subs"></span>
+            <span id="auto-refresh-subs-status" class="auto-refresh-status" role="status" aria-live="polite"></span>
+          </div>
+          <div class="ph-add" aria-label="检查 UP 新视频">
             <button class="ghost" id="up-check-btn" onclick="upCheckNow(this)">立即检查新视频</button>
           </div>
-        </div>
-        <div class="sub-info">
-          <span id="meta-subs"></span>
-          <span id="auto-refresh-subs-status" class="auto-refresh-status" role="status" aria-live="polite"></span>
         </div>
         <div id="list-subs" class="lib-list"></div>
       </div>
@@ -157,10 +152,9 @@
             <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
             返回
           </button>
-          <h1 id="season-page-title" class="sr-only">追更合集</h1>
-          {{ lib_toolbar('搜索合集名称') }}
+          <h1 id="season-page-title" class="sr-only">合集</h1>
+          <div class="sub-info" id="meta-seasons"></div>
         </div>
-        <div class="sub-info" id="meta-seasons"></div>
         <div id="season-overview"></div>
         <div id="list-seasons" class="lib-list" style="display:none;"></div>
       </div>
@@ -172,10 +166,9 @@
             <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="19" y1="12" x2="5" y2="12"/><polyline points="12 19 5 12 12 5"/></svg>
             返回
           </button>
-          <h1 id="fav-page-title" class="sr-only">我的收藏</h1>
-          {{ lib_toolbar('搜索收藏夹名称', search_id='fav-search', search_style='display:none;') }}
+          <h1 id="fav-page-title" class="sr-only">收藏</h1>
+          <div class="sub-info" id="meta-fav"></div>
         </div>
-        <div class="sub-info" id="meta-fav"></div>
         <div id="fav-folder-list"></div>
         <div id="list-fav" class="lib-list" style="display:none;"></div>
       </div>
@@ -183,10 +176,9 @@
       <!-- ===== 页面:稍后再看 ===== -->
       <div class="page" data-page="later">
         <div class="page-head">
-          <h1 class="sr-only">稍后再看</h1>
-          {{ lib_toolbar('搜索标题 / UP 主') }}
+          <h1 class="sr-only">待看</h1>
+          <div class="sub-info" id="meta-later"></div>
         </div>
-        <div class="sub-info" id="meta-later"></div>
         <div id="list-later" class="lib-list"></div>
       </div>
 
@@ -206,15 +198,8 @@
     <i class="ab-sep" aria-hidden="true"></i>
     <!-- 执行区:下载记录页在此换成删除。不可恢复的「删文件」用实心红,只删记录用描边 -->
     <span class="ab-actions">
-      <select class="lib-quality" id="ab-quality" aria-label="所选视频清晰度">
-        <option value="">最高画质(自动)</option>
-        <option value="2160P">4K</option>
-        <option value="1080P60">1080P60帧</option>
-        <option value="1080P">1080P</option>
-        <option value="720P60">720P60帧</option>
-        <option value="720P">720P</option>
-        <option value="音频">仅音频</option>
-      </select>
+      <!-- 批量档位:长沙发分段(复用自动下载档位字典、无「不下载」档),分段由 lib.js 启动时渲染 -->
+      <span class="ab-quality" id="ab-quality" role="group" aria-label="所选视频清晰度"></span>
       <button class="primary" id="ab-download-btn" onclick="libDownload()">下载选中</button>
       <button class="danger" id="ab-del-rec" style="display:none;" onclick="delSelected(false)">删除记录</button>
       <button class="danger-solid" id="ab-del-file" style="display:none;" onclick="delSelected(true)">删除记录 + 文件</button>
@@ -467,6 +452,6 @@
   </form>
 </dialog>
 
-<script type="module" src="/static/js/app.js?v=20261116x"></script>
+<script type="module" src="/static/js/app.js?v=20261121a"></script>
 </body>
 </html>

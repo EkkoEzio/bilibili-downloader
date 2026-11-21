@@ -24,34 +24,35 @@ const AUTH_SOURCE_LABELS = {
   none: '未选择',
 };
 
-/* 顶栏先用上次会话的账号名渲染,状态请求回来前不闪「未登录」;
+/* 顶栏先用上次会话的头像与在线标记渲染,状态请求回来前不闪「未登录」;
    真实状态(含已退出)由 renderLoginStatus 校验后修正。 */
 try {
   const last = JSON.parse(localStorage.getItem('bd_acct_last') || 'null');
   if (last && last.uname) {
-    const sideText = document.getElementById('account-side-text');
     const dot = document.getElementById('account-dot');
-    if (sideText && dot) {
-      sideText.textContent = last.uname;
+    if (dot) {
       dot.className = 'dot ok';
       setAccountFace(last.face);
     }
   }
 } catch {}
 
-/* 账号头像:nav 接口自带 face(2026-11-18 用户要求);加载失败回落占位图标。 */
+/* 账号头像:nav 接口自带 face(2026-11-18 用户要求);顶栏与抽屉两处一起落图,
+   加载失败回落占位图标。 */
 function setAccountFace(face) {
-  const img = document.getElementById('acct-face');
-  if (!img) return;
+  const imgs = [document.getElementById('acct-face'), document.getElementById('acct-face-top')].filter(Boolean);
+  if (!imgs.length) return;
   const url = safeHttpUrl(face || '', { httpsOnly: true });
-  if (!url) {
-    img.hidden = true;
-    img.removeAttribute('src');
-    return;
+  for (const img of imgs) {
+    if (!url) {
+      img.hidden = true;
+      img.removeAttribute('src');
+      continue;
+    }
+    img.onerror = () => { img.hidden = true; img.removeAttribute('src'); };
+    img.src = url;
+    img.hidden = false;
   }
-  img.onerror = () => { img.hidden = true; img.removeAttribute('src'); };
-  img.src = url;
-  img.hidden = false;
 }
 
 function invalidateLoginStatus() {
@@ -132,21 +133,19 @@ function renderLoginStatus(status, networkError = '') {
   const errorMessage = networkError || r.error || '';
   _loggedIn = loggedIn;
 
-  const sideText = document.getElementById('account-side-text');
   const dot = document.getElementById('account-dot');
   const acctName = document.getElementById('acct-name');
   const acctSub = document.getElementById('acct-sub');
   const acctError = document.getElementById('acct-error');
   const logoutBtn = document.getElementById('logout-btn');
   const tabsWrap = document.getElementById('login-tabs-wrap');
-  if (!sideText || !dot || !acctName || !acctSub || !logoutBtn || !tabsWrap) return;
+  if (!dot || !acctName || !acctSub || !logoutBtn || !tabsWrap) return;
 
   if (loggedIn) {
     const vip = r.vip ? ' · 大会员' : '';
     const uname = r.uname || '已登录账号';
     try { localStorage.setItem('bd_acct_last', JSON.stringify({ uname, face: r.face || '' })); } catch {}
     setAccountFace(r.face);
-    sideText.textContent = uname;
     dot.className = 'dot ok';
     acctName.textContent = uname + vip;
     acctSub.textContent = `账号已验证 · 来源：${sourceLabel(source)}`;
@@ -155,7 +154,6 @@ function renderLoginStatus(status, networkError = '') {
   } else {
     try { localStorage.removeItem('bd_acct_last'); } catch {}
     setAccountFace('');
-    sideText.textContent = networkError ? '状态未知' : '未登录';
     dot.className = 'dot warn';
     acctName.textContent = networkError ? '无法确认登录状态' : '未登录';
     if (source === 'none') {

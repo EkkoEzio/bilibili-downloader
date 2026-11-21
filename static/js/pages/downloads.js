@@ -520,10 +520,11 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   const revealButton = it.task_id
     ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${escapeAttr(it.title || '')}" onclick="event.stopPropagation();revealTask(${revealArg})">${icon('folder')}</button>`
     : '';
-  // 「在 Finder 中显示」提到播放键上方(同尺寸圆钮,2026-11-18 用户要求),
-  // thumb-row 只留时长胶囊,不再把时间顶得左移。
+  // 「在 Finder 中显示」挪到元信息行与关注胶囊同排(2026-11-19 用户要求,
+  // 与 lib.js 已完成卡同一位置);封面动作柱只留播放键 + 时长,列表小封面
+  // 不会再被三件套撑爆裁切。
   const thumb = `<div class="thumb-wrap">${checkHtml}<img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">`
-    + `<div class="thumb-actions">${revealButton}${mainPlay}<div class="thumb-row">${durHtml}</div></div></div>`;
+    + `<div class="thumb-actions">${mainPlay}<div class="thumb-row">${durHtml}</div></div></div>`;
   const uploaderMid = safeDecimalId(it.uploader_mid);
   const followChip = uploaderMid
     ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`
@@ -537,7 +538,7 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
     ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
     : upName];
   if (it.view_at) identParts.push(escapeHtml(formatTime(it.view_at)));
-  const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>${followChip}`;
+  const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span><span class="vi-meta-actions">${revealButton}${followChip}</span>`;
   const warn = taskWarnHtml(it);
   const domId = escapeAttr(String(it.task_id ?? ''));
   if (!isGrid) {
@@ -709,8 +710,9 @@ async function loadStats() {
 export async function libDownload() {
   const selected = selectedVisibleItems();
   if (selected.length === 0) { toast('请至少勾选一项'); return; }
-  const qualitySelect = document.querySelector('.lib-quality');
-  const label = qualitySelect ? qualitySelect.value : '';
+  /* 档位值存在批量条沙发容器 data-value 上(lib.js 渲染/点选维护) */
+  const abQuality = document.getElementById('ab-quality');
+  const label = abQuality ? (abQuality.dataset.value || '') : '';
   let items = selected.map((it) => ({
     url: it.url, title: it.title, page: it.page || pageFromUrl(it.url),
     thumbnail: it.thumbnail || '', uploader: it.uploader || '',

@@ -68,10 +68,9 @@ function showFolders() {
   document.getElementById('fav-folder-list').style.display = '';
   document.getElementById('list-fav').style.display = 'none';
   document.getElementById('fav-back-btn').style.display = 'none';
-  document.getElementById('fav-search').style.display = '';
-  document.getElementById('fav-page-title').textContent = '我的收藏';
+  document.getElementById('fav-page-title').textContent = '收藏';
   document.getElementById('fav-page-title').classList.add('sr-only');
-  const search = document.getElementById('fav-search');
+  const search = document.getElementById('tb-search');
   if (search) search.placeholder = '搜索收藏夹名称';
   document.getElementById('meta-fav').textContent =
     _favFolders.length ? `共 ${_favFolders.length} 个收藏夹` : '';
@@ -232,10 +231,9 @@ function showList(title) {
   document.getElementById('fav-folder-list').style.display = 'none';
   document.getElementById('list-fav').style.display = '';
   document.getElementById('fav-back-btn').style.display = '';
-  document.getElementById('fav-search').style.display = '';
   document.getElementById('fav-page-title').textContent = title;
   document.getElementById('fav-page-title').classList.remove('sr-only');
-  const search = document.getElementById('fav-search');
+  const search = document.getElementById('tb-search');
   if (search) search.placeholder = '搜索标题 / UP 主';
 }
 

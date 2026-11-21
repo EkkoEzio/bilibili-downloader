@@ -80,7 +80,6 @@ Object.assign(window, {
   // 关注 UP(自动下载订阅管理)
   loadSubscriptions: subs.loadSubscriptions,
   refreshSubs: subs.refreshSubs,
-  upAdd: subs.upAdd,
   upCheckNow: subs.upCheckNow,
   upAutoPick: subs.upAutoPick,
   upToggleFollow: subs.upToggleFollow,
@@ -93,6 +92,17 @@ Object.assign(window, {
   cancelTask: downloads.cancelTask,
   revealTask: downloads.revealTask,
   resolveTaskConflict: downloads.resolveTaskConflict,
+});
+
+/* Cmd/Ctrl+R 刷新当前页,不整页重载(整页重载会回到首页,2026-11-21 用户要求)。
+   走顶栏同款「刷新当前页」分发:当前页自己的刷新语义优先(订阅页绕缓存、
+   收藏/追更兼顾详情态)。Cmd/Ctrl+Shift+R 不拦,保留硬刷新逃生口。 */
+window.addEventListener('keydown', (event) => {
+  if ((event.metaKey || event.ctrlKey) && !event.shiftKey && !event.altKey
+      && (event.key === 'r' || event.key === 'R')) {
+    event.preventDefault();
+    lib.refreshCurrentPage();
+  }
 });
 
 /* ---------- 账号代际与静态可访问名称 ---------- */

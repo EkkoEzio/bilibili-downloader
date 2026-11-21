@@ -21,7 +21,8 @@ import { warmVisibleCovers } from './player.js';
 import { escapeHtml, escapeAttr, sig, formatDuration, formatTime, formatDay,
          safeHttpUrl, safeDecimalId, bvFromUrl, pageFromUrl, nonNegativeInt } from './util.js';
 import { getJSON, isAbortError } from './net.js';
-import { isSearchMode } from './search.js';
+import { isSearchMode, exitSearch } from './search.js';
+import { AUTO_QUALITY_SEGMENTS } from './quality.js';
 
 /* ---------- 共享状态（所有标准列表页共用） ---------- */
 export const state = {
@@ -124,6 +125,29 @@ export function registerPage(name, ctrl) {
 export function page(name) { return PAGES[name || state.mode]; }
 
 /* ---------- 页面路由 ---------- */
+/* 顶栏搜索框:全站唯一,placeholder 跟随当前页(2026-11-21 搜索栏收进顶栏,
+   各页页头工具条的搜索框退役)。site-search 页(home/subs)回车/防抖自动搜,
+   其余页本地过滤,行为与原每页搜索框一致。 */
+const PAGE_SEARCH_PLACEHOLDER = {
+  home: '搜全站视频，回车搜索',
+  subs: '搜全站 UP 主，回车搜索',
+  seasons: '搜索合集名称',
+  fav: '搜索收藏夹名称',
+  downloads: '搜索标题 / UP 主',
+  history: '搜索标题 / UP 主',
+  feed: '搜索标题 / UP 主',
+  later: '搜索标题 / UP 主',
+};
+
+function syncTopSearch(name) {
+  const input = document.getElementById('tb-search');
+  if (!input) return;
+  input.value = '';
+  input.placeholder = PAGE_SEARCH_PLACEHOLDER[name] || '搜索';
+  const clear = input.closest('.search-wrap')?.querySelector('.search-clear');
+  if (clear) clear.hidden = true;
+}
+
 export function goPage(name, skipLoad) {
   document.querySelectorAll('.nav-item').forEach((item) => {
     const active = item.dataset.page === name;
@@ -136,6 +160,9 @@ export function goPage(name, skipLoad) {
   if (LIB_PAGES.includes(name)) {
     const previous = page(state.mode);
     if (previous && previous !== page(name) && previous.deactivate) previous.deactivate();
+    // 离开的页面若在站内搜索态:主动退出并撤提示条(换页清输入是程序赋值,
+    // 不触发 input 事件,搜索态不会自行解除,提示条会残留到下次回到该页)。
+    if (isSearchMode(state.mode)) exitSearch(state.mode);
     cancelCachedLoads();
     state.mode = name;
     replaceItems([]);
@@ -147,9 +174,7 @@ export function goPage(name, skipLoad) {
     updateActionBar();
     const ctrl = page(name);
     if (ctrl.reset) ctrl.reset();
-    const pg = document.querySelector(`.page[data-page="${name}"]`);
-    const s = pg && pg.querySelector('.lib-search');
-    if (s) s.value = '';
+    syncTopSearch(name);
     if (!skipLoad) refreshLib();
   }
 }
@@ -159,9 +184,10 @@ export function refreshLib() {
   if (ctrl && ctrl.load) ctrl.load();
 }
 
-/* 顶栏刷新:当前页自己的刷新动作优先(订阅页 refreshSubs 绕缓存、
+/* 当前页刷新:页自己的刷新动作优先(订阅页 refreshSubs 绕缓存、
    收藏/追更的 favRefresh/seasonRefresh 兼顾详情态),否则统一 load()。
-   各页原工具条刷新按钮已收进顶栏(2026-11-18 用户要求)。 */
+   触发入口是 Cmd/Ctrl+R 拦截;顶栏刷新按钮已删(2026-11-21 用户要求,
+   与快捷键同一函数属重复入口)。 */
 export function refreshCurrentPage() {
   const ctrl = page();
   if (ctrl && typeof ctrl.refresh === 'function') { ctrl.refresh(); return; }
@@ -492,6 +518,7 @@ export function renderLibList(pairs, container) {
       ? `<span class="uc-badge ok">${icon('check')}已下载</span>`
       : (dlState === 'active' ? '<span class="uc-badge dl">下载中</span>' : '');
     const pct = it.watched_pct || 0;
+    // 观看进度条压在封面底边(2026-11-18 用户要求,不再挂卡片正文底部)
     const showProgress = it.duration && pct > 0 && pct < 100;
     const watchbar = showProgress
       ? `<div class="vi-watchbar" role="progressbar" aria-label="观看进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}"><i style="width:${Math.min(pct, 100)}%"></i></div>`
@@ -514,7 +541,14 @@ export function renderLibList(pairs, container) {
       ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`
         + ` data-name="${escapeAttr(it.uploader || '')}" aria-pressed="false" aria-label="关注 ${escapeAttr(it.uploader || '')}">关注</button>`
       : '';
-    const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span>${followChip}`;
+    const taskArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
+    // 「在 Finder 中显示」:下载记录专属操作,放元信息行与关注胶囊同排
+    // (2026-11-19 用户要求,找一处网格/列表两态都放得下的位置——封面动作柱
+    // 在列表 150px 小封面上放三件套会被裁掉一半)。文件夹图标与播放三角
+    // 区分开,不抢「谁播谁定位」的语义。
+    const locateHtml = (state.mode === 'downloads' && it.task_id)
+      ? `<button class="vi-locate" type="button" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${itemLabel}" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('folder')}</button>` : '';
+    const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span><span class="vi-meta-actions">${locateHtml}${followChip}</span>`;
     const targetUrl = safeHttpUrl(it.url);
     // 已下载的条目:标题带 data-play-task,点一下就地播放(见 player.js);
     // 没下载过的仍是普通 B 站链接,不拦截、不改语义。
@@ -539,12 +573,7 @@ export function renderLibList(pairs, container) {
       : escapeHtml(it.title);
     const durHtml = it.duration ? `<span class="thumb-dur">${escapeHtml(formatDuration(it.duration))}</span>` : '';
     const thumbnail = safeHttpUrl(it.thumbnail, { httpsOnly: true });
-    const taskArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
-    // 「在 Finder 中显示」用文件夹图标,提到播放键上方(同尺寸圆钮,
-    // 2026-11-18 用户要求);两个都用播放三角的话,分不清谁播谁定位。
-    const playHtml = (state.mode === 'downloads' && it.task_id)
-      ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${itemLabel}" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('folder')}</button>` : '';
-    const thumbCls = playHtml ? 'thumb-wrap has-play' : 'thumb-wrap';
+    const thumbCls = 'thumb-wrap';
     const warnHtml = _itemExtras.warnHtml(it);
     if (!isGrid) {
       return `
@@ -554,16 +583,15 @@ export function renderLibList(pairs, container) {
           <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
           ${coverStats}
           <div class="thumb-actions">
-            ${playHtml}
             ${mainPlay}
             <div class="thumb-row">${durHtml}</div>
           </div>
+          ${watchbar}
           ${coverBadgeHtml}
         </div>
         <div class="lv-body">
           <div class="vi-title" title="${itemLabel}">${titleHtml}</div>
           <div class="vi-meta">${metaHtml}</div>
-          ${watchbar}
           ${warnHtml}
         </div>
       </div>`;
@@ -575,15 +603,14 @@ export function renderLibList(pairs, container) {
         <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
         ${coverStats}
         <div class="thumb-actions">
-          ${playHtml}
           ${mainPlay}
           <div class="thumb-row">${durHtml}</div>
         </div>
+        ${watchbar}
         ${coverBadgeHtml}
       </div>
       <div class="vi-title" title="${itemLabel}">${titleHtml}</div>
       <div class="vi-meta">${metaHtml}</div>
-      ${watchbar}
       ${warnHtml}
     </div>`;
   }).join('');
@@ -703,8 +730,8 @@ export function toggleLibView() {
 
 /* ---------- 搜索过滤 ---------- */
 export function getLibSearchQuery() {
-  const pg = document.querySelector('.page.active');
-  const el = pg && pg.querySelector('.lib-search');
+  // 搜索框已收进顶栏(全站唯一),过滤词就是它的当前值。
+  const el = document.getElementById('tb-search');
   return el ? el.value.trim().toLowerCase() : '';
 }
 
@@ -837,3 +864,33 @@ export function updateActionBar() {
   show('ab-del-rec', isDelete);
   show('ab-del-file', isDelete);
 }
+
+/* ---------- 批量操作条的档位沙发 ---------- */
+/* 复用自动下载档位字典 AUTO_QUALITY_SEGMENTS(与后端 up_list.QUALITY_CHOICES 绑定、
+   测试锁定两侧),只滤掉「不自动下载」——批量下载是明确动作,没有不下载语义。
+   所选档位存在容器 data-value 上,libDownload 从这里读;默认选中首段「最高」。 */
+function renderAbQuality() {
+  const host = document.getElementById('ab-quality');
+  if (!host) return;
+  const cur = host.dataset.value || '';
+  host.innerHTML = AUTO_QUALITY_SEGMENTS
+    .filter(([v]) => v !== '__off')
+    .map(([v, text]) => `<button type="button" class="ab-q-seg${v === cur ? ' on' : ''}" data-q="${v}" aria-pressed="${v === cur ? 'true' : 'false'}">${text}</button>`)
+    .join('');
+}
+
+/* 点选切换:document 级事件委托,与 data-lib-retry 同一套模式 */
+document.addEventListener('click', (e) => {
+  const seg = e.target.closest('#ab-quality .ab-q-seg');
+  if (!seg) return;
+  const host = seg.parentElement;
+  host.dataset.value = seg.dataset.q || '';
+  host.querySelectorAll('.ab-q-seg').forEach((s) => {
+    const on = s === seg;
+    s.classList.toggle('on', on);
+    s.setAttribute('aria-pressed', on ? 'true' : 'false');
+  });
+});
+
+renderAbQuality();
+

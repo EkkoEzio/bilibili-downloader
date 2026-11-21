@@ -306,6 +306,62 @@ def fetch_watchlater(*, context=None) -> list[dict]:
     return out
 
 
+def fetch_video_view(bvid: str) -> Optional[dict]:
+    """view 接口:单视频的标题/时长/分 P cid。任何失败返回 None。
+
+    在线播放解析的快速路径第一步:yt-dlp 完整提取一次要 2s+(秒级 CPU 大户),
+    这个轻接口实测约 0.25s。失败(番剧走不了 BV、风控、未登录)由调用方
+    回落 yt-dlp,行为与旧路径一致。
+    """
+    try:
+        context, cookiejar = _auth_session(None)
+    except Exception:
+        return None
+    if cookiejar is None:
+        return None
+    try:
+        resp = _get("https://api.bilibili.com/x/web-interface/view",
+                    cookies=cookiejar, headers=BROWSER_HEADERS,
+                    params={"bvid": bvid}, timeout=10)
+        data = _safe_json(resp)
+        if not isinstance(data, dict) or data.get("code") != 0:
+            return None
+        view = data.get("data") or None
+        _ensure_context_current(context)
+        return view
+    except Exception:
+        return None
+
+
+def fetch_playurl(bvid: str, cid: int) -> Optional[dict]:
+    """playurl 接口:按登录态返回 DASH 直链(与官方网页播放器同源)。
+
+    未签名的历史端点对登录 Cookie 仍完整生效(2026-11-20 实测 code=0);
+    fnval=4048 拉全 DASH 标志位(含 HDR/4K/杜比/FLAC),fourk=1 允许 4K。
+    失败返回 None,调用方回落 yt-dlp。
+    """
+    try:
+        context, cookiejar = _auth_session(None)
+    except Exception:
+        return None
+    if cookiejar is None:
+        return None
+    try:
+        resp = _get("https://api.bilibili.com/x/player/playurl",
+                    cookies=cookiejar, headers=BROWSER_HEADERS,
+                    params={"bvid": bvid, "cid": cid, "qn": 127,
+                            "fnval": 4048, "fourk": 1},
+                    timeout=10)
+        data = _safe_json(resp)
+        if not isinstance(data, dict) or data.get("code") != 0:
+            return None
+        payload = data.get("data") or None
+        _ensure_context_current(context)
+        return payload
+    except Exception:
+        return None
+
+
 def fetch_fav_folders(*, context=None) -> list[dict]:
     """列出我的收藏夹列表。"""
     context, cookiejar = _auth_session(context)

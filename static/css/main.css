@@ -99,14 +99,27 @@ body.action-bar-open .content{padding-bottom:150px}
 .nav-badge{display:none;min-width:16px;height:16px;padding:0 4px;border-radius:8px;background:var(--accent);
   color:#fff;font-family:var(--mono);font-size:10px;line-height:16px;text-align:center;font-weight:600}
 .tb-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
-/* 顶栏「新建下载」复用 button.primary(index.html 写 class="primary tb-btn",
-   tb-btn 只保留窄窗响应式),同一颗按钮不再有两套样式 */
+/* 顶栏搜索框(2026-11-21 收进顶栏):导航右侧、功能按钮左侧,弹填剩余宽度 */
+.tb-search{flex:1;max-width:420px;min-width:140px}
+.tb-search .search-input{width:100%}
 .tb-ic{width:32px;height:32px;border:1px solid var(--line);border-radius:6px;display:grid;place-items:center;color:var(--text-soft)}
 .tb-ic:hover{color:var(--text-main);border-color:var(--text-mute)}
-.tb-acct{display:flex;align-items:center;gap:7px;height:32px;padding:0 12px;border:1px solid var(--line);
+.tb-acct{width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;
   border-radius:6px;color:var(--text-soft);font-size:12.5px;max-width:180px}
-.tb-acct:hover{border-color:var(--accent-bright);color:var(--text-main)}
-.tb-acct #account-side-text{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tb-acct:hover{border-color:var(--accent-bright)}
+/* 顶栏头像钮(2026-11-18 用户要求:不展示用户名,直接展示头像):
+   占位 SVG / 头像图叠满圆形,QQ 式在线标记挂在头像右下角,
+   描边用顶栏底色制造「从头像上裁出来」的观感 */
+.acct-ava{position:relative;width:28px;height:28px;border-radius:50%}
+.acct-ava svg{position:absolute;inset:0;width:100%;height:100%;padding:4px;
+  box-sizing:border-box;border-radius:50%;background:var(--bg-soft);color:var(--text-mute)}
+.acct-ava img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%}
+.acct-ava .dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;
+  border:2px solid var(--card);box-sizing:border-box;background:var(--green);z-index:2}
+.acct-ava .dot.ok{box-shadow:none}
+.acct-ava .dot.warn{background:var(--red-solid);box-shadow:none}
+.acct-ava .dot.warn::after{content:"×";position:absolute;inset:0;color:#fff;font-size:8px;
+  font-weight:700;line-height:8px;text-align:center;font-family:var(--mono)}
 .dot{width:7px;height:7px;border-radius:50%;background:var(--text-mute);flex-shrink:0}
 .dot.ok{background:var(--green);box-shadow:0 0 0 3px var(--green-soft)}
 .dot.warn{background:var(--amber);box-shadow:0 0 0 3px var(--amber-soft)}
@@ -114,19 +127,21 @@ body.action-bar-open .content{padding-bottom:150px}
 /* ==================== 页面与页头 ==================== */
 .page{display:none}
 .page.active{display:block}
-.page-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:8px}
+.page-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
 /* 页标题由 sr-only 提升为可见(演示版同款) */
 .page-head h1{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;
   font-size:20px;font-weight:600;letter-spacing:-.6px}
 .ph-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ph-add{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ph-add .tb-input{width:360px;max-width:100%;border-radius:6px}
-/* 信息行全部页面统一预留 28px(控件紧凑档):下载页这一行里有 28px 的 quiet 按钮,
-   其余页只有文字;min-height 若按文字 20px 给,下载页整行被撑到 28px,
-   首列卡片比其他页低 8px(2026-11-17 实测 162 vs 154)。统一预留,所有页面
-   的首行卡片落在同一水平线;按钮档位不动。 */
+/* 信息行(2026-11-21 起并入 page-head 标题行右侧,flex:1 占满余量,页尾动作钮
+   自动靠右);全部页面统一预留控件档高度 var(--ctl-h):下载页这一行里有 32px 的
+   按钮(新建下载主钮+两颗 ghost 清除钮,清除钮与「立即检查新视频」同款),
+   其余页只有文字;行高若按文字给,带按钮的页整行被撑高,首列卡片比其他页低
+   (2026-11-17 实测 162 vs 154,差 8px)。统一预留,所有页面的首行卡片落在同一
+   水平线。 */
 .sub-info{display:flex;align-items:center;gap:14px;flex-wrap:wrap;color:var(--text-mute);font-size:12.5px;
-  margin:0 0 16px;min-height:28px}
+  flex:1;min-width:0;margin:0;min-height:var(--ctl-h)}
 .sub-info .si-actions{display:flex;gap:8px;margin-left:auto}
 button.primary{display:inline-flex;align-items:center;gap:6px;height:var(--ctl-h);padding:0 15px;border-radius:100px;
   background:var(--accent);color:#fff;font-size:13px;font-weight:500;transition:background .12s}
@@ -170,7 +185,6 @@ button.danger-solid:hover{filter:brightness(1.08)}
 select{padding-right:26px;border-radius:6px;appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239499a0' stroke-width='2.4' stroke-linecap='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 6px center}
-.lib-quality{min-width:120px}
 
 /* ==================== 列表/卡墙 ==================== */
 .lib-list{display:flex;flex-direction:column;gap:8px}
@@ -198,11 +212,10 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .thumb-wrap img{width:100%;height:100%;object-fit:cover;transition:transform .2s}
 .lib-grid .video-item:hover .thumb-wrap img{transform:scale(1.04)}
 /* 网格视频卡正文:留白与 UP 卡 .uc-text、收藏卡 .fc-title 同规格(左右13,上11);
-   标题固定占两行,同一行卡片的元信息/进度条落在同一水平线 */
+   标题固定占两行,同一行卡片的元信息落在同一水平线(观看进度条已上封面底边) */
 .lib-grid .video-item{padding-bottom:13px}
 .lib-grid .vi-title{padding:11px 13px 0;min-height:calc(2.9em + 11px)}
 .lib-grid .vi-meta{padding:7px 13px 0}
-.lib-grid .vi-watchbar{margin:2px 13px 0}
 .lib-grid .dp-bar{margin:7px 13px 0}
 .lib-grid .dp-meta{padding:6px 13px 0}
 .lib-grid .dp-err{margin:6px 13px 0}
@@ -232,15 +245,14 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .vi-play-main:focus-visible{outline:2px solid #fff;outline-offset:2px}
 .video-item.lv .vi-play-main{width:28px;height:28px}
 .video-item.lv .vi-play-main svg{width:11px;height:11px}
-/* 「在 Finder 中显示」提到播放键上方:做成与播放键同尺寸的圆钮(2026-11-18 用户要求) */
-.thumb-actions > .vi-reveal{position:static;inset:auto;width:34px;height:34px;border-radius:50%;
-  background:rgba(20,21,24,.62);color:#fff;border:1px solid rgba(255,255,255,.3);
-  backdrop-filter:blur(3px);display:grid;place-items:center;transition:background .16s,transform .16s}
-.thumb-actions > .vi-reveal svg{width:13px;height:13px;margin:0}
-.video-item:hover .thumb-actions > .vi-reveal{background:var(--accent);border-color:transparent}
-.thumb-actions > .vi-reveal:hover{background:var(--accent-hover);transform:scale(1.06)}
-.video-item.lv .thumb-actions > .vi-reveal{width:28px;height:28px}
-.video-item.lv .thumb-actions > .vi-reveal svg{width:11px;height:11px}
+/* 「在 Finder 中显示」挪到元信息行(2026-11-19 用户要求):与关注胶囊
+   同高同语言的内联图标钮,网格/列表两态共用一个位置,列表小封面不再裁切 */
+.vi-meta-actions{display:flex;align-items:center;gap:6px;flex-shrink:0}
+.vi-locate{flex-shrink:0;width:27px;height:23px;border-radius:11.5px;display:grid;place-items:center;
+  color:var(--text-soft);border:1px solid var(--line);background:transparent;
+  transition:background .14s,color .14s,border-color .14s}
+.vi-locate svg{width:12px;height:12px;margin:0}
+.vi-locate:hover{background:var(--accent);color:#fff;border-color:transparent}
 /* 左下角统计胶囊:和时长胶囊同一套半透明小药丸语言 */
 .thumb-stats{position:absolute;left:8px;bottom:8px;z-index:5;
   display:flex;align-items:center;gap:5px}
@@ -292,8 +304,10 @@ select{padding-right:26px;border-radius:6px;appearance:none;
   background:var(--bg-soft);color:var(--text-soft)}
 .vi-stat.v-view{background:var(--accent-soft);color:var(--accent)}
 .vi-stat svg{width:11px;height:11px}
-.vi-watchbar{height:4px;background:var(--line);border-radius:2px;overflow:hidden}
-.vi-watchbar i{display:block;height:100%;background:var(--accent-bright);border-radius:2px}
+/* 观看进度条压在封面底边(2026-11-18 用户要求):暗轨亮粉填充,花封面上也读得出;
+   3px 贴边成一条线,圆角由 thumb-wrap 的 overflow:hidden 裁出 */
+.vi-watchbar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(20,21,24,.55);overflow:hidden;z-index:2}
+.vi-watchbar i{display:block;height:100%;background:var(--accent-bright)}
 
 /* 状态角标统一为同一个组件的三种业务别名：封面角标(.uc-badge)、行式追更(.fav-tag)
    与任务状态(.status-tag)。尺寸/字重/圆角/间距只有这一处，颜色由各自语义类决定。
@@ -311,7 +325,6 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .video-item.lv .lv-body{flex:1;min-width:0}
 .video-item.lv .vi-title{padding:0;font-weight:500}
 .video-item.lv .vi-meta{margin-top:4px}
-.video-item.lv .vi-watchbar{width:190px;margin-top:7px}
 .video-item.lv.checked{background:var(--accent-soft);border-color:transparent}
 
 /* 勾选可视反馈:悬停浮现未选方框;选中态是同一枚方框变实底+出对勾(label 自己的伪元素)。
@@ -377,7 +390,8 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 /* 关注 UP 卡的自动下载档位:长沙发分段(2026-11-17 用户要求):相邻分段同底色
    连成一条圆头长条,点哪个切哪个;替代散胶囊——修掉「不下载」选中灰底不显眼、
    太长换行两个问题。圆头由容器圆角+overflow 裁出,分段本体不带上边框。
-   两档配色按背景语境:压在封面暗底上用半透明白,行式白底上用浅灰。 */
+   配色按背景语境:压在封面上用时长胶囊同款暗底(2026-11-18 用户要求,半透明白
+   在花哨封面上看不清),行式白底上仍用浅灰。 */
 .uc-auto-row{display:flex;flex-wrap:nowrap;align-items:center;gap:0;flex:1 1 auto;min-width:0;
   overflow-x:auto;scrollbar-width:none;border-radius:999px}
 .uc-auto-row::-webkit-scrollbar{display:none}
@@ -387,9 +401,9 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .uc-auto-row .uc-auto-pill:last-child{border-radius:0 999px 999px 0}
 .uc-auto-pill{flex:0 0 auto;height:22px;padding:0 7px;font-size:11.5px;
   line-height:1;display:inline-flex;align-items:center;white-space:nowrap;cursor:pointer;
-  color:rgba(255,255,255,.82);background:rgba(255,255,255,.14);border:0;
+  color:#fff;background:rgba(20,21,24,.72);border:0;
   transition:background .14s,color .14s,border-color .14s}
-.uc-auto-pill:hover{background:rgba(255,255,255,.3)}
+.uc-auto-pill:hover{background:rgba(20,21,24,.9)}
 .uc-auto-pill.on{color:#fff;background:var(--accent-bright);border-color:transparent}
 .uc-auto-pill.off.on{color:#171717;background:rgba(255,255,255,.92);border-color:transparent}
 /* 白卡面(UP 行式、合集/收藏卡的标题行与行式)分段配色:浅灰连条,当前档实底粉;
@@ -532,7 +546,17 @@ body.dark .ab-inner{background:#0c0e12;border:1px solid var(--line)}
 .ab-group .quiet{color:#c9ced6}
 .ab-group .quiet:hover{background:rgba(255,255,255,.1);color:#fff}
 .ab-actions{display:flex;align-items:center;gap:8px}
-.ab-actions .lib-quality{height:32px;background:#1d2129;border-color:#333a45;color:#e8eaee}
+/* 批量档位长沙发:操作条本身是常暗底长条,分段用白系浅底连成圆头长条,
+   选中实底粉(功能档定稿);首尾分段自圆角,与 .uc-auto-row 同一套 */
+.ab-quality{display:inline-flex;align-items:center;flex:0 0 auto;border-radius:999px}
+.ab-quality .ab-q-seg{height:26px;padding:0 11px;font-size:12px;line-height:1;display:inline-flex;
+  align-items:center;white-space:nowrap;cursor:pointer;color:#c9ced6;background:rgba(255,255,255,.08);
+  border:0;transition:background .14s,color .14s}
+.ab-quality .ab-q-seg:hover{color:#fff;background:rgba(255,255,255,.16)}
+.ab-quality .ab-q-seg.on{color:#fff;background:var(--accent-bright)}
+.ab-quality .ab-q-seg:first-child{border-radius:999px 0 0 999px}
+.ab-quality .ab-q-seg:last-child{border-radius:0 999px 999px 0}
+@media(max-width:700px){.ab-quality .ab-q-seg{padding:0 8px;font-size:11.5px}}
 .ab-actions .primary{height:32px}
 
 /* ---------- 回到顶部 ---------- */
@@ -775,9 +799,7 @@ body.player-open{overflow:hidden}
 }
 @media (max-width:920px){
   .content{padding:16px 16px 130px}
-  .tb-acct #account-side-text{display:none}
-  .tb-btn span{display:none}
-  .video-item.lv{flex-wrap:wrap}
-  .video-item.lv .thumb-wrap{width:100%}
+  /* 列表行不再因窄宽度折成大卡形态(2026-11-19 用户打回:选了列表,
+     任何宽度都应是列表行);150px 封面 + 文本自适应,窄窗口只是变挤 */
   .up-card .uc-text{min-width:120px}
 }

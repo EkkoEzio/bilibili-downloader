@@ -220,7 +220,7 @@ export async function startDownload(button = null) {
       });
       if (!r.ok) {
         const message = r.task_id
-          ? `${r.error || '启动下载失败'}，请在「下载记录」查看该任务`
+          ? `${r.error || '启动下载失败'}，请在「下载」查看该任务`
           : (r.error || '启动下载失败');
         throw new Error(message);
       }
@@ -235,7 +235,7 @@ export async function startDownload(button = null) {
     // 这里补上指向下载记录的引导(200+ok:false 形态已不存在,别只看 r.task_id)。
     const dupTaskId = error && error.payload && error.payload.task_id;
     if (dupTaskId && error.code === 'duplicate_task') {
-      message += '，请在「下载记录」查看该任务';
+      message += '，请在「下载」查看该任务';
     }
     announce(message, true);
     toast(message);

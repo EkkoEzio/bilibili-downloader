@@ -1,4 +1,4 @@
-/* 搜索栏:把页面顶部的输入框变成真正的站内搜索。
+/* 搜索栏:把顶栏的输入框变成真正的站内搜索(2026-11-21 起全站唯一一只)。
 
    原来那行输入框只是本地过滤当前列表(输入什么就筛这一页的条目),
    想要「搜整个 B 站」是做不到的。现在:
@@ -55,9 +55,9 @@ function currentPage() {
   return page ? page.dataset.page : '';
 }
 
-function inputFor(pageName) {
-  const page = document.querySelector(`.page[data-page="${pageName}"]`);
-  return page ? page.querySelector('.lib-search') : null;
+function inputFor() {
+  // 搜索框已收进顶栏(全站唯一):调用方都只服务当前页,直接返回顶栏输入框。
+  return document.getElementById('tb-search');
 }
 
 function setHint(pageName, text) {
@@ -78,7 +78,7 @@ function setHint(pageName, text) {
 
 async function runSearch(pageName) {
   const target = targets.get(pageName);
-  const input = inputFor(pageName);
+  const input = inputFor();
   if (!target || !input) return;
   const q = (input.value || '').trim();
   if (!q) { exitSearch(pageName); return; }
@@ -86,7 +86,7 @@ async function runSearch(pageName) {
   // 会话内同词秒回:命中缓存直接上屏,不再发请求。
   const cached = cacheGet(cacheKey(pageName, target.kind, q));
   if (cached) {
-    const nowInput = inputFor(pageName);
+    const nowInput = inputFor();
     if (nowInput && (nowInput.value || '').trim() === q) {
       active = { page: pageName, q };
       target.apply(cached, q);
@@ -142,7 +142,7 @@ export function exitSearch(pageName = active?.page) {
 document.addEventListener('keydown', (event) => {
   const input = event.target.closest?.('.lib-search');
   if (!input) return;
-  const pageName = input.closest('.page')?.dataset.page || '';
+  const pageName = currentPage();
   if (event.key === 'Escape') {
     // 统一(2026-11-17 用户要求):任何页面的搜索框 Esc 都清空并还原列表。
     // 没注册搜索目标的页面(观看历史等)由 input 事件走内联 applyLibFilter 复位过滤;
@@ -162,7 +162,7 @@ document.addEventListener('keydown', (event) => {
 function onSearchInput(event) {
   const input = event.target.closest?.('.lib-search');
   if (!input) return;
-  const pageName = input.closest('.page')?.dataset.page || '';
+  const pageName = currentPage();
   const q = (input.value || '').trim();
 
   // 清除按钮显隐
@@ -190,7 +190,7 @@ function onSearchInput(event) {
   }
 }
 
-/* 输入监听必须用捕获阶段:页面的内联 oninput="applyLibFilter()" 在目标
+/* 输入监听必须用捕获阶段:输入框的内联 oninput="applyLibFilter()" 在目标
    阶段先于 document 冒泡监听执行。捕获置位 _bdSearchActive 之后,
    applyLibFilter 才会让位给站内搜索;否则第一个按键仍会按原文调度
    一次本地过滤重绘,输入过程中列表先闪一次空。 */
@@ -199,7 +199,7 @@ document.addEventListener('input', onSearchInput, true);
 document.addEventListener('click', (event) => {
   if (!event.target.closest('[data-search-exit]')) return;
   const pageName = currentPage();
-  const input = inputFor(pageName);
+  const input = inputFor();
   if (input) input.value = '';
   exitSearch(pageName);
 });

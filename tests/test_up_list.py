@@ -109,13 +109,13 @@ def test_set_uname_fills_and_overwrites(store):
 
 
 def test_quality_choices_single_source():
-    """两套档位各自的单一来源绑定(2026-11-17 分段改版后):
+    """两套档位各自的单一来源绑定(2026-11-18 操作条沙发化后):
 
-    手动下载仍用「精确标签」下拉:quality.js QUALITY_OPTIONS ↔ index.html
-    操作条静态 <option>(后端手动下载接受同一集合)。
-    自动下载分段(关注 UP/追更合集/我的收藏共用):quality.js
-    AUTO_QUALITY_SEGMENTS 的档位值(去掉 __off)↔ 后端 up_list.QUALITY_CHOICES;
-    UP 侧的分段↔后端绑定在 test_app.py 的分段契约测试里。改任何一侧漏改在这里炸。"""
+    手动下载用「精确标签」下拉:quality.js QUALITY_OPTIONS → newdl.js 渲染
+    新建下载抽屉的 #batch-quality(后端手动下载接受同一集合)。
+    批量操作条改为分段沙发,与自动下载分段(关注 UP/追更合集/我的收藏)
+    共用 AUTO_QUALITY_SEGMENTS,档位值(去掉 __off)↔ 后端 up_list.QUALITY_CHOICES;
+    操作条侧绑定在 test_app.py 的契约测试里。改任何一侧漏改在这里炸。"""
     import re
     from pathlib import Path
     import up_list
@@ -124,15 +124,15 @@ def test_quality_choices_single_source():
     js = (base / "static" / "js" / "quality.js").read_text(encoding="utf-8")
     pairs = re.findall(r"\['([^']*)',\s*'([^']*)'\]", js)
     assert pairs, "quality.js 的 QUALITY_OPTIONS 解析不到(改格式要同步改本测试)"
-    js_values = {v for v, _ in pairs}
 
+    # 操作条沙发化后,精确标签下拉的唯一消费者是新建下载抽屉(newdl.js 动态渲染)
+    newdl_js = (base / "static" / "js" / "newdl.js").read_text(encoding="utf-8")
+    assert "QUALITY_OPTIONS" in newdl_js and 'id="batch-quality"' in newdl_js, \
+        "精确标签下拉(QUALITY_OPTIONS)应仍由新建下载抽屉消费"
     html = (base / "templates" / "index.html").read_text(encoding="utf-8")
     i = html.find('id="ab-quality"')
-    assert i > 0, "index.html 操作条缺少清晰度下拉"
-    bar = html[i:html.find("</select>", i)]
-    html_values = set(re.findall(r'<option value="([^"]*)"', bar))
-
-    assert js_values == html_values, f"quality.js 与操作条静态 HTML 不一致: {js_values ^ html_values}"
+    assert i > 0, "index.html 操作条缺少档位沙发容器"
+    assert "<option" not in html[i:i + 160], "操作条档位应是分段沙发,不再有静态 <option> 下拉"
     # 自动下载分段:UP/合集/收藏三处共用一份字典,值集合 = up_list.QUALITY_CHOICES
     assert "AUTO_QUALITY_SEGMENTS = [" in js, "quality.js 应有 UP/合集/收藏共用的分段清单"
     seg_at = js.index("AUTO_QUALITY_SEGMENTS = [")

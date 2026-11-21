@@ -219,9 +219,12 @@ def test_fetch_collected_seasons_requires_platform_web(monkeypatch):
     seasons = bilibili_api.fetch_collected_seasons()
     assert calls[0]["platform"] == "web", "不带 platform=web 会永远拿到空列表"
     # mtime 要保留:前端按「自动下载优先 → 组内时间倒序」排序要用
+    # uploader/uploader_mid 为映射层固定透出字段(卡片元信息行展示作者/关注按钮用),
+    # 上游条目无 upper 时取空,前端自行隐藏
     assert seasons == [{"id": 1761108, "title": "数理小品", "media_count": 30,
                         "cover": "https://i0.hdslb.com/bfs/s.jpg",
-                        "mtime": 1793000000}]
+                        "mtime": 1793000000,
+                        "uploader": "", "uploader_mid": None}]
 
 
 def test_fetch_collected_seasons_error_raises(monkeypatch):
@@ -516,7 +519,7 @@ def test_modify_relation_unfollow_sends_csrf_and_act(monkeypatch):
 
 
 def test_modify_relation_follow_success_and_duplicate(monkeypatch):
-    """关注:act=1;重复关注(22013)按成功处理,不误报错误。"""
+    """关注:act=1;重复关注(22013/22014)按成功处理,不误报错误。"""
     captured = {}
     _stub_relation(monkeypatch, {"code": 0}, captured)
     bilibili_api.modify_relation(42, "follow")
@@ -525,10 +528,14 @@ def test_modify_relation_follow_success_and_duplicate(monkeypatch):
     _stub_relation(monkeypatch, {"code": 22013, "message": "已经被关注"})
     bilibili_api.modify_relation(42, "follow")  # 不抛即通过
 
+    # 22014 才是重复关注实际返回的 code(2026-11-17 实测),同样按成功处理
+    _stub_relation(monkeypatch, {"code": 22014, "message": "你已经关注了对方"})
+    bilibili_api.modify_relation(42, "follow")  # 不抛即通过
+
 
 def test_modify_relation_surfaces_bilibili_error(monkeypatch):
-    """B 站业务错误(如被拉黑)透出原始 message。"""
-    _stub_relation(monkeypatch, {"code": 22014, "message": "对方把你拉黑了"})
+    """B 站业务错误透出原始 message;样例避开重复关注幂等白名单(22013/22014)。"""
+    _stub_relation(monkeypatch, {"code": 22015, "message": "对方把你拉黑了"})
     with pytest.raises(RuntimeError, match="拉黑"):
         bilibili_api.modify_relation(42, "follow")
 
