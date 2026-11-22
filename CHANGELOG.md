@@ -2,7 +2,7 @@
 
 所有版本的变更记录。版本遵循[语义化版本](https://semver.org/)。
 
-## [未发布]
+## [v2.10.0] - 2026-11-22
 ### ✨ 变更
 
 - **mac 出了真正的安装包（.pkg 安装向导）**：之前 mac 只有 dmg——打开是个「拖到应用程序」的窗口，和 Windows 那边一步步点的安装向导体验对不上，用户会以为「这不是安装包」。现在 mac 与 Windows 都是双击→下一步→装好：新增 `packaging/pkg/`（安装向导的欢迎页 / 完成页 / 产品定义 XML）与 `scripts/build_local.sh` 里的 `pkgbuild` + `productbuild` 两步，产出 `BiliDownloader-<版本>-<架构>.pkg`（欢迎页写清首次打开被拦怎么办、数据存在哪）。dmg 继续保留，两种包都能用。
@@ -996,6 +996,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.10.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.10.0
 [v2.9.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.9.0
 [v2.8.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.8.0
 [v2.7.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.7.0
