@@ -31,7 +31,9 @@ Name: "chinese"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"
 
 [Files]
-Source: "dist\BiliDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; {src} = 本脚本所在目录(packaging/),再往上一级才是仓库根——
+; Inno Setup 的相对路径基准是脚本目录,不是编译时的当前目录。
+Source: "{src}\..\dist\BiliDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"

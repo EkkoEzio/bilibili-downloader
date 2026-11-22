@@ -28,6 +28,14 @@ import string
 import sys
 from pathlib import Path
 
+# Windows 控制台默认是 charmap(chcp 437/1252),print 中文会 UnicodeEncodeError
+# 直接把扫描脚本打崩 —— 2026-11-22 首次发版时 Windows job 就死在这。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 # 产物里不允许出现的顶层路径(相对产物根)。只查顶层,避免依赖自带的
 # tests/scripts 子包造成误报。
 FORBIDDEN_TOP_LEVEL = {
@@ -59,6 +67,7 @@ TEXT_SUFFIXES = {".py", ".pyc", ".js", ".css", ".html", ".json", ".txt",
 GENERIC_HOME_NAMES = {
     "runner", "admin", "user", "root", "build", "host", "ci", "docker",
     "nobody", "github", "actions", "home", "tmp", "temp", "usr", "default",
+    "_temp", "work", "project", "src", "app",
 }
 BINARY_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".bin"}
 TEXT_CHARS = set(string.printable.encode("ascii"))
@@ -162,6 +171,10 @@ def scan_text(root: Path, keywords: list[str],
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
+        # 上游 Python 运行时与动态库里的构建机路径(如 python.org 发行版的
+        # /Users/nad)与开发者无关,两路扫描都要豁免。
+        if is_upstream_binary(str(path.relative_to(root))):
+            continue
         for keyword in keywords:
             if not keyword:
                 continue
@@ -184,10 +197,27 @@ def scan_text(root: Path, keywords: list[str],
     return problems
 
 
+# 上游 Python 运行时与第三方动态库:里面嵌的是 CPython / 依赖自己的构建机
+# 路径(python.org 发行版里就是 /Users/nad),与开发者无关,不能算泄露。
+# 不豁免的话,CI 上每个 mac 包都会因为这条误判失败(2026-11-22 实测)。
+BINARY_SKIP_MARKERS = (
+    "frameworks/", "contents/resources/python", "python.framework",
+    "_internal/", ".dylib", ".so", ".pyd", "/_internal",
+)
+
+
+def is_upstream_binary(rel_path: str) -> bool:
+    low = rel_path.lower().replace("\\", "/")
+    return any(marker in low for marker in BINARY_SKIP_MARKERS)
+
+
 def scan_binary(root: Path, keywords: list[str]) -> list[str]:
     problems = []
     for path in root.rglob("*"):
         if not path.is_file():
+            continue
+        rel = str(path.relative_to(root))
+        if is_upstream_binary(rel):
             continue
         suffix = path.suffix.lower()
         if suffix not in BINARY_SUFFIXES and not is_probably_text(path):
@@ -200,12 +230,12 @@ def scan_binary(root: Path, keywords: list[str]) -> list[str]:
             continue
         for keyword in keywords:
             if keyword and keyword.encode("utf-8", "ignore") in blob:
-                problems.append(f"[二进制] {path.relative_to(root)} 命中关键词 {keyword!r}")
+                problems.append(f"[二进制] {rel} 命中关键词 {keyword!r}")
         for pattern in HOME_PATH_PATTERNS:
             match = pattern.search(blob.decode("latin-1", "ignore"))
             if match:
                 problems.append(
-                    f"[二进制] {path.relative_to(root)} 含家目录路径 {match.group(0)!r}")
+                    f"[二进制] {rel} 含家目录路径 {match.group(0)!r}")
                 break
     return problems
 
