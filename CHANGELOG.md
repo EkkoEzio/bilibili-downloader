@@ -2,6 +2,27 @@
 
 所有版本的变更记录。版本遵循[语义化版本](https://semver.org/)。
 
+## [未发布]
+
+### ✨ 变更
+
+- **订阅自动下载档位退役 720,最低可选 1080（用户要求）**：UP/合集/收藏三处订阅卡与批量下载条共用的档位分段移除「720」,最低可选「1080」;视频实际最高画质不足 1080 时按小于 1080 档里的最高画质自动降档下载(既有降档规则兜底,无新增逻辑)。存量订阅留存的 720/720P/720P60 旧档位前后端读取时统一归一为 1080,数据文件无需迁移;手动下载页精确标签下拉(含 720P/720P60)不受影响。
+
+### 🐛 修复
+
+- **搜索内存缓存绑定认证上下文（体检 #1，中危）**：`_search_raw` 的缓存键只有 `类型:关键词:页码`，`search_videos`/`search_users` 的 `context` 形参被完全忽略——切换账号后 5 分钟 TTL 内，新账号会拿到旧账号 Cookie 拉到的搜索结果，也是全模块「fingerprint + incarnation + generation 隔离」的唯一漏网。缓存键改绑 `_context_key`，context 全链透传。
+- **storage.write_json 禁写 NaN/Inf（体检 #2，中危）**：默认 `allow_nan=True` 会把 NaN 写成非法 JSON——Python 读容忍，但浏览器 `JSON.parse` 不容忍，一条 NaN 速度值混进任务记录后，`/api/tasks` 与 SSE 快照响应体持续无法解析、下载页挂死。现改 `allow_nan=False` 让 dumps 抛错走既有失败路径（内存态不丢），并在下载进度钩子显式拦掉非有限速度值。
+- **UP 订阅失败视频绕过指数退避（体检 #3，中危）**：续扫窗口内 `fresh` 发现路径只挡「已下载」，重试占用表只含退避已到期的失败任务——退避未到期的失败视频每轮以 `auto_attempt=0` 重新入队，attempt 计数在 0↔1 震荡、永远到不了放弃上限。occupied 现覆盖该 UP 全部未下载的失败/中断任务。
+- **凭据原子写改唯一临时名（体检 #4）**：固定 `.tmp` 名在并发写（解析线程 × cookiejar 刷新）时会被另一线程的 `os.replace` 搬走半截文件；改 uuid candidate（与 pagecache 同款）。
+- **扫码两端点补上游响应防御（体检 #5）**：`qrcode_generate`/`qrcode_poll` 裸调 `resp.json()`，passport 回 200+HTML 时直接 500；补 `_safe_json` 与 fetch_history 同款防御。
+- **下载状态机三处防御分支（体检 #6/#7/#8）**：进度钩子 error 分支不再提前落终态 failed（会吞掉窗口内的取消）；worker 兜底失败尊重取消标志（带 cancel 的交给取消收尾落 cancelled）；「无句柄的活跃任务」先拒绝删除、不再先写取消意图（否则任务永久卡 cancelling，重启前无法自愈）。
+- **done 任务进度回写 100（体检 #9）**：`"best"` 被 yt-dlp 解析成单流时进度被聚合逻辑封顶 99 且终态不回写；终态提交时对 done 回写 `progress=100`。
+- **fetch_followings 的 page 参数接到 pn（体检 #10）**：此前被静默忽略，传 `page>1` 会返回第 1 页数据。
+
+### 🧹 精简
+
+- **全仓库死代码一次性清理（体检批次 2，全部 grep 零引用验证）**：后端删 `fetch_relation_statuses` + `_RELATION_QUERY_ENDPOINT`（~60 行，实测会触发 412 全局冷却的已退役路径，docstring 与 app.py 定论矛盾）、`has_session`、`_reset_runtime_caches`、`label_to_label_cn`、`artifact_lock`、`_is_task_managed_path`、`get_download_dir`、`_CHUNK`、`classify_formats` 死导入、up_list `_collection_key`/`get_fetched_at`、downloader 两个未用别名连带 taskstore `clear_tasks`/`clean_invalid_records`/`_ACTIVE` 兼容别名；前端删 `QUALITY_CARD_LABELS`、`_forceOnce`、4 处 `fast:` 死参数、「查看最新」提示条残件（`showFreshHint`/`applyFresh`/`_freshApply` + `.fresh-hint` 样式；dismissFresh 保留为幂等清理）、`applyFirstPage`/`inputFor` 死参数、约 15 条死 CSS（`.pl-online-gate` 全家、`.pl-note`、`.vi-stats`、`.ph-right`、`.tb-input`/`.modal-input`、`.pl-field select`、`.fav-tag`、`.status-tag.completed/.paused`），合并 `.vi-meta`/`.vi-ident` 重复定义。相关测试同步：批量关系接口改为 `not hasattr` 反回归断言、fav-tag/fresh-hint/fast 断言按新现实改写、`get_fetched_at` 测试改走 `get_last_seen_all`。
+
 ## [v2.8.0] - 2026-11-22
 
 ### ⚡ 性能

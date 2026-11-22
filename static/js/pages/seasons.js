@@ -197,7 +197,6 @@ export async function loadSeasons() {
     page: 'seasons',
     api: '/api/fav-seasons',
     cacheKey: 'fav_seasons',
-    fast: true,
     extract: (b) => b.seasons || [],
     stillValid: () => state.mode === 'seasons' && !_seasonsCurrent,
     showLoading: () => {

@@ -131,9 +131,7 @@ body.action-bar-open .content{padding-bottom:150px}
 /* 页标题由 sr-only 提升为可见(演示版同款) */
 .page-head h1{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;
   font-size:20px;font-weight:600;letter-spacing:-.6px}
-.ph-right{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
 .ph-add{display:flex;align-items:center;gap:8px;flex-wrap:wrap}
-.ph-add .tb-input{width:360px;max-width:100%;border-radius:6px}
 /* 信息行(2026-11-21 起并入 page-head 标题行右侧,flex:1 占满余量,页尾动作钮
    自动靠右);全部页面统一预留控件档高度 var(--ctl-h):下载页这一行里有 32px 的
    按钮(新建下载主钮+两颗 ghost 清除钮,清除钮与「立即检查新视频」同款),
@@ -167,7 +165,8 @@ button.danger-solid:hover{filter:brightness(1.08)}
 @keyframes spin{to{transform:rotate(360deg)}}
 
 /* 页头搜索:紧贴标题,不再横跨全宽 */
-.search-input,.tb-input,select,.modal-input{
+/* .tb-input/.modal-input 已随页头输入框退役删除(2026-11-22 清理) */
+.search-input,select{
   height:var(--ctl-h);padding:0 12px;border:1px solid var(--line);border-radius:6px;
   background:var(--card);color:var(--text-main);font-size:12.5px;outline:none;transition:border-color .12s}
 .search-input{width:230px}
@@ -180,8 +179,7 @@ button.danger-solid:hover{filter:brightness(1.08)}
   background:none;border:none;cursor:pointer}
 .search-clear[hidden]{display:none!important}
 .search-clear:hover{background:var(--bg-hover);color:var(--text-main)}
-.tb-input{width:min(460px,100%);border-radius:6px}
-.search-input:focus,.tb-input:focus,select:focus{border-color:var(--accent)}
+.search-input:focus,select:focus{border-color:var(--accent)}
 select{padding-right:26px;border-radius:6px;appearance:none;
   background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%239499a0' stroke-width='2.4' stroke-linecap='round'%3E%3Cpolyline points='6 9 12 15 18 9'/%3E%3C/svg%3E");
   background-repeat:no-repeat;background-position:right 6px center}
@@ -282,8 +280,8 @@ select{padding-right:26px;border-radius:6px;appearance:none;
   padding:7px 12px;margin:0 0 10px}
 .search-hint button{color:var(--accent);font-size:12.5px}
 .search-hint button:hover{text-decoration:underline}
-.vi-meta{display:flex;align-items:center;gap:8px;min-width:0}
-.vi-ident{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* .vi-meta/.vi-ident 定义在关注胶囊块后(2026-11-22 合并重复定义):
+   元信息行 space-between,身份列截断。 */
 /* 关注 / 已关注:中立小胶囊,已关注才用浅强调底,避免整页都是粉色。
    .uc-follow 是 UP 卡的同款胶囊(挂在 UP 名后):类名分开是刻意的——follow.js
    以 .vi-follow 全局接管视频卡的关注状态,UP 卡有自己的换组/幽灵卡语义走
@@ -296,10 +294,9 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .vi-follow.on,.uc-follow.on{color:var(--text-mute);background:transparent;border-color:var(--line)}
 .vi-follow.on:hover,.uc-follow.on:hover{color:var(--text-main);border-color:var(--text-mute);background:transparent}
 .vi-follow:disabled,.uc-follow:disabled{opacity:.6;cursor:default}
-.vi-meta{display:flex;align-items:center;justify-content:space-between;gap:8px}
+.vi-meta{display:flex;align-items:center;justify-content:space-between;gap:8px;min-width:0}
 .vi-ident{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text-soft);font-size:12px}
 .vi-ident a:hover{color:var(--accent)}
-.vi-stats{display:flex;gap:5px;flex-shrink:0;font-size:11px;font-weight:600;font-family:var(--mono)}
 .vi-stat{display:inline-flex;align-items:center;gap:3px;padding:1px 6px;border-radius:4px;
   background:var(--bg-soft);color:var(--text-soft)}
 .vi-stat.v-view{background:var(--accent-soft);color:var(--accent)}
@@ -309,11 +306,12 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .vi-watchbar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(20,21,24,.55);overflow:hidden;z-index:2}
 .vi-watchbar i{display:block;height:100%;background:var(--accent-bright)}
 
-/* 状态角标统一为同一个组件的三种业务别名：封面角标(.uc-badge)、行式追更(.fav-tag)
-   与任务状态(.status-tag)。尺寸/字重/圆角/间距只有这一处，颜色由各自语义类决定。
+/* 状态角标统一为同一个组件的两种业务别名：封面角标(.uc-badge)与任务状态
+   (.status-tag)。尺寸/字重/圆角/间距只有这一处，颜色由各自语义类决定。
+   行式追更(.fav-tag)随「追更中」角标撤下(2026-11-18)一并删除(2026-11-22 清理);
    曾有的第四种「标题后行内已下载/下载中标签」随「标题后不放胶囊」
    (2026-11-17 用户定稿)一并删除,下载状态两种视图都走封面角标。 */
-.uc-badge,.fav-tag,.status-tag{
+.uc-badge,.status-tag{
   display:inline-flex;align-items:center;gap:3px;font-size:10.5px;line-height:1.6;
   padding:1px 7px;border-radius:4px;white-space:nowrap;
 }
@@ -340,13 +338,13 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .video-item.checked .vi-check-hit::after{opacity:1}
 
 /* ---------- 下载任务进度(状态标签 + 进度条) ---------- */
+/* 状态标签只覆盖真实存在的状态(completed/paused 两种从未产生,已删);
+   done 任务走默认视频卡路径,不渲染状态标签。 */
 .status-tag{display:inline-flex;font-size:10.5px;padding:1px 7px;border-radius:4px;
   color:var(--faint);background:var(--bg-soft)}
 .status-tag.downloading{color:var(--blue);background:var(--blue-soft)}
 .status-tag.merging{color:var(--blue);background:var(--blue-soft)}
-.status-tag.completed{color:var(--green);background:var(--green-soft)}
 .status-tag.failed,.status-tag.interrupted{color:var(--red);background:var(--red-soft)}
-.status-tag.paused{color:var(--amber);background:var(--amber-soft)}
 .dp-bar{height:5px;background:var(--line);border-radius:3px;overflow:hidden;margin-top:7px}
 .dp-bar i{display:block;height:100%;background:var(--accent-bright);border-radius:3px;transition:width .5s}
 .dp-meta{display:flex;align-items:center;gap:10px;margin-top:6px;font-family:var(--mono);font-size:11px;color:var(--faint);flex-wrap:wrap}
@@ -457,9 +455,7 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .fav-count{font-size:12px;color:var(--text-mute);margin-top:2px;font-family:var(--mono)}
 .fav-arrow{color:var(--text-mute);flex-shrink:0}
 .fav-arrow svg{width:15px;height:15px}
-/* 「追更中」行式标签与网格角标(.uc-badge.on)同一粉色语言,只换形态 */
-.fav-tag{display:inline-flex;font-size:10.5px;color:var(--accent);background:var(--accent-soft);
-  padding:1px 7px;border-radius:4px;margin-left:6px;vertical-align:1px}
+/* 「追更中」行式标签(.fav-tag)已随角标撤下删除(2026-11-18 撤标,2026-11-22 清样式) */
 .fc-cover{position:relative;width:100%;aspect-ratio:16/9;max-height:220px;overflow:hidden;background:var(--bg-soft)}
 /* 档位沙发压在封面左下角(复用 UP 卡 .uc-actions 暗渐变条):右侧给「n 个视频」
    角标留白,窄卡时沙发横向滚动兜底 */
@@ -508,16 +504,12 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 
 /* Vercel 的技术标签一律走等宽字体:时长、计数、播放/点赞、任务元信息。
    这是本套规范与 B 站原生界面最直观的差异。 */
-.thumb-dur,.fc-count,.fav-count,.uc-meta,.dp-meta,.vi-stats,.auto-refresh-status,.bc-meta,.nav-badge{font-family:var(--mono)}
+.thumb-dur,.fc-count,.fav-count,.uc-meta,.dp-meta,.auto-refresh-status,.bc-meta,.nav-badge{font-family:var(--mono)}
 
-/* ---------- 空态 / 新内容提示 ---------- */
+/* ---------- 空态 ---------- */
 .empty{text-align:center;color:var(--text-mute);font-size:13px;padding:34px 20px;
   border:1px dashed var(--line);border-radius:var(--radius);line-height:1.8}
 .empty .ghost{margin-top:6px}
-.fresh-hint{display:none;align-items:center;gap:10px;margin:-8px 0 16px;padding:9px 14px;
-  background:var(--blue-soft);border-radius:10px;font-size:12.5px;color:var(--blue)}
-.fresh-hint .fh-text{font-weight:600}
-.fresh-hint .primary{height:28px;font-size:12px}
 
 /* ---------- 首屏骨架屏(缓存未命中时的占位卡,数据到达整体替换) ---------- */
 .video-item.sk{pointer-events:none}
@@ -725,13 +717,10 @@ body.drawer-open{overflow:hidden}
 /* 第二行里把清晰度与全屏推到右端 */
 #pl-quality-wrap{margin-left:auto}
 .pl-controls > #pl-full{margin-left:0}
-.pl-controls[hidden],.pl-note[hidden],.pl-tip[hidden],.pl-btn[hidden],
+.pl-controls[hidden],.pl-tip[hidden],.pl-btn[hidden],
 .pl-field[hidden],#player-audio[hidden]{display:none}
 .pl-field{display:inline-flex;align-items:center;gap:8px;font-size:12.5px;color:rgba(255,255,255,.72)}
-.pl-field select,.pl-field input[type="range"]{font:inherit}
-.pl-field select{height:28px;padding:0 8px;border-radius:var(--radius-ctl);
-  background:rgba(255,255,255,.12);color:#fff;border:1px solid rgba(255,255,255,.18)}
-.pl-field select option{color:#111}
+.pl-field input[type="range"]{font:inherit}
 /* 播放/全屏图标键 */
 .pl-ic{width:30px;height:30px;border-radius:50%;display:grid;place-items:center;
   color:#fff;background:rgba(255,255,255,.14);border:1px solid rgba(255,255,255,.16)}
@@ -765,19 +754,8 @@ body.drawer-open{overflow:hidden}
 .pl-seg:hover{background:rgba(255,255,255,.2);color:#fff}
 .pl-seg.on{background:var(--accent-bright);color:#fff;font-weight:600}
 .pl-seg.on:hover{background:var(--accent-hover)}
-.pl-btn-sm{height:28px;padding:0 10px;font-size:12px}
-.pl-mute-icon{padding:0;width:28px;justify-content:center}
-.pl-mute-icon svg{width:14px;height:14px}
-.pl-note{font-size:12px;color:rgba(255,255,255,.62);line-height:1.6}
-/* 在线起播闸门:盖在 iframe 上,点了才载入播放器 */
-.pl-online-gate{position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;
-  justify-content:center;gap:12px;color:#fff;background:#000}
-.pl-online-gate[hidden]{display:none}
-.pl-gate-play{width:64px;height:64px;border-radius:50%;display:grid;place-items:center;
-  background:var(--accent-bright);box-shadow:0 8px 24px rgba(251,114,153,.45)}
-.pl-gate-play svg{width:26px;height:26px;margin-left:3px}
-.pl-online-gate:hover .pl-gate-play{background:var(--accent-hover);transform:scale(1.05)}
-.pl-gate-text{font-size:13px;color:rgba(255,255,255,.8)}
+/* .pl-note 与在线起播闸门(.pl-online-gate/.pl-gate-*)已随「点进去就播」
+   改版删除:player.js 不再用说明行/iframe/闸门,这是死样式(2026-11-22 清理)。 */
 .pl-tip{font-size:12px;color:rgba(255,255,255,.72)}
 body.player-open{overflow:hidden}
 @media (max-width:920px){

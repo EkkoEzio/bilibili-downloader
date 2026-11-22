@@ -29,7 +29,6 @@ import bilibili_api
 import parsing
 import quality
 from bilibili_auth import BROWSER_HEADERS
-from quality import classify_formats
 
 log = logging.getLogger("bd.online")
 
@@ -41,7 +40,6 @@ TOKEN_MAX_SECONDS = 105 * 60
 # 解析结果缓存:同一个视频反复点播放不必每次跑 yt-dlp(要几秒)。
 PARSE_TTL_SECONDS = 10 * 60
 
-_CHUNK = 64 * 1024
 _UPSTREAM_TIMEOUT = (10, 60)
 
 # 顶层 requests.api.get 的原始实现:测试把顶层 requests.get 换成桩时让路,

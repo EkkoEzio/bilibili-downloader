@@ -586,10 +586,25 @@ def refresh_once() -> int:
                 # 任务记录本身充当 durable outbox：即使时间游标已推进，异步下载
                 # 后来失败/重启中断，下一轮仍会从任务史恢复，而非永久漏稿。
                 candidates = _retry_items(mid, tasks_snapshot=tasks_snapshot)
+                # occupied 必须覆盖**全部**未下载的失败/中断任务,而不只是退避
+                # 已到期的:否则续扫窗口(pending-scan)内 fresh 每轮都会把退避
+                # 未到期的失败视频以 auto_attempt=0 重新入队,attempt 计数在
+                # 0↔1 间震荡,永远到不了放弃上限——指数退避与放弃上限被整个
+                # 绕过(2026-11-22 体检实锤)。退避到期项由 candidates 本身
+                # 重试,这里只负责「挡住不该新起的」。
                 occupied = {
                     (str(v.get("url") or ""), int(v.get("page") or 1))
                     for v in candidates
                 }
+                for task in tasks_snapshot or []:
+                    if task.get("status") not in ("failed", "interrupted"):
+                        continue
+                    if int(task.get("uploader_mid") or 0) != int(mid):
+                        continue
+                    turl = str(task.get("url") or "")
+                    if not turl or downloader.is_downloaded(turl):
+                        continue
+                    occupied.add((turl, int(task.get("page") or 1)))
                 for video in fresh:
                     key = (str(video.get("url") or ""), int(video.get("page") or 1))
                     if key not in occupied:

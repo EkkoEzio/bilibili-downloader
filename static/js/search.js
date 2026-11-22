@@ -113,7 +113,7 @@ async function runSearch(pageName) {
       return;
     }
     // 用户可能已清空输入或换了关键词,旧结果不覆盖
-    const currentInput = inputFor(pageName);
+    const currentInput = inputFor();
     if (!currentInput || (currentInput.value || '').trim() !== q) return;
     active = { page: pageName, q };
     const items = payload.items || [];

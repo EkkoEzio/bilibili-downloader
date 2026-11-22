@@ -97,7 +97,6 @@ _disk_usage_cache: Optional[tuple[str, float, int]] = None
 # 状态集合是全项目唯一来源。
 ACTIVE = ("queued", "downloading", "merging", "cancelling", "retrying")
 TERMINAL = ("done", "failed", "cancelled", "interrupted")
-_ACTIVE = ACTIVE  # 旧名保留，避免下游 import 断裂。
 
 
 def _download_root() -> Path:
@@ -168,13 +167,6 @@ def task_download_root(task: dict) -> Path:
     if pinned != current:
         raise UnsafeDownloadPathError("任务下载根与当前配置不一致，拒绝重绑定产物")
     return pinned
-
-
-def artifact_lock(task_id: str):
-    """取得同一任务文件生命周期的可重入锁（兼容旧直接调用）。"""
-    key = str(task_id)
-    with _artifact_locks_guard:
-        return _artifact_locks.setdefault(key, threading.RLock())
 
 
 @contextmanager
@@ -1218,13 +1210,6 @@ def delete_tasks(task_ids: list, delete_file: bool) -> int:
     return int(delete_tasks_detailed(task_ids, delete_file)["count"])
 
 
-def clear_tasks(delete_file: bool) -> int:
-    with _tasks_lock:
-        ids = [tid for tid, task in _tasks.items()
-               if task.get("status") not in _ACTIVE]
-    return delete_tasks(ids, delete_file)
-
-
 def delete_invalid_tasks(task_ids: list[str]) -> dict:
     """在 artifact lock 内最终验证缺失事实，并持锁完成条件删除。"""
     wanted = sorted({str(task_id) for task_id in task_ids})
@@ -1257,13 +1242,6 @@ def delete_invalid_tasks(task_ids: list[str]) -> dict:
             "invalid": sum(task_id not in remaining for task_id in invalid_ids),
             "removed": sum(task_id not in remaining for task_id in candidates),
         }
-
-
-def clean_invalid_records() -> dict:
-    with _tasks_lock:
-        candidates = [tid for tid, task in _tasks.items()
-                      if task.get("status") in {"failed", "done"}]
-    return delete_invalid_tasks(candidates)
 
 
 def _disk_usage_bytes() -> int:

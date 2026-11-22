@@ -9,7 +9,6 @@ export async function loadWatchlater() {
     page: 'later',
     api: '/api/watchlater',
     cacheKey: 'watchlater',
-    fast: true,
     extract: (b) => b.items || [],
     stillValid: () => state.mode === 'later',
     showLoading: () => {

@@ -73,18 +73,13 @@ function sortUps(list = _mergedUps) {
   return list;
 }
 
-let _forceOnce = false;
-
 export async function loadSubscriptions(force = false) {
   loadAutoRefreshStatus();
-  const forced = !!force || _forceOnce;
-  _forceOnce = false;
+  const forced = !!force;
   await cachedLoad({
     page: 'subs',
     api: forced ? '/api/followings?force=1' : '/api/followings',
     cacheKey: 'followings',
-    // 用户主动刷新时直接应用新数据,不要只弹「获取到新内容」提示条
-    fast: forced,
     // sig() 只认数组(非数组一律返回 "0",会让新旧数据永远判定相同、页面卡住);
     // 这里把关注与本地清单合成一个带业务标识的数组供比对。
     extract: (b) => [

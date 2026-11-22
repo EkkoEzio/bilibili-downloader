@@ -1,4 +1,4 @@
-from quality import height_to_label, label_to_label_cn, classify_formats
+from quality import height_to_label, classify_formats
 
 
 def test_height_to_label():
@@ -9,13 +9,6 @@ def test_height_to_label():
     assert height_to_label(2160) == "2160P"
     assert height_to_label(None) == "未知"
     assert height_to_label(480) == "480P"
-
-
-def test_label_cn():
-    assert label_to_label_cn("2160P") == "4K 超清"
-    assert label_to_label_cn("1080P") == "1080P 高清"
-    assert label_to_label_cn("720P") == "720P"
-    assert label_to_label_cn("360P") == "360P 流畅"
 
 
 def test_classify_formats_separates_av():
@@ -174,7 +167,8 @@ def test_quality_ladder_matches_bilibili_reality():
     assert "1440P" not in choices, "UP 档位不提供 1440P 精确标签(2K 档由降档兜底)"
     assert "1080P60" not in choices and "720P60" not in choices, \
         "UP 档位已是纯分辨率,60 帧精确标签只留在归一映射 _LEGACY_QUALITY 里"
-    assert choices == {"", "2160P", "2K", "1080", "720", "音频"}
+    assert "720" not in choices, "720 档已退役(2026-11-22),订阅档位最低 1080"
+    assert choices == {"", "2160P", "2K", "1080", "音频"}
 
     js = (Path(__file__).resolve().parent.parent
           / "static" / "js" / "quality.js").read_text(encoding="utf-8")

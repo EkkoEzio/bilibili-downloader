@@ -20,9 +20,10 @@ def test_add_up_defaults_quality_auto(store):
 def test_set_quality_persists(store):
     """新分辨率档原样落盘;旧精确标签写入时自动归一(2026-11-17 档位改版)。"""
     store.add_up(123, "A", "")
+    # 退役档位(720/720P/720P60)写入时归一到新的最低档 1080(2026-11-22)
     assert store.set_quality(123, "720") is True
-    assert store.list_ups()[0]["quality"] == "720"
-    # 旧精确标签(720P/1080P60 等)归一到分辨率档
+    assert store.list_ups()[0]["quality"] == "1080"
+    # 旧精确标签(1080P60 等)归一到分辨率档
     assert store.set_quality(123, "1080P60") is True
     assert store.list_ups()[0]["quality"] == "1080"
     # 改回自动
@@ -77,13 +78,15 @@ def test_old_removed_quality_label_normalised_on_read(store, tmp_path):
 # ---------- 拉取时间(自适应页大小依据) ----------
 
 def test_mark_seen_stores_fetched_at(store):
+    """fetched_at 落在 last_seen 游标里;读取走 get_last_seen_all(2026-11-22 起
+    get_fetched_at 单条读取已删,生产一律批量取全量游标)。"""
     store.mark_seen(1, "BVnew", 200, "标题", fetched_at=1234)
-    assert store.get_fetched_at(1) == 1234
+    assert (store.get_last_seen_all().get("1") or {}).get("fetched_at") == 1234
     # 不带 fetched_at 调用:保留原值(不清空)
     store.mark_seen(1, "BVnew2", 300, "标题2")
-    assert store.get_fetched_at(1) == 1234
-    # 从未拉取过 → None
-    assert store.get_fetched_at(999) is None
+    assert (store.get_last_seen_all().get("1") or {}).get("fetched_at") == 1234
+    # 从未拉取过 → 无该键
+    assert "999" not in store.get_last_seen_all()
 
 
 def test_get_last_seen_all_returns_full_cursor_map(store):
@@ -179,7 +182,7 @@ def test_collection_quality_validation(store):
     assert up_list.list_collections()[0]["quality"] == "1080"
     # 订阅时同样归一
     entry = up_list.add_collection("season", 10, title="合集", quality="720P")
-    assert entry["quality"] == "720"
+    assert entry["quality"] == "1080"
     up_list.set_collection_quality("fav", 456, "1440P")  # 不存在的档位
     assert up_list.list_collections()[0]["quality"] == ""
     # 存量订阅里的旧标签读时归一

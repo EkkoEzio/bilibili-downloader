@@ -30,11 +30,17 @@ class JsonReadLimitError(RuntimeError):
 
 
 def write_json(path: Path, data: Any, *, indent: Optional[int] = None) -> bool:
-    """原子写 JSON。成功返回 True；失败记日志、清临时文件并返回 False。"""
+    """原子写 JSON。成功返回 True；失败记日志、清临时文件并返回 False。
+
+    allow_nan=False:NaN/Inf 是非法 JSON——Python 自己的 json.loads 虽然容忍,
+    但浏览器 JSON.parse 不容忍。一个 NaN 速度值混进 tasks.json,会让此后每次
+    /api/tasks 与 SSE 快照的响应体都无法解析,前端任务列表持续挂。
+    这里选择让 dumps 抛错走既有失败路径(内存态不丢),绝不落非法文件。"""
     with _write_lock:
         tmp = path.with_name(path.name + ".tmp")
         try:
-            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=indent),
+            tmp.write_text(json.dumps(data, ensure_ascii=False, indent=indent,
+                                      allow_nan=False),
                            encoding="utf-8")
             os.replace(tmp, path)
             return True

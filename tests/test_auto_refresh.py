@@ -73,12 +73,12 @@ def test_all_listed_ups_downloaded(monkeypatch):
 
 def test_quality_label_passed_to_batch(monkeypatch):
     """每个 UP 的默认清晰度配置要传给下载批次。"""
-    ups = [{"mid": 1, "uname": "A", "quality": "720P"}, {"mid": 2, "uname": "B"}]
+    ups = [{"mid": 1, "uname": "A", "quality": "1080"}, {"mid": 2, "uname": "B"}]
     batches, _, _ = _patch_env(
         monkeypatch, ups,
         {1: [_vid("BV1", 100)], 2: [_vid("BV2", 100)]})
     auto_refresh.refresh_once()
-    assert [b[1] for b in batches] == ["720P", ""], "按 UP 的 quality 传清晰度,未配置为自动"
+    assert [b[1] for b in batches] == ["1080", ""], "按 UP 的 quality 传清晰度,未配置为自动"
 
 
 def test_skips_seen_and_downloaded(monkeypatch):

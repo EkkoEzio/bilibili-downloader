@@ -484,7 +484,7 @@ def fetch_fav_folder_covers(folders, *, context=None) -> list[dict]:
 
 
 def fetch_followings(page: int = 1, size: int = 50, *, context=None) -> list[dict]:
-    """拉取我关注的 UP 主列表。"""
+    """拉取我关注的 UP 主列表。page 接到 pn 请求参数(此前被静默忽略)。"""
     def parse(data, _fetched):
         items = [{"mid": following.get("mid"), "uname": following.get("uname", ""),
                   "face": (following.get("face") or "").replace("http:", "https:")}
@@ -492,8 +492,8 @@ def fetch_followings(page: int = 1, size: int = 50, *, context=None) -> list[dic
         return items, False
 
     return _paged_get("https://api.bilibili.com/x/relation/followings",
-                      {"order": "desc"}, what="关注列表", max_pages=1,
-                      ps=min(size, 50), mid_param="vmid", parse=parse,
+                      {"order": "desc", "pn": int(page or 1)}, what="关注列表",
+                      max_pages=1, ps=min(size, 50), mid_param="vmid", parse=parse,
                       context=context)
 
 
@@ -596,65 +596,6 @@ _wbi_ie = None
 
 _RELATION_MODIFY_ENDPOINT = "https://api.bilibili.com/x/relation/modify"
 _RELATION_ACTS = {"follow": 1, "unfollow": 2}
-
-
-_RELATION_QUERY_ENDPOINT = "https://api.bilibili.com/x/relation/relations"
-
-
-def fetch_relation_statuses(mids, *, context=None) -> Optional[dict]:
-    """批量查关注关系 → {mid: bool}；查不到返回 None(交给调用方回退)。
-
-    B 站前端就是拿 /x/relation/relations 一次问一批,这才是「是否关注」的
-    权威来源。但它对异常流量很敏感(412),而 412 会被全局冷却拦下后续请求,
-    所以这里**失败一律返回 None**,由调用方回退到关注列表匹配,
-    绝不让关注状态查询把整页的其它请求一起拖进冷却。
-    """
-    fid_list = [int(mid) for mid in mids if int(mid) > 0]
-    if not fid_list:
-        return {}
-    context, cookiejar = _auth_session(context)
-    if cookiejar is None:
-        raise NotLoggedInError("未登录,无法查询关注状态")
-    result = {}
-    for start in range(0, len(fid_list), 50):
-        chunk = fid_list[start:start + 50]
-        try:
-            resp = governor.call(
-                "default", requests.get, _RELATION_QUERY_ENDPOINT,
-                params={"fids": ",".join(str(mid) for mid in chunk)},
-                cookies=cookiejar,
-                headers={**BROWSER_HEADERS, "Referer": "https://www.bilibili.com/"},
-                timeout=12,
-            )
-            data = _safe_json(resp)
-        except UpstreamRateLimitError:
-            # 已进入冷却:整体回退,别再挣扎
-            return None
-        except Exception:
-            return None
-        if not isinstance(data, dict) or data.get("code") != 0:
-            return None
-        # 这个接口的 data 结构在不同版本里是 list 或 {"list": [...]}/{"data":[...]}:
-        # 一律按「能取到 mid 的字典集合」处理,取不到就整体回退,
-        # 绝不让格式差异变成 500。
-        payload = data.get("data")
-        if isinstance(payload, dict):
-            payload = (payload.get("list") or payload.get("data")
-                       or payload.get("items") or [])
-        if not isinstance(payload, list):
-            return None
-        for item in payload:
-            if not isinstance(item, dict):
-                return None
-            mid = item.get("mid")
-            if mid is None:
-                continue
-            # attribute:0 未关注 / 2 已关注 / 6 互关 / 128 拉黑
-            result[int(mid)] = int(item.get("attribute") or 0) in (2, 6)
-        for mid in chunk:
-            result.setdefault(mid, False)
-    _ensure_context_current(context)
-    return result
 
 
 def modify_relation(mid: int, action: str, *, context=None) -> None:
@@ -783,9 +724,13 @@ def _search_cache_put(key: str, data) -> None:
         _SEARCH_CACHE[key] = (time.time(), data)
 
 
-def _search_raw(search_type: str, keyword: str, page: int = 1):
+def _search_raw(search_type: str, keyword: str, page: int = 1, *, context=None):
     """走 WBI 签名的站内搜索。失败抛 UpstreamRateLimitError 或 RuntimeError。"""
-    cache_key = f"{search_type}:{keyword}:{page}"
+    # 缓存键必须绑定认证上下文:这是全模块「账号数据按 fingerprint +
+    # incarnation + generation 隔离」的最后一块拼图。否则切换账号后
+    # TTL 内会拿到旧账号 Cookie 拉到的搜索结果。
+    ctx_key = _context_key(context) if context is not None else "anonymous"
+    cache_key = f"{ctx_key}:{search_type}:{keyword}:{page}"
     cached = _search_cache_get(cache_key)
     if cached is not None:
         return cached

@@ -14,19 +14,6 @@ def height_to_label(height: Optional[int]) -> str:
     return f"{height}P"
 
 
-def label_to_label_cn(label: str) -> str:
-    """英文标签转中文友好显示。"""
-    mapping = {
-        "2160P": "4K 超清",
-        "1440P": "2K 超清",
-        "1080P": "1080P 高清",
-        "720P": "720P",
-        "480P": "480P",
-        "360P": "360P 流畅",
-    }
-    return mapping.get(label, label)
-
-
 def _format_label(f: dict, height: Optional[int]) -> str:
     """B 站 60 帧档位用 quality 编号判定,其余按高度标注。
 
@@ -170,7 +157,7 @@ def best_video_audio_choice(options: list[dict], preferred_label: str) -> str:
 
 # 订阅档位(纯分辨率)→像素高度。与 up_list.QUALITY_CHOICES、前端
 # subscriptions.js 的 UP_QUALITY_SEGMENTS 同一套档位(测试绑定两侧)。
-QUALITY_TIERS = {"2160P": 2160, "2K": 1440, "1080": 1080, "720": 720}
+QUALITY_TIERS = {"2160P": 2160, "2K": 1440, "1080": 1080}  # 720 档已退役(最低 1080)
 
 
 def resolve_quality_label(options: list[dict], quality: str) -> str:

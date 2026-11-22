@@ -40,8 +40,6 @@ Object.assign(window, {
   libToggleAll: lib.libToggleAll,
   toggleLibCheck: lib.toggleLibCheck,
   scrollToTop: lib.scrollToTop,
-  applyFresh: lib.applyFresh,
-  dismissFresh: lib.dismissFresh,
   // 首页推荐
   loadHomeFeed: home.loadHomeFeed,
   // 抽屉 / 登录 / 设置

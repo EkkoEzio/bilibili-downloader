@@ -85,7 +85,6 @@ export async function favLoadFolders() {
     page: 'fav',
     api: '/api/fav-folders',
     cacheKey: 'fav_folders',
-    fast: true,
     extract: (b) => b.folders || [],
     stillValid: () => state.mode === 'fav' && !_favCurrent,
     showLoading: () => {

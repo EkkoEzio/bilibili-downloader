@@ -71,14 +71,16 @@ class UpListWriteError(RuntimeError):
 # 默认最高帧率(144→60→30),没有所选档位时自动降档到所选以下最高。
 # 档位→实际流的解析在 quality.resolve_quality_label;quality.js 的 QUALITY_OPTIONS
 # (手动下载/合集/收藏下拉,含仅音频)不受影响。
-# 存量旧值由 _norm_quality 归一:1080P60/1080P→1080、720P60/720P→720;
-# 已下线档位(480P/360P/1440P)回落最高。
-QUALITY_CHOICES = ("", "2160P", "2K", "1080", "720", "音频")
+# 2026-11-22 改版:720 档退役,最低可选 1080——选 1080 而视频最高不足 1080 时,
+# 由 resolve_quality_label 按所选以下最高可用档兜底(用户要求)。
+# 存量旧值由 _norm_quality 归一:1080P60/1080P→1080;720P60/720P/720→1080
+# (旧 720 选择不再可选,就近归一到新的最低档);已下线档位(480P/360P/1440P)回落最高。
+QUALITY_CHOICES = ("", "2160P", "2K", "1080", "音频")
 
 # 旧精确标签 → 新分辨率档(读旧清单/旧 API 调用时归一)
 _LEGACY_QUALITY = {
     "1080P60": "1080", "1080P": "1080",
-    "720P60": "720", "720P": "720",
+    "720P60": "1080", "720P": "1080", "720": "1080",
 }
 
 
@@ -282,13 +284,6 @@ def save_scan_state(mid: int, state: dict) -> None:
         _commit(data)
 
 
-def get_fetched_at(mid: int) -> Optional[int]:
-    """某 UP 上次拉取的时刻;从未拉过返回 None。"""
-    with _lock:
-        last = _read().get("last_seen", {}).get(str(mid))
-    return (last or {}).get("fetched_at")
-
-
 def reset_seen(mid: int) -> None:
     """重置某个 UP 的已见标记(下次检查会把他的所有视频都算新增)。"""
     with _lock:
@@ -314,10 +309,6 @@ COLLECTION_KINDS = ("season", "fav")
 # 分辨率档,已下线档位回落最高;下载时 resolve_quality_label 按档位解析挑流。
 MAX_COLLECTIONS = 100
 COLLECTION_SEEN_MAX = 300
-
-
-def _collection_key(kind: str, cid: int) -> str:
-    return f"{kind}:{int(cid)}"
 
 
 def list_collections() -> list[dict]:

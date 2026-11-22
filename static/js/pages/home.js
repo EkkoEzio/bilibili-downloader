@@ -9,8 +9,7 @@
    - 首屏必须铺满视口：按网格容量一次要够条数，不够再补拉，不留半屏空白；
    - 推荐理由 / 播放点赞数是本页独有的卡片信息。 */
 import { registerPage, state, libDom, renderPage, appendItems, replaceItems,
-         getLibSearchQuery, defaultChunk, cancelCachedLoads, showFreshHint,
-         dismissFresh } from '../lib.js';
+         getLibSearchQuery, defaultChunk, cancelCachedLoads, dismissFresh } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { emptyStateHtml, loadingStateHtml as loadingHtml } from '../lib.js';
 import { icon } from '../icons.js';
@@ -122,7 +121,7 @@ function retryDelayMs(error) {
 
 /* 第一页现拉成功后直接上屏:不再弹「获取到新内容 · 查看最新」让人点一下。
    用户勾选不会被清掉——replaceItems 只丢弃新列表里已不存在的项。 */
-function applyFirstPage(items, restored, isCurrent) {
+function applyFirstPage(items) {
   replaceItems(items);
   state.shown = state.items.length;  // 已拉到的条目全部上屏
   renderPage();
@@ -145,7 +144,6 @@ export async function loadHomeFeed() {
   const current = () => requestIsCurrent(generation, controller);
   d.meta.textContent = '';
   d.list.innerHTML = loadingHtml('正在加载首页推荐…');
-  dismissFresh('home');
   try {
     // 缓存优先:上次的首页先上屏,后面现拉成功再无缝替换。
     let restored = 0;
@@ -177,7 +175,7 @@ export async function loadHomeFeed() {
           _freshIdx = 1;
           if (items.length) {
             _loading = false;  // 首屏落定,放开翻页闸门再补拉
-            applyFirstPage(items, restored, current);
+            applyFirstPage(items);
             return;
           }
           // ok 但空:B 站风控中的典型表现,继续重试。

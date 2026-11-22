@@ -177,10 +177,6 @@ def set_config(patch: dict) -> dict:
     return {"ok": True, **get_config()}
 
 
-def get_download_dir() -> Path:
-    return DOWNLOAD_DIR
-
-
 def get_ratelimit_bytes():
     """yt-dlp 的 ratelimit(字节/秒),None 表示不限速。"""
     if RATELIMIT_MBPS <= 0:

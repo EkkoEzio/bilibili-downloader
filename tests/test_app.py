@@ -29,10 +29,10 @@ def test_up_list_includes_fetched_at_and_quality(client, monkeypatch, tmp_path):
     up_list_module.mark_seen(1, "BVx", 100, "标题", fetched_at=1234)
     r = client.get("/api/up-list").get_json()
     assert r["ups"][0]["fetched_at"] == 1234
-    assert r["ups"][0]["quality"] == "720"
-    # 旧档位写入时归一到新分辨率档(720P60/720P→720),与新档位并存有效
+    assert r["ups"][0]["quality"] == "1080"
+    # 旧档位写入时归一到新最低档(720P60/720P/720→1080),与新档位并存有效
     up_list_module.set_quality(1, "720P60")
-    assert client.get("/api/up-list").get_json()["ups"][0]["quality"] == "720"
+    assert client.get("/api/up-list").get_json()["ups"][0]["quality"] == "1080"
     up_list_module.set_quality(1, "音频")
     assert client.get("/api/up-list").get_json()["ups"][0]["quality"] == "音频"
 
@@ -43,6 +43,9 @@ def test_resolve_quality_label_prefers_framerate_then_downgrades():
     2026-11-17 档位改版:去掉 60 帧独立档,只选分辨率。同高度里 classify_formats
     已把 P60 排在前,取第一项即默认最高帧率(144/60 由 B 站档位编号天然保证);
     所选高度缺失时降档到所选以下最高;''(最高)= 全场最高;旧精确标签原样透传。
+
+    2026-11-22:720 档退役,订阅档位最低 1080;源最高不足 1080 时按所选以下
+    最高兜底。存量 720 旧值在 up_list._norm_quality 归一成 1080,不会到这里。
     """
     from quality import resolve_quality_label
     options = [
@@ -57,11 +60,15 @@ def test_resolve_quality_label_prefers_framerate_then_downgrades():
     assert resolve_quality_label(options, "1080") == "1080P60"
     # 所选高度(2K=1440)没有:降到所选以下最高(1080,同样取 60 帧档)
     assert resolve_quality_label(options, "2K") == "1080P60"
-    # 720 精确命中;''(最高)= 全场最高
-    assert resolve_quality_label(options, "720") == "720P"
+    # ''(最高)= 全场最高;只有更高档位、以下什么都没有:理论边缘,取全场最高
     assert resolve_quality_label(options, "") == "2160P"
-    # 只有更高档位、以下什么都没有:理论边缘,取全场最高
-    assert resolve_quality_label(options[:2], "720") == "2160P"
+    assert resolve_quality_label(options[:2], "1080") == "2160P"
+    # 视频最高画质不足 1080(退役 720 后的最低档):按小于 1080 里的最高画质下载
+    below_1080 = [
+        {"format_id": "v720", "kind": "video", "label": "720P", "height": 720, "tbr": 300},
+        {"format_id": "v480", "kind": "video", "label": "480P", "height": 480, "tbr": 200},
+    ]
+    assert resolve_quality_label(below_1080, "1080") == "720P"
     # 旧精确标签不是分辨率档位,原样透传走既有精确匹配路径
     assert resolve_quality_label(options, "1080P60") == "1080P60"
     assert resolve_quality_label(options, "1080P") == "1080P"
@@ -1127,35 +1134,30 @@ def test_frontend_clean_invalid_option():
 
 
 def test_frontend_cache_first_loading():
-    """统一缓存优先:先读 /api/cache 秒显,后台拉新;慢源有变化提示「查看最新」。"""
+    """统一缓存优先:先读 /api/cache 秒显,后台拉新;有更新直接静默替换
+    (「查看最新」提示条机制已于 2026-11-11 移除、2026-11-22 清理残件)。"""
     html = _tpl()
     assert "cachedLoad" in html
     assert "/api/cache/" in html
-    assert "fresh-hint" in html
-    assert "applyFresh" in html
-    # 五个数据源都走统一加载器
-    for fn in ("loadFollowBili", "loadMergedUps", "favLoadFolders", "loadSeasons", "loadWatchlater"):
-        assert f"cacheKey" in html, "加载器应声明 cacheKey"
+    assert "export function showFreshHint" not in html, "提示条机制已删,不该回来"
+    assert "export function applyFresh" not in html, "applyFresh 已删,不该回来"
+    assert "onclick=\"applyFresh" not in html, "提示条按钮模板已删,不该回来"
+    # 五个数据源都走统一加载器且各自声明 cacheKey
+    for key in ("follow_updates", "followings", "fav_folders", "fav_seasons", "watchlater"):
+        assert f"cacheKey: '{key}'" in html, f"缺少数据源 {key}"
 
 
 def test_frontend_fast_sources_auto_apply():
     """快数据源(追更合集/收藏夹/稍后再看,单接口毫秒级)拉新后无感替换渲染,
-    不弹「查看最新」提示条——提示条只为串行慢源(关注动态/关注列表)保留。
-    起因:重启后首开追更合集必弹一次提示(对比基准是上次会话的缓存,隔天必过期),
-    对几百毫秒就能返回的接口,无感替换才对齐官网行为。"""
+    不弹「查看最新」提示条。2026-11-11 起该行为由 cachedLoad 统一承担
+    (有新数据直接换,守卫见 test_frontend_fast_apply_guard_lives_in_cached_load);
+    页面层的 fast: 选项已被移除,传入即死参数,这里防止它复活。"""
     html = _tpl()
-
-    def opts_of(cache_key):
-        i = html.find(f"cacheKey: '{cache_key}'")
-        assert i >= 0, f"缺少数据源 {cache_key}"
-        start = html.rfind("cachedLoad({", 0, i)
-        return html[start:html.find("});", i)]
-
     assert "cachedLoad({" in html, "cachedLoad 应存在"
-    for key in ("fav_seasons", "fav_folders", "watchlater"):
-        assert "fast: true" in opts_of(key), f"{key} 是快源,应 fast: true 无感替换"
-    for key in ("follow_updates", "followings"):
-        assert "fast: true" not in opts_of(key), f"{key} 是慢源,应保留提示条"
+    assert "fast: true" not in html and "fast: forced" not in html, \
+        "cachedLoad 已无 fast 选项,页面层不应再传死参数"
+    for key in ("fav_seasons", "fav_folders", "watchlater", "follow_updates", "followings"):
+        assert f"cacheKey: '{key}'" in html, f"缺少数据源 {key}"
 
 
 def test_frontend_uplist_drawer_removed():
@@ -2313,7 +2315,7 @@ def test_up_card_toggles_have_no_confirmation_dialog():
 def test_up_card_auto_is_flat_segment_row():
     """自动下载档位平铺成分段胶囊(2026-11-17 用户定稿),点哪个切哪个。
 
-    「不下载 + 最高/4K/2K/1080/720」统一平铺一排——纯分辨率档:同分辨率默认
+    「不下载 + 最高/4K/2K/1080」统一平铺一排——纯分辨率档:同分辨率默认
     最高帧率(144→60→30),没有所选分辨率时自动降档到所选以下最高(由后端
     quality.resolve_quality_label 在挑流时落实);60 帧独立档已移除,仅音频
     保留为正式档位,「最高画质」更名「最高」。切换即时生效但列表位置不动、卡片不立刻消失,
@@ -2339,7 +2341,7 @@ def test_up_card_auto_is_flat_segment_row():
         "分段档位来自 quality.js 共享清单(UP/合集/收藏同源),存量旧档读时归一"
     # 注意:_js_func_body 会把函数前的模块级常量与注释一并带进 ctrl,
     # 旧档位字面量(归一映射)与注释里的措辞不该在这里做字面量禁令,
-    # 「不下载/最高/4K/2K/1080/720」的档位约束全部落在上面 seg_decl 断言。
+    # 「不下载/最高/4K/2K/1080」的档位约束全部落在上面 seg_decl 断言。
     assert "uc-auto-pill" in ctrl and "upAutoPick" in ctrl, \
         "分段是可点的胶囊按钮,统一走 upAutoPick"
     assert "tgl" not in ctrl and "<select" not in ctrl, \
@@ -2353,8 +2355,8 @@ def test_up_card_auto_is_flat_segment_row():
     assert "AUTO_QUALITY_SEGMENTS as UP_QUALITY_SEGMENTS" in feed_js \
         and "normAutoQuality as _normQuality" in feed_js, \
         "订阅页分段清单与归一函数应从 quality.js 别名导入"
-    assert '"1080P60": "1080"' in qjs and '"720P60": "720"' in qjs, \
-        "旧精确标签的归一映射在前端同样存在(合集/收藏订阅记录里可能有旧值)"
+    assert '"1080P60": "1080"' in qjs and '"720P60": "1080"' in qjs, \
+        "旧精确标签在前端同样归一(720 档退役,统一落到新的最低档 1080)"
     seg_at = qjs.index("AUTO_QUALITY_SEGMENTS = [")
     seg_decl = qjs[seg_at:qjs.index("];", seg_at)]
     assert '["__off", "不自动下载"]' in seg_decl and '["", "最高"]' in seg_decl \
@@ -2364,7 +2366,7 @@ def test_up_card_auto_is_flat_segment_row():
         "60 帧独立档不在订阅分段里(音频是正式档位,标签「仅音频」)"
     seg_values = re.findall(r'\["([^"]*)",', seg_decl)
     assert set(seg_values[1:]) == set(up_list_module.QUALITY_CHOICES), \
-        "分段档位与后端 up_list.QUALITY_CHOICES 一致(最高/4K/2K/1080/720)"
+        "分段档位与后端 up_list.QUALITY_CHOICES 一致(最高/4K/2K/1080/音频)"
     pick_body = _js_func_body(feed_js, "upAutoPick")
     assert "/api/up-list/remove" in pick_body and "/api/up-list/add" in pick_body \
         and "/api/up-list/set-quality" in pick_body, \
@@ -2522,7 +2524,7 @@ def test_collection_auto_control_is_flat_segment_row():
     seg_values = re.findall(r'\["([^"]*)",', seg_decl)
     assert seg_values[0] == "__off"
     assert set(seg_values[1:]) == set(up_list_module.QUALITY_CHOICES), \
-        "分段档位与后端 up_list.QUALITY_CHOICES 一致(最高/4K/2K/1080/720/音频)"
+        "分段档位与后端 up_list.QUALITY_CHOICES 一致(最高/4K/2K/1080/音频)"
     assert "720P60" not in seg_decl and "1080P60" not in seg_decl, \
         "60 帧独立档不在分段里(音频是正式档位,标签「仅音频」)"
     # pick 语义:三接口齐全;切换即时生效但列表位置不动(重算只挂在加载路径)
@@ -2960,7 +2962,8 @@ def test_collection_card_control_shares_title_row():
     assert "icon('folder') + '收藏夹'" not in fav_js, \
         "收藏页的类型小字保持移除(用户只点了「追更中」)"
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    assert ".fav-tag{" in css, "行式标签样式要保留"
+    # .fav-tag 已随「追更中」角标撤下整体删除(2026-11-22 清理,插槽 ${badge} 仍在)
+    assert ".fav-tag{" not in css, "行式标签样式已删,不该回来"
     assert ".fc-tag{" not in css, "标题行标签样式应撤掉"
     assert ".uc-badge{position:absolute;top:8px;right:8px" in css, \
         "角标靠 .uc-badge 的绝对定位钉在右上角"
@@ -3222,13 +3225,14 @@ def test_subs_refresh_bypasses_cache():
 
 
 def test_subs_force_refresh_applies_data_directly():
-    """强制刷新必须走 fast 分支直接应用,不能只弹「获取到新内容」提示条。
+    """强制刷新(force=1)绕过后端内存缓存,且不传已废弃的 fast 死参数。
 
-    回归:cachedLoad 对慢源只在 sig 变化时弹提示,用户点刷新后列表纹丝不动。
-    """
+    回归:cachedLoad 曾对慢源只在 sig 变化时弹提示;2026-11-11 起有新数据
+    直接静默应用(fast 选项随之删除),强制刷新只负责绕过服务端缓存。"""
     subs_js = (_js_dir() / "pages" / "subscriptions.js").read_text(encoding="utf-8")
     body = _js_func_body(subs_js, "loadSubscriptions")
-    assert "fast: forced" in body, "强制刷新应传 fast,让新数据直接应用"
+    assert "force=1" in body, "强制刷新应绕过服务端内存缓存"
+    assert "fast:" not in body, "fast 选项已删除,不应再传死参数"
 
 
 def test_collection_baseline_over_limit_fails_loudly():
@@ -3256,19 +3260,6 @@ def test_collection_reset_seen_route(client, monkeypatch):
 
 
 # ---------- 2026-11-11 第三轮复查:显示层、反馈通道与数据口径 ----------
-
-def test_fresh_hint_visible_state_overrides_default_hidden():
-    """「获取到新内容」提示条必须能真的显示出来。
-
-    回归:样式表里 .fresh-hint{display:none} 是静息态,而 showFreshHint 只把内联
-    display 清空,等于回到 none —— 五个缓存优先页的提示条从未出现过。
-    """
-    html = _tpl()
-    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
-    assert ".fresh-hint{display:none" in html, "静息态仍隐藏,靠内联样式打开"
-    assert "bar.style.display = 'flex'" in lib_js, \
-        "显示时必须显式写 flex,置空会被静息态覆盖"
-
 
 def test_save_flash_has_visible_state():
     """「已自动保存」轻提示必须有显示态样式。
@@ -3840,8 +3831,9 @@ def test_follow_chip_and_batch_status_endpoint(client, monkeypatch):
     assert "statusByMid" in follow_js, "同一UP 的状态要复用,别重复查"
 
     import bilibili_api as bapi
-    # 批量接口优先:返回 None 表示它被风控,才会回退到关注列表匹配
-    monkeypatch.setattr(bapi, "fetch_relation_statuses", lambda mids, **kw: None)
+    # 批量关系接口已整体删除(2026-11-22 清理):生产唯一路径是关注列表本地匹配。
+    assert not hasattr(bapi, "fetch_relation_statuses"), \
+        "批量关系接口已删,不该回来(实测反复触发 412 全局冷却)"
     monkeypatch.setattr(bapi, "fetch_followings_all",
                         lambda **kw: {"items": [{"mid": 111}, {"mid": 333}], "total": 2})
     import app as app_module
@@ -3902,11 +3894,9 @@ def test_relation_status_uses_followings_cache(client, monkeypatch):
     monkeypatch.setattr(app_module, "_request_auth_context", lambda: None)
     monkeypatch.setattr(bapi, "fetch_followings_all",
                         lambda **kw: {"items": [{"mid": 111}, {"mid": 333}], "total": 2})
-
-    def boom(*a, **kw):
-        raise AssertionError("不该再依赖批量关系接口")
-
-    monkeypatch.setattr(bapi, "fetch_relation_statuses", boom)
+    # 批量关系接口已删除(2026-11-22):符号不存在即最强的「不再依赖」保证。
+    assert not hasattr(bapi, "fetch_relation_statuses"), \
+        "批量关系接口已删,不该回来(实测反复触发 412 全局冷却)"
     r = client.get("/api/relation/status?mids=111,222,333")
     assert r.status_code == 200
     body = r.get_json()

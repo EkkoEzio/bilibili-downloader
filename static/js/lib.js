@@ -329,40 +329,17 @@ export function scrollToTop() {
   document.querySelector('.content').scrollTo({ top: 0, behavior: 'smooth' });
 }
 
-/* ---------- 「缓存优先 → 后台拉新 → 有新数据提示」 ---------- */
-const _freshApply = {};
-
-export function showFreshHint(pageName, applyFn) {
-  const pg = document.querySelector(`.page[data-page="${pageName}"]`);
-  if (!pg) return;
-  _freshApply[pageName] = applyFn;
-  let bar = pg.querySelector('.fresh-hint');
-  if (!bar) {
-    bar = document.createElement('div');
-    bar.className = 'fresh-hint';
-    (pg.querySelector('.sub-info') || pg.querySelector('.page-head')).after(bar);
-  }
-  bar.setAttribute('role', 'status');
-  bar.setAttribute('aria-live', 'polite');
-  bar.innerHTML = `<span class="fh-text">获取到新内容</span>
-    <button class="primary" onclick="applyFresh('${pageName}')">查看最新</button>
-    <button class="quiet" onclick="dismissFresh('${pageName}')">暂不</button>`;
-  // 必须显式写 flex:样式表里 .fresh-hint{display:none} 是静息态,
-  // 置空内联样式等于回到 none,提示条从未显示过(2026-11-11 实测)。
-  bar.style.display = 'flex';
-}
-
-export function applyFresh(pageName) {
-  const fn = _freshApply[pageName];
-  dismissFresh(pageName);
-  if (fn) fn();
-}
+/* ---------- 「缓存优先 → 后台拉新 → 静默替换」 ----------
+   2026-11-11 起 cachedLoad 对有更新的数据直接静默替换(勾选集不会被清掉,
+   replaceItems 只丢弃新列表里没有的项),不再弹「查看最新」提示条;
+   showFreshHint/applyFresh 机制已随该决策删除(2026-11-22 清理)。
+   dismissFresh 保留为幂等清理:各页 deactivate 与 cachedLoad 起始时清掉
+   可能残留的旧提示条 DOM,无条时是无害空操作。 */
 
 export function dismissFresh(pageName) {
   const pg = document.querySelector(`.page[data-page="${pageName}"]`);
   const bar = pg && pg.querySelector('.fresh-hint');
-  if (bar) bar.style.display = 'none';
-  delete _freshApply[pageName];
+  if (bar) bar.remove();
 }
 
 /* 每个 cacheKey 只有一个请求代际。新调用、换页或切换同页数据源都会取消旧请求；

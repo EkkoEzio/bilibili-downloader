@@ -12,6 +12,7 @@ import re
 import secrets
 import threading
 import time
+import uuid
 from pathlib import Path
 from typing import Optional
 
@@ -297,15 +298,11 @@ def _reset_identity_data_caches() -> None:
     bilibili_api.reset_data_caches()
 
 
-def _reset_runtime_caches() -> None:
-    global _cj_cache
-    with _session_lock:
-        _cj_cache = {"cj": None, "ts": 0.0, "context": None}
-    _reset_identity_data_caches()
-
-
 def _atomic_write_bytes(path: Path, payload: bytes) -> bool:
-    tmp = path.with_name(path.name + ".tmp")
+    # 唯一临时名:固定 .tmp 名在并发写(解析线程写 qr-cookies.txt ×
+    # cookiejar 刷新)时会被另一线程的 os.replace 搬走半截文件。
+    # uuid candidate 模式与 pagecache.save 同款。
+    tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_bytes(payload)
         os.replace(tmp, path)
@@ -340,11 +337,23 @@ def _read_bytes_or_none(path: Path) -> Optional[bytes]:
         return None
 
 
+def _safe_json(resp) -> dict:
+    """上游响应防御:200+HTML/坏 JSON 时报 RuntimeError,不落裸 500。
+
+    与 bilibili_api._safe_json 同一缺陷类(passport 端点异常时回 HTML);
+    fetch_history 的同款问题已修过一次,扫码两端点此处补齐。"""
+    try:
+        data = resp.json()
+    except ValueError as exc:
+        raise RuntimeError("登录服务返回了无法识别的数据") from exc
+    return data if isinstance(data, dict) else {}
+
+
 def qrcode_generate() -> dict:
     """生成二维码。返回 {'url','qrcode_key'}。"""
     resp = governed_get(_http_get, QR_GENERATE, kind="auth",
                         headers=BROWSER_HEADERS, timeout=10)
-    data = resp.json()
+    data = _safe_json(resp)
     governor.note_api_code(data.get("code"), endpoint=QR_GENERATE)
     if data.get("code") != 0:
         raise RuntimeError(f"生成二维码失败: {data.get('message')}")
@@ -357,7 +366,7 @@ def qrcode_poll(qrcode_key: str) -> dict:
     resp = governed_get(_http_get, QR_POLL, kind="auth",
                         params={"qrcode_key": qrcode_key},
                         headers=BROWSER_HEADERS, timeout=10)
-    data = resp.json()
+    data = _safe_json(resp)
     governor.note_api_code(data.get("code"), endpoint=QR_POLL)
     set_cookie = resp.headers.get("Set-Cookie", "")
     return parse_poll_response(data, set_cookie)
@@ -491,10 +500,6 @@ def logout() -> bool:
             return False
     _reset_identity_data_caches()
     return True
-
-
-def has_session() -> bool:
-    return _valid_session(load_session())
 
 
 def write_cookies_txt(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> None:

@@ -373,11 +373,6 @@ def _managed_task_for_path(path: Path) -> dict | None:
     return None
 
 
-def _is_task_managed_path(path: Path) -> bool:
-    """旧内部谓词保留；安全 reveal 需要上面的任务上下文。"""
-    return _managed_task_for_path(path) is not None
-
-
 def reveal_path(path) -> bool:
     """在文件管理器定位路径；任务来源路径必须通过其固定根和当前根双重校验。"""
     candidate = Path(path)

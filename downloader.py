@@ -6,6 +6,7 @@
 模块级绑定。"""
 import importlib.metadata
 import logging
+import math
 import queue
 import shlex
 import shutil
@@ -31,8 +32,6 @@ from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
                        find_task_files, delete_tasks as _store_delete_tasks,
                        delete_tasks_detailed as _store_delete_tasks_detailed,
                        delete_invalid_tasks as _store_delete_invalid_tasks,
-                       clear_tasks as _store_clear_tasks,
-                       clean_invalid_records as _store_clean_invalid_records,
                        create_tasks_if_absent, request_task_cancellation,
                        resolve_download_path, UnsafeDownloadPathError,
                        task_download_root,
@@ -125,12 +124,19 @@ def _release_download_slot() -> None:
 
 
 def _mark_tasks_failed(task_ids, error: str) -> None:
-    """把调度器边界异常落为 failed；写盘失败会留在任务健康字段中。"""
+    """把调度器边界异常落为 failed；写盘失败会留在任务健康字段中。
+
+    已带取消标志的任务不在此落终态:交给 finally 里的取消收尾落 cancelled,
+    否则异常竞态会把「用户已取消」定格成失败(2026-11-22 体检)。"""
     changed: list[str] = []
+    cancelled_hit: list[str] = []
     with _tasks_lock:
         for task_id in task_ids:
             task = _tasks.get(task_id)
             if not task or task.get("status") in TERMINAL:
+                continue
+            if task.get("cancel"):
+                cancelled_hit.append(str(task_id))
                 continue
             task["status"] = "failed"
             task["error"] = error
@@ -138,6 +144,8 @@ def _mark_tasks_failed(task_ids, error: str) -> None:
             changed.append(str(task_id))
     if changed:
         _persist_task_state(changed, "调度异常终态")
+    for task_id in cancelled_hit:
+        _finalize_cancelled(task_id)
 
 
 def _download_worker() -> None:
@@ -481,7 +489,10 @@ def _progress_hook(task_id: str, expected_streams: int = 1):
                 # downloading 是高频更新,节流:每进入一个新的 5% 桶才落一次盘
                 t["progress"] = round(pct, 1)
                 speed = d.get("speed") or 0
-                t["speed"] = round(speed / 1024, 1)  # KB/s
+                # yt-dlp 偶发 NaN speed(上游除零):NaN or 0 仍为 NaN,会经
+                # write_json(allow_nan=False) 让每次落盘失败,且 /api/tasks
+                # 响应体含非法 JSON 挂掉前端——这里显式拦掉非有限数。
+                t["speed"] = round(speed / 1024, 1) if math.isfinite(speed) else 0.0  # KB/s
                 t["eta"] = d.get("eta") or 0
                 bucket = int(t["progress"]) // 5
                 if bucket != state["bucket"]:
@@ -506,9 +517,11 @@ def _progress_hook(task_id: str, expected_streams: int = 1):
                     persist = True
                 # 单条流完成不落 merging/100%:聚合进度仍由剩余流推进。
             elif status == "error":
-                t["status"] = "failed"
+                # 不在这里落终态 failed:这条只是 yt-dlp 单次回调层面的报错,
+                # 重试循环下一轮会改回 retrying;提前写终态会把「之后用户点取消」
+                # 挡在门外(_finalize_cancelled 只改非终态)。错误细节留给
+                # _run_download 的重试耗尽/取消收尾路径统一提交。
                 t["error"] = "下载出错"
-                t["finished_at"] = int(time.time())
                 persist = True
         if persist:
             # 高频进度失败只标记健康，不把异常抛回 yt-dlp 下载线程。
@@ -693,6 +706,11 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
                         t["error"] = ""
                     t["finished_at"] = int(time.time())
                     t["downloaded_bytes"] = downloaded_bytes
+                    # done 必然全部流已落盘:进度回写 100。此前 "best" 被 yt-dlp
+                    # 解析成单流时 finished(1) < expected(2),进度被聚合逻辑
+                    # 封顶 99 且终态不回写,done 卡永远停在 99.x%(2026-11-22 体检)。
+                    if t["status"] == "done":
+                        t["progress"] = 100
                     done_ok = t["status"] == "done"
                     done_title = str(t.get("title") or "视频")
                     actual_filename = str(t.get("actual_filename") or "")
@@ -878,8 +896,16 @@ def _quiesce_task_ids(task_ids: list[str], *, cancel_active: bool,
             continue
 
         active = snapshot.get("status") in ACTIVE
+        # 「无句柄的活跃任务」必须先拒绝再取消:取消意图一旦落盘,任务定格在
+        # cancelling 且无 worker 观察,又因 ∈ ACTIVE 被所有删除/清理路径排除,
+        # 只能等重启才能清(2026-11-22 体检实锤)。先判定句柄,不可删除就不写
+        # 取消意图,记录保持原状。
+        if active and cancel_active and runtime is None:
+            log.error("活动任务没有 runtime 句柄，拒绝删除(不写取消意图) task_id=%s",
+                      task_id)
+            continue
         if active and cancel_active:
-            # 返回前已确保持久化；worker 即使在此间终结，下面仍持有其句柄并等待。
+            # 返回前已确持久化；worker 即使在此间终结，下面仍持有其句柄并等待。
             cancel_download(task_id)
         elif active:
             continue
@@ -900,10 +926,6 @@ def _quiesce_task_ids(task_ids: list[str], *, cancel_active: bool,
                     continue
                 _finalize_cancelled(task_id)
             ready.append(task_id)
-        elif active:
-            # 兼容手工插入/异常遗留的活跃记录：取消意图已落盘，但没有可证明
-            # quiesced 的句柄，因而完整保留记录与文件。
-            log.error("活动任务没有 runtime 句柄，拒绝删除 task_id=%s", task_id)
         else:
             ready.append(task_id)
 
