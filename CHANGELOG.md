@@ -2,6 +2,23 @@
 
 所有版本的变更记录。版本遵循[语义化版本](https://semver.org/)。
 
+## [未发布]
+### ✨ 变更
+
+- **mac 出了真正的安装包（.pkg 安装向导）**：之前 mac 只有 dmg——打开是个「拖到应用程序」的窗口，和 Windows 那边一步步点的安装向导体验对不上，用户会以为「这不是安装包」。现在 mac 与 Windows 都是双击→下一步→装好：新增 `packaging/pkg/`（安装向导的欢迎页 / 完成页 / 产品定义 XML）与 `scripts/build_local.sh` 里的 `pkgbuild` + `productbuild` 两步，产出 `BiliDownloader-<版本>-<架构>.pkg`（欢迎页写清首次打开被拦怎么办、数据存在哪）。dmg 继续保留，两种包都能用。
+  - 踩过的坑：`productbuild` 的 distribution 里，最后那个 `<pkg-ref>` 的正文要写**组件包文件名**（`component.pkg`）。写成 `choice` 会被当成分发 URL 去解析，成品里只剩空壳（实测 payload 0 条，装完什么都不剩）。
+- **未登录时的头像占位换成应用自己的小电视**：原来顶栏与账号抽屉用的都是默认「小人」线稿 SVG，看着像没做完的默认控件。现在用应用图标 `static/icons/app-icon.png`（和 Dock、窗口标题同一个），登录后仍由真实头像覆盖。
+
+### 🐛 修复
+
+- **登录框里的二维码显示不出来（用户报障）**：上游把扫码地址从 `passport.bilibili.com` 换成了 `account.bilibili.com`，而 `/api/login/qrcode-image` 的防钓鱼白名单只写死了旧域名 → 图片接口直接 400，登录框里是一张裂图。白名单放宽为「`bilibili.com` 及其子域」（仍然挡住 evil.com 这类钓鱼域名），实测真实上游 URL 返回 200 与可扫二维码。
+- **浏览器明明登录了，应用却显示未登录（用户报障）**：`yt-dlp` 的 `cookiesfrombrowser` 在不指定 profile 时，只读浏览器用户目录里**mtime 最新**的那个 Cookies 库——也就是只读一个 profile。用户的 Edge 有 Default（娱乐）与 Profile 2（工作）两个 profile，B 站 SESSDATA 只在 Profile 2 里，于是读到了没登录的那个（实测：Default 449 个 cookie 无 SESSDATA，Profile 2 2329 个含 SESSDATA）。新增 `browser_cookies.py`：遍历所有 profile 取第一个真的带 B 站 SESSDATA 的，并把解析出的 profile 带给解析/下载路径，避免「界面已登录、下载却带另一个 profile 的 Cookie」。
+  - 顺带说明：Windows 上 Edge 自 127 起对 Cookie 做了 App-Bound 加密，解密需要提权，浏览器免登录在那边不可靠——扫码 / cookies.txt 才是 Windows 的正路。
+
+### 🧹 精简
+
+- **发版脚本补齐文档同步**：`release.sh` 之前只改 CHANGELOG 顶部版本号，不动底部链接引用与 README 横幅版本号 → 发完版仓库里文档测试直接变红（`test_changelog_link_refs_cover_released_versions` / `test_readme_banner_matches_latest_changelog_version`）。现在发版会自动补 `[vX.Y.Z]` 链接引用并同步 README 横幅版本号，描述文案仍需人工确认。
+
 ## [v2.9.0] - 2026-11-22
 ### ✨ 变更
 
@@ -979,6 +996,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.9.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.9.0
 [v2.8.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.8.0
 [v2.7.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.7.0
 [v2.6.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.6.0

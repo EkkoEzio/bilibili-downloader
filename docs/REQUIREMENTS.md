@@ -39,6 +39,8 @@
 
 二维码和登录 Cookie 都可能过期。二维码是否有效以 B 站轮询状态为准，本项目不承诺固定时长或“长期有效”。只有后端轮询到成功并持久化凭据后，扫码页面才能安全关闭。
 
+浏览器来源必须覆盖**多 profile**：同一台 Edge 通常有多个 profile（默认 profile 与若干 `Profile N`），B 站登录态一般只落在其中一个。实现要遍历所有 profile，取真的带 B 站 SESSDATA 的那个，而不是只读「Cookie 库最近被写入」的那一个（否则用户浏览器里明明登录着，界面却显示未登录）。解析与下载必须使用同一个 profile。
+
 ### R4 认证上下文
 
 认证上下文至少包含：
@@ -201,7 +203,7 @@
 
 - Host 只允许 `localhost`、`127.0.0.1`、`[::1]` 及合法端口。
 - 浏览器发送 Origin、Referer 或 Sec-Fetch-Site 时必须严格同源；三者都缺失时允许本机脚本和测试客户端。
-- Cookie 导入体及全局请求体受大小限制；二维码图片只允许 B 站护照 HTTPS 域名。
+- Cookie 导入体及全局请求体受大小限制；二维码图片只允许 B 站自己的 HTTPS 域名（`bilibili.com` 及其子域，含上游在 `passport.bilibili.com` / `account.bilibili.com` 之间切换的情况），其余一律拒绝。
 
 ### R18 聚合 SSE
 

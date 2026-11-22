@@ -86,6 +86,36 @@ print(f"CHANGELOG.md → ## [v{version}] - {today}")
 Path("VERSION").write_text(version + "\n", encoding="utf-8")
 print(f"VERSION → {version}")
 
+# 3) CHANGELOG 底部链接引用(Keep a Changelog 惯例)
+#    每个已发布版本都要有 [vX.Y.Z]: <release url>。漏了的话 docs 测试会红
+#    (test_changelog_link_refs_cover_released_versions),而且网页上的版本号
+#    会变成纯文本而不是可点链接。发版脚本必须自己补上,不能指望人记得。
+changelog_links = Path("CHANGELOG.md")
+text = changelog_links.read_text(encoding="utf-8")
+link_line = (f"[v{version}]: "
+             f"https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v{version}")
+if link_line not in text:
+    marker = re.search(r"^\[v\d+\.\d+\.\d+\]:\s*http", text, re.M)
+    if marker:
+        text = text[:marker.start()] + link_line + "\n" + text[marker.start():]
+        changelog_links.write_text(text, encoding="utf-8")
+        print(f"CHANGELOG.md → 补上 {link_line.split(':')[0]} 链接引用")
+    else:
+        print("警告:CHANGELOG.md 里找不到底部链接引用区,请手动补一条")
+
+# 4) README 顶部横幅的版本号
+#    只同步版本号,不自动编描述文案——描述要人写。漏同步的话 README 会停在
+#    上一个版本,docs 测试会红(test_readme_banner_matches_latest_changelog_version)。
+readme = Path("README.md")
+readme_text = readme.read_text(encoding="utf-8")
+new_banner, count = re.subn(r"\*\*v\d+\.\d+\.\d+\*\*", f"**v{version}**",
+                             readme_text, count=1)
+if count and new_banner != readme_text:
+    readme.write_text(new_banner, encoding="utf-8")
+    print(f"README.md → 横幅版本号 → v{version}(描述文案请人工检查是否还合适)")
+else:
+    print("警告:README.md 顶部没找到 **vX.Y.Z** 横幅,未自动更新")
+
 # 3) Inno Setup 脚本里的版本宏(Windows 安装包元数据)
 iss = Path("packaging/bilibili.iss")
 if iss.is_file():
