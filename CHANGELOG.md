@@ -6,10 +6,42 @@
 
 ### ✨ 变更
 
+- **登录来源说明写清楚（用户困惑）**：用户反馈「点进去就有我的所有信息，没走登录流程」。原因不是 bug——登录来源是 `browser`（Edge 免登录）：每次请求都从本机 Edge 现读 B 站 Cookie，所以本机上打开就是登录态；发给别人时对方 Edge 没登录，就会正常走扫码/cookies.txt 流程。账号抽屉里的来源标签改成「Edge 浏览器（免登录，直接读本机 Cookie）」，一眼能看出为什么没登录页。
+- **应用图标重做（手写矢量，不用 AI 位图）**：原来的顶栏 logo 是 2px 细描边小电视 + 粉色圆角块，30px 下笔画细碎、发虚。新图标改为矢量源文件 `packaging/icon.svg`：B 站粉渐变圆角方块 + 白色实心「小电视」（短撇天线，贴近 B 站官方 TV 造型）+ 屏幕内挖空一个粉色下载箭头（下载语义直接落在屏幕里）。同一份源文件出 16px–1024px 全尺寸锐利——AI 生成的位图做不到小尺寸不糊，矢量可以。产物：`packaging/icon.icns`（macOS，按 Apple 规范方形图标留 20% 边）、`packaging/icon.ico`（Windows，6 档满幅）、`static/icons/app-icon.png` + `app-icon-32.png`（界面与 favicon）；顶栏 logo 换成同一套字形；PyInstaller spec 与 Inno Setup 已接上图标。生成脚本 `scripts/build_icon.sh` 可复现（Windows CI 上没有 rsvg-convert，所以 `.icns`/`.ico` 直接提交进仓库）。
+- **桌面应用打包链路落地（mac arm64 / mac x86_64 / win x64 三平台）**：新增 `desktop.py`（pywebview 原生窗口壳，内嵌 Flask 服务，双击即用、不开终端不进浏览器）、`packaging/bilibili.spec`（PyInstaller 白名单打包）、`packaging/scan_artifact.py`（产物隐私扫描）、`packaging/bilibili.iss`（Windows Inno Setup）、`scripts/build_local.sh`（本机构建）与 `scripts/release.sh`（一条命令发版），以及 GitHub Actions 三平台流水线（推 tag 即出三个安装包并发布到 Releases）。本机已实测产出 `BiliDownloader-2.8.0-arm64.dmg`（约 29 MB），产物隐私扫描通过，冻结后的包自检（起服务 → 探活 → 退出）通过。
+- **打包态运行数据外置**：路径规则抽到零依赖的 `runtime_paths.py`（`config.py` 与 `instance_lock.py` 共用同一来源，消除第二个路径源）。源码运行仍走项目内 `data/`；打包后走 `~/Library/Application Support/BiliDownloader`（mac）与 `%APPDATA%\BiliDownloader`（win）。原因：.app bundle 与 Program Files 都是只读的，写进去会破坏代码签名（macOS 直接拒绝启动）；onefile 模式还会随临时目录销毁导致登录态与任务史每次启动归零；同机多用户共用一份数据目录等于互相暴露 SESSDATA。`BD_DATA_DIR` 可显式覆盖（便携版/自测）。
+- **卡片元信息行收敛为公共件**：`.vi-ident` 身份行 + `.vi-meta-actions` 操作组（Finder 定位 + 关注胶囊）此前在 `lib.js` 与 `pages/downloads.js` 各写一份，已经各自漂移过一次。现抽成 `metaRowHtml()` / `followChipHtml()` / `identityHtml()`（lib.js 导出），两处共用。
+- **封面覆盖件暗底色令牌化**：`rgba(20,21,24,…)` 此前在 main.css 硬编码 9 处，改一次要动 9 个点；现统一走 `--overlay-rgb` / `--overlay-bg` / `--overlay-bg-hover`，数值逐个保持原样（视觉零变化）。
+
 - **订阅自动下载档位退役 720,最低可选 1080（用户要求）**：UP/合集/收藏三处订阅卡与批量下载条共用的档位分段移除「720」,最低可选「1080」;视频实际最高画质不足 1080 时按小于 1080 档里的最高画质自动降档下载(既有降档规则兜底,无新增逻辑)。存量订阅留存的 720/720P/720P60 旧档位前后端读取时统一归一为 1080,数据文件无需迁移;手动下载页精确标签下拉(含 720P/720P60)不受影响。
 
 ### 🐛 修复
 
+- **顶栏页头跟着内容滚走（用户要求）**：每个页面左上角的标题行（标题 + 信息行 + 操作钮）此前是普通块级元素，滚动内容区时会一起滚走。现改为 `position:sticky` 钉在内容区顶部（内容区 `.content` 是独立滚动容器，sticky 以它为基准），背景不透明以遮住下方滚过的卡片。实测滚动 12000px 后页头位置不变。
+- **滚动加载时整屏闪一下（用户报障）**：无限滚动每加载一页就把整张列表 `innerHTML` 重建一遍，所有 `<img>` 被销毁重建、浏览器重新请求（`loading="lazy"` 的也会重新触发）→ 屏幕白闪一下。现改为**增量追加**：按容器记住已渲染的业务 ID，只把新增条目拼到列表末尾，已渲染的卡片 DOM 完全不动。浏览器实测：卡片 30 → 60 → 120，前三张封面元素仍在文档里且标记未丢（= 没被重建），图片不重载。顺带把统计行文案抽成公共件，追加后计数不再停在旧值。
+- **关注状态批量查询在卡片多的页面上直接 400（实测从网络日志发现）**：`/api/relation/status` 的 `mids` 参数沿用了通用文本上限 256 字符，而一页 30 张卡的 UP id 拼出来就有 300+ 字符 → 接口报 400，关注按钮永远停在未知态。现给 `mids` 单独的长度上限（4608，容得下 200 个 20 位 id），前端仍按 100 个一批分查（URL 约 1100 字符）。实测 30 个与 100 个 mids 均返回 200。
+- **桌面壳关窗口会崩、且应用跟着死（用户报障）**：桌面版点左上角关闭会弹崩溃报错，进程直接死掉——但这应用本质是监控器，关窗口不该停掉下载与追更。现改为：关窗口 = 隐藏窗口、进程继续在后台跑（服务、追更轮询、下载队列都不受影响），托盘菜单提供「显示窗口 / 打开下载目录 / 退出应用」，真正退出时先优雅停掉 HTTP 服务再关窗口，不产生崩溃弹窗。
+- **封面覆盖件底色全透明（用户报障；且是上一轮令牌化改出来的）**：播放量、点赞量、视频时长、「N 个视频」、自动下载档位沙发——这些压在封面上的覆盖件全部变成「透明背景 + 白字」，浅色封面上完全看不清。根因是上一轮把 9 处 `rgba(20,21,24,.xx)` 收进令牌时写成了 `--overlay-rgb:20 21 24`（空格分隔），而引用处是 `rgba(var(--overlay-rgb),.72)`（逗号语法）→ 整条 background 声明语法失效、回落成透明。那轮只看了源码没验计算样式，漏了。现把令牌改回逗号分隔（`20, 21, 24`），9 处覆盖件一起恢复暗底；实测 `.thumb-dur` / `.vi-stat` / `.uc-auto-pill` / `.fc-count` 的计算背景均为 `rgba(20, 21, 24, 0.72)`。
+- **吸顶页头在滚动中会往上跳一下（用户报障）**：页头的自然位置（72px）与吸顶位置（56px）差一截，滚动越过阈值时它会向上跳 16px——看着像抖了一下。现把顶部留白从 `.page` 移到页头自己的 `padding`（`padding:var(--content-pt) var(--content-px) 10px`），自然位置 = 吸顶位置 = 可视区顶部。实测滚动 0 / 1 / 40 / 1500 四个位置页头恒定 56px（`noJump=true`）。
+- **吸顶页头浮在内容上、上方还漏出一截内容（用户报障）**：两处叠加。①**几何**：sticky 元素不能超出自己的包含块（`.page`）顶部，而内容区的顶部留白原本留在 `.content` 的 `padding-top` 上 → `.page` 被顶到可视区下方 22px，页头最多只能钉在半空里，于是上方 16px 的滚动内容从它上沿漏出来（看着像半张卡片被切掉）。现把顶部留白从 `.content` 挪到 `.page`（`--content-pt`/`--content-px` 两个令牌，窄屏断点只改令牌），页头真正贴在可视区顶部，实测 `flushWithTop=true`、上方不再漏内容。②**观感**：原来背景是 `--bg`（画布灰）而卡片是白底 → 一条灰带把白卡片切出断层。现改为与顶栏同底色（`--card`）+ 底部分隔线 + 左右负 margin 铺满内容区可见宽度 → 读起来是「顶栏下面的第二条栏」，不再是浮在内容上的一条东西。深色模式同步验证。
+- **桌面版「退不出去、打不开」（用户报障）**：三个叠加的问题。①**关窗口改为最小化到 Dock**，不再隐藏——隐藏后窗口凭空消失，用户既不知道应用还活着、也找不到那个 22px 的菜单栏图标，于是「退不出去」；最小化后窗口留在 Dock 里，点一下就回来（实测：关窗口 → 再双击 → 窗口自己回来了）。②**界面里加明确的「退出应用」入口**（账号抽屉底部，仅桌面版显示）：后端新增 `/api/app/info`（前端据此知道自己是不是打包版）与 `/api/app/quit`（写数据目录里的 quit.request，桌面壳的守护线程收到后优雅停服务、关窗口、退出，不打断任务记录持久化；源码运行模式返回 not_packaged，退出仍走终端 Ctrl-C）。③**单实例冲突不再弹错误框**：已有实例在跑时，本次改为「只开窗口的客户端」，连到已有实例的服务端口——退不出去的另一个原因也一并解决。
+- **打包版端口被占时直接静默退出（用户报障）**：双击打包版「不能正常运行」——根因是我留的源码版实例占着默认端口 5050，而打包版也用 5050。修法分两步：①**端口被占就往后找空闲端口**（5051、5052…），窗口照常打开，端口对它自己透明；②**先探端口再绑**：werkzeug 在绑定失败时调的是 `sys.exit(1)`（SystemExit，不是 OSError），只接 OSError 会让整个应用在 GUI 模式下无任何提示地消失。实测：源码版占着 5050 时双击打包版，自动落到 5051，窗口与静态资源全部正常。
+- **托盘与窗口事件循环撞车导致启动即崩（自查发现）**：macOS 上 pystray 的 `run()` 会再跑一次 `NSApp.run()`，和 pywebview 的事件循环冲突 → SIGTRAP 直接崩。状态项本身在构造时就已挂进共享的 NSApp，改用 `run_detached()`（只标记就绪、不另起循环）即可。
+- **下载记录页「在 Finder 中显示」按钮逃出元信息行**：任务卡（排队/下载中/失败/取消）自写的 Finder 按钮类名是 `.vi-play vi-reveal`，而 `.vi-reveal` 在 CSS 里根本没有定义 → 继承 `.vi-play` 的 `position:absolute`，按钮脱离元信息行落到卡片右下角，压住关注胶囊/进度条。已完成卡走 `lib.js` 的 `.vi-locate` 是对的，所以只有「任务还在跑」时才露出来。改用 `.vi-locate`（流内胶囊），浏览器实测：`position:static`、在元信息行内、不与关注胶囊重叠。
+- **在线播放预热失败被永久缓存**：`prefetchOnline` 失败时把 resolve 成 null 的 promise 留在 `prefetched` Map 里，`openOnlinePlayer` 直接复用它 → 拿到 null 只提示报错、不再发请求。一次网络抖动后该视频整个会话都点不开。现：预热失败即从缓存摘除；播放路径复用失败结果时自动重发一次真实请求。
+- **顶栏第 8 个页签在窄窗被裁掉**：`#nav` 与搜索框都是 `flex:1`，剩余空间对半分，而搜索框被 `max-width:420px` 截住 → 导航被挤窄。1280 视口实测 nav 溢出 56px，「下载」页签只剩 18px 可见（可横向滚动，但默认看不见）。现：≤1400px 时搜索框可收缩（实测 nav 溢出归零、8 个页签全部可见）；≥1401px 布局不变。
+- **副件改名冲突连坐主文件 → 任务判 failed 且磁盘留无主文件**：`_rename_with_sidecars` 里任一副件（封面/字幕/弹幕）目标名已存在就整体 `raise FileExistsError` → 主媒体连副件一起不改名 → 上层判「无法确认安全落盘媒体」→ manifest 为空 → 文件留在磁盘上却进不了 UI 的删除列表。现：副件冲突只跳过该副件，主媒体优先改名。
+- **批量删除只有第一个任务能等到静默**：删除等待预算是全局共享的一个 deadline，前一个耗尽 10s 后 `remaining=0`，后续任务直接判超时 → API 返回 `partial=true`，用户看着像「点了删除没反应」。现：每个任务独立预算（各任务并发跑，总等待接近单个任务而非累加）。
+- **UP 目录名可能被上游字符串带出下载根**：兜底 outtmpl 用 `%(uploader)s/`，而 yt-dlp 的 `sanitize_filename` 不处理 `..`（本项目自己的 `sanitize_filename` 会把 `..` 清成 `video`）——UP 名恰为 `..` 且开了按 UP 归档时，文件会落到下载根的父目录。现：UP 子目录名只用我们拼进去的清洗后字面量；名字未知时不建 UP 子目录，不再让上游字符串进路径分量。
+- **首页翻页去重失效**：首页自写了一份业务 ID 拼接，首页数据缺 `bvid` 时退化成 `video:undefined#p1`，与 `state.itemById` 的键对不上 → 同一批反复追加。现统一走 `lib.js` 的 `itemBusinessId()`。
+- **关注状态回写是 O(N×M) 全文档查询**：每个 UP 都单独做一次全页 `querySelectorAll`，三十张卡就是三十次全页扫描。现一次收集 mid → 胶囊列表再回写。
+- **关注动态/稍后再看的统计行覆盖掉过滤态计数**：两页在 `renderPage()` 之后又写了一遍「共 N 条」，把 `renderDefaultList` 写的「共 N 条 · 匹配 M」覆盖掉。现删去重复写入，两页口径与其余列表页一致。
+- **播放器弹层无 Tab 焦点圈定**：抽屉有 Tab 圈定，播放器没有——键盘用户 Tab 出去会跑到背后的页面。现补焦点圈定（关闭时焦点仍归还原触发元素）。
+- **勾选框键盘焦点不可见**：`.vi-check` 是 1px `opacity:0` 的真 input，可 Tab 聚焦但可见勾选框只在 hover/checked 时显示，无 `:focus-within` 样式。现补上。
+
+- **列表封面太小,左下角观看/点赞胶囊压住右下角时长胶囊（用户实拍）**：列表封面此前固定 150px 宽,封面底部「观看+点赞」胶囊组(实测宽 95–130px)与右下角时长胶囊(宽 38–45px)横向重叠 17–34px,两组数字互相盖住。改两处：①封面底部两块(左统计胶囊 + 右动作柱)不再各自绝对定位贴角,并进新的封面底部条 `.thumb-bottom`——同一条 flex 行内统计块可收缩(`flex:0 1 auto` + `min-width:0`,空间不够宁可裁切也不压时长胶囊),动作柱 `margin-left:auto` 固定贴右;底部条自身 `pointer-events:none`,中间空白仍落在勾选热区上,点封面照样能勾选(实测点击行为不变)。②列表封面宽度 150px → 200px(骨架屏同步),底部两组胶囊才排得开。网格视图封面 ≥320px 本来就够,布局与观感不变。实测列表 30 条：两组胶囊零重叠、无裁切,下载页列表态动作柱仍贴右下角。
+- **播放器补方向键快进快退（用户要求）**：此前播放器只有 Esc 关闭和空格/K 播放暂停，左右方向键既不能快进也不能快退（全屏里尤其需要）。现补 ArrowLeft/ArrowRight ±5 秒：视频与 DASH 音轨同步跳，进度条与时间标签即时跟随，越过片头片尾夹到边界；焦点在进度条/音量条等输入控件上时让给原生步进，不抢键。
+- **全屏播放底部堆黑边 + 控制条消失（用户实拍）**：全屏挂的是播放器舞台，导致两个问题——①视频在全屏态没有任何专属样式，仍是页内「width:100% + aspect-ratio:16/9 + max-height」盒子，源视频宽高比不是 16:9 时（手机竖拍/方形视频很常见）contain 补出的黑边全堆在舞台底部；②进度/倍速/音量那条控制条是舞台的兄弟节点，全屏层外根本看不见，全屏里没法拖进度。现改为全屏整个播放器盒子（`.pl-box`）：全屏里隐藏标题行、舞台吃满剩余高度、视频铺满舞台居中（黑边按比例对称分布）、控制条贴底常驻可操作。实测 4K 源全屏：视频铺满舞台、黑边对称、进度条/倍速/音量/清晰度全在，控制台无报错。
 - **搜索内存缓存绑定认证上下文（体检 #1，中危）**：`_search_raw` 的缓存键只有 `类型:关键词:页码`，`search_videos`/`search_users` 的 `context` 形参被完全忽略——切换账号后 5 分钟 TTL 内，新账号会拿到旧账号 Cookie 拉到的搜索结果，也是全模块「fingerprint + incarnation + generation 隔离」的唯一漏网。缓存键改绑 `_context_key`，context 全链透传。
 - **storage.write_json 禁写 NaN/Inf（体检 #2，中危）**：默认 `allow_nan=True` 会把 NaN 写成非法 JSON——Python 读容忍，但浏览器 `JSON.parse` 不容忍，一条 NaN 速度值混进任务记录后，`/api/tasks` 与 SSE 快照响应体持续无法解析、下载页挂死。现改 `allow_nan=False` 让 dumps 抛错走既有失败路径（内存态不丢），并在下载进度钩子显式拦掉非有限速度值。
 - **UP 订阅失败视频绕过指数退避（体检 #3，中危）**：续扫窗口内 `fresh` 发现路径只挡「已下载」，重试占用表只含退避已到期的失败任务——退避未到期的失败视频每轮以 `auto_attempt=0` 重新入队，attempt 计数在 0↔1 震荡、永远到不了放弃上限。occupied 现覆盖该 UP 全部未下载的失败/中断任务。
@@ -20,6 +52,9 @@
 - **fetch_followings 的 page 参数接到 pn（体检 #10）**：此前被静默忽略，传 `page>1` 会返回第 1 页数据。
 
 ### 🧹 精简
+
+- **两条候选优化经复核判定为伪需求，明确不做**：①**重试退避占并发槽**（`downloader.py` 的 `sleep(2+attempt*2)` 在下载槽内）——并发默认 2，退避只在下载失败时发生，期间吞吐降低不影响正确性；修法要动并发 gate 的语义，风险大于收益。②**feed/later 两页抽 `simpleCachedListPage` 工厂**——两页的 `cachedLoad` 参数虽一一对应，但 later 页少 infinite/actionBar/deactivate，抽工厂反而要再配一套开关，属于过度抽象；只做实打实的重复消除（删掉两页重复写统计行的两行）。
+- **媒体扩展名集合与 legacy 目录扫描归一**：`_MEDIA_EXTS` 此前在 `files.py` 与 `taskstore.py` 各写一份（`_legacy_dirs` 同理，且 files.py 那份忽略任务固定的下载根）。现统一由 `taskstore` 提供（`MEDIA_EXTS` / `legacy_dirs`），files.py 导入使用。
 
 - **全仓库死代码一次性清理（体检批次 2，全部 grep 零引用验证）**：后端删 `fetch_relation_statuses` + `_RELATION_QUERY_ENDPOINT`（~60 行，实测会触发 412 全局冷却的已退役路径，docstring 与 app.py 定论矛盾）、`has_session`、`_reset_runtime_caches`、`label_to_label_cn`、`artifact_lock`、`_is_task_managed_path`、`get_download_dir`、`_CHUNK`、`classify_formats` 死导入、up_list `_collection_key`/`get_fetched_at`、downloader 两个未用别名连带 taskstore `clear_tasks`/`clean_invalid_records`/`_ACTIVE` 兼容别名；前端删 `QUALITY_CARD_LABELS`、`_forceOnce`、4 处 `fast:` 死参数、「查看最新」提示条残件（`showFreshHint`/`applyFresh`/`_freshApply` + `.fresh-hint` 样式；dismissFresh 保留为幂等清理）、`applyFirstPage`/`inputFor` 死参数、约 15 条死 CSS（`.pl-online-gate` 全家、`.pl-note`、`.vi-stats`、`.ph-right`、`.tb-input`/`.modal-input`、`.pl-field select`、`.fav-tag`、`.status-tag.completed/.paused`），合并 `.vi-meta`/`.vi-ident` 重复定义。相关测试同步：批量关系接口改为 `not hasattr` 反回归断言、fav-tag/fresh-hint/fast 断言按新现实改写、`get_fetched_at` 测试改走 `get_last_seen_all`。
 

@@ -176,6 +176,31 @@ data/cache/accounts/<account-fingerprint>/i-<incarnation>/g-<generation>/<key>.j
 
 明确 412/429 会触发冷却；冷却期内直接 HTTP 调用快速返回 429。yt-dlp 内部请求不在两槽 governor 的逐请求保证内，仍应避免高并发和频繁重试。
 
+## 打包与发布
+
+项目可以打成桌面安装程序：双击即用，不开终端、不进浏览器。
+
+| 产物 | 适用 | 在哪构建 |
+|---|---|---|
+| `BiliDownloader-<版本>-arm64.dmg` | Apple Silicon (M 系列) | 本机脚本 / CI (macos-14) |
+| `BiliDownloader-<版本>-x86_64.dmg` | Intel Mac | CI (macos-13) |
+| `BiliDownloader-Setup-<版本>-x64.exe` | Windows 10/11 64 位 | CI (windows-latest) |
+
+**发版**：`scripts/release.sh 2.8.0` —— bump 版本 → 提交 → 打 tag → 推送；之后 GitHub Actions 自动出三个安装包并发布到 Releases 页。
+
+**本机构建**：`ARCH=arm64 scripts/build_local.sh`（产物在 `dist/`）。构建依赖装在**独立 venv** 里，不碰项目运行时环境。
+
+**打包隐私红线**（构建脚本强制执行，命中即构建失败）：
+
+- **白名单**：只有运行时代码 + `templates/` + `static/` + 内置 ffmpeg 进包。`data/`（登录态、任务史、UP 清单、页面缓存、日志）、`docs/`、`tests/`、`gui-test-screenshots/`（截图里含账号昵称）一律不进。
+- **暂存打包**：源码先复制到不含个人信息的临时目录再编译——`.pyc` 的 `co_filename` 会留下编译时的源码路径，直接在开发目录打包会把家目录路径烧进安装包。
+- **产物扫描**：`packaging/scan_artifact.py` 三层检查（禁止路径清单 → 文本关键词 → 二进制字符串），关键词从构建机环境动态推导（含家目录名、`data/` 里的真实账号指纹与 UP UID），不写死在仓库里。
+- **元数据留名**：Info.plist / Inno Setup 的开发者字段不写个人名；bundle 目录名用 ASCII（`BiliDownloader.app`），界面显示名仍是中文。
+
+**打包态的运行数据外置**：源码运行用项目内 `data/`；打包后用 `~/Library/Application Support/BiliDownloader/`（mac）与 `%APPDATA%\BiliDownloader\`（win）。原因：.app bundle 与 Program Files 只读，写进去会破坏代码签名；onefile 模式随临时目录销毁会让登录态每次归零；同机多用户共用一份数据目录等于互相暴露 SESSDATA。`BD_DATA_DIR` 可覆盖。
+
+**未签名提醒**：未公证的 mac 包首次打开需右键 → 打开；Windows 首次运行需点「更多信息 → 仍要运行」。要免掉这步需要 Apple Developer 账号与代码签名证书。
+
 ## 项目结构
 
 ```text
