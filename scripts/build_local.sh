@@ -16,6 +16,11 @@ SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
 ROOT="$(cd -- "$SCRIPT_DIR/.." && pwd)"
 ARCH="${ARCH:-arm64}"
 PYTHON="${PYTHON:-$ROOT/.venv/bin/python}"
+# CI 上没有项目 venv(用 setup-python 装的解释器),回退到 PATH 上的 python。
+# 2026-11-22 首次发版时 Windows job 就死在这:找不到 .venv/bin/python 直接退出。
+if [[ ! -x "$PYTHON" ]]; then
+  PYTHON="$(command -v python 2>/dev/null || command -v python3 2>/dev/null || true)"
+fi
 # 版本号来自 VERSION 文件(唯一来源)。之前从 CHANGELOG 里 grep,
 # 顶部是「## [未发布]」时就会抓到上一个正式版号,产物名跟着错。
 VERSION="$(tr -d '[:space:]' < "$ROOT/VERSION" 2>/dev/null || true)"
@@ -26,13 +31,13 @@ fi
 
 echo "==> 构建 $ARCH (v${VERSION:-未知})"
 
-if [[ ! -x "$PYTHON" ]]; then
-  echo "错误:找不到 Python 解释器 $PYTHON" >&2
+if [[ -z "$PYTHON" || ! -x "$PYTHON" ]]; then
+  echo "错误:找不到 Python 解释器(可用 PYTHON=... 指定)" >&2
   exit 1
 fi
 
 # ---- 1. 把源码复制到干净的临时目录 ----
-STAGE="$(mktemp -d "/tmp/bili-build-${ARCH}-XXXXXX")"
+STAGE="$(mktemp -d "/tmp/bili-build-${ARCH}-XXXXXX" 2>/dev/null || mktemp -d)"
 cleanup() {
   cd "$ROOT" 2>/dev/null || true
   rm -rf "$STAGE" 2>/dev/null || true
