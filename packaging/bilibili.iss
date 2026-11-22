@@ -13,11 +13,17 @@ AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\BiliDownloader
-SetupIconFile=packaging\icon.ico
+; Inno 的相对路径基准是**脚本所在目录**,不是编译时的当前目录:
+; 写 packaging\icon.ico 会去找 packaging\packaging\icon.ico(找不到)。
+SetupIconFile={src}\icon.ico
+; 输出目录同理,默认落在 packaging/ 下,要指到仓库根的 dist/
+OutputDir={src}\..\dist
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputBaseFilename=BiliDownloader-Setup-{#AppVersion}-x64
 Compression=lzma2/max
+; 安装包图标与版本信息取自同一份来源
+SetupVersionInfoVersion={#AppVersion}
 SolidCompression=yes
 WizardStyle=modern
 ; 未签名:SmartScreen 会拦一次,用户点「更多信息 → 仍要运行」
