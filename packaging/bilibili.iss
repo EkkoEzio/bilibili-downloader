@@ -22,8 +22,9 @@ DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputBaseFilename=BiliDownloader-Setup-{#AppVersion}-x64
 Compression=lzma2/max
-; 安装包图标与版本信息取自同一份来源
-SetupVersionInfoVersion={#AppVersion}
+; 安装包版本信息取自同一份来源(指令名是 VersionInfoVersion,
+; 不是 SetupVersionInfoVersion——后者不是合法指令,Inno 会直接报错)
+VersionInfoVersion={#AppVersion}
 SolidCompression=yes
 WizardStyle=modern
 ; 未签名:SmartScreen 会拦一次,用户点「更多信息 → 仍要运行」
