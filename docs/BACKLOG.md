@@ -7,7 +7,14 @@
 
 ---
 
-## 当前状态：v2.9.0（2026-11-22，已发布）
+## 当前状态：v2.10.0（2026-11-22，已发布）
+
+- **mac 安装向导（.pkg）**：新增 `packaging/pkg/`（欢迎页/完成页/产品定义 XML）与 `scripts/build_local.sh` 的 pkgbuild + productbuild 两步；mac 两种架构 dmg 与 .pkg 并出，v2.10.0 起每个版本 5 个安装包（此前 3 个）。欢迎页写清未签名首次打开指引与数据目录位置。
+- **登录两处修复（用户报障）**：扫码二维码域名白名单放宽为 `bilibili.com` 及其子域（上游把扫码地址从 passport 换到 account.bilibili.com，旧白名单直接 400 裂图）；新增 `browser_cookies.py` 遍历 Edge 全部 profile 取真正带 SESSDATA 的（`yt-dlp` 不指定 profile 时只读 mtime 最新的一个），解析与下载共用同一 profile。
+- **未登录头像占位**：默认「小人」线稿换成应用自己的小电视图标（与 Dock/窗口同一来源）。
+- **发版脚本同步文档**：`release.sh` 自动补 CHANGELOG 底部链接引用并同步 README 横幅版本号。
+
+### v2.9.0（同日早前发布）
 
 - **桌面应用与三平台安装包**：新增 `desktop.py`（pywebview 原生窗口壳，内嵌 Flask 服务，双击即用、不开终端）；关窗口 = 最小化到 Dock（后台继续跑下载与追更），账号抽屉里有显式「退出应用」入口（`/api/app/quit` 走文件信号，不打断任务记录持久化）；托盘菜单提供「显示窗口 / 打开下载目录 / 退出应用」；单实例冲突时改为只开客户端窗口连到已有实例；端口被占自动往后找空闲端口（不再静默退出）。打包态运行数据外置到 `~/Library/Application Support/BiliDownloader`（mac）/ `%APPDATA%\BiliDownloader`（win），源码运行仍走项目内 `data/`。**未签名未公证**：mac 首次「右键→打开」，win 首次「更多信息→仍要运行」；暂不购买开发者证书。
 - **发版链路**：版本号唯一来源 = 仓库根 `VERSION`；`scripts/release.sh` 自动 bump 并同步 VERSION / CHANGELOG / Inno 脚本；推 `v*` tag 即由 GitHub Actions 出 mac arm64 / mac x86_64 / win x64 三个安装包并发布 Release；产物构建后强制隐私扫描（`packaging/scan_artifact.py`），命中开发者个人信息即 fail build。

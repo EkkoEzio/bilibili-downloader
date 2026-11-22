@@ -6,7 +6,7 @@
 
 一律不进包:
     data/            登录态、任务史、UP 清单、页面缓存、日志 —— 开发者的个人信息
-    docs/ tests/ scripts/ design-demos/ gui-test-screenshots/
+    docs/ tests/ scripts/ design-demos/ gui-test-screenshots/ artifacts/
     CHANGELOG.md README.md .git/ .venv/ __pycache__/ .pytest_cache/ .DS_Store
     启动.command
 

@@ -39,7 +39,7 @@ for _stream in (sys.stdout, sys.stderr):
 # 产物里不允许出现的顶层路径(相对产物根)。只查顶层,避免依赖自带的
 # tests/scripts 子包造成误报。
 FORBIDDEN_TOP_LEVEL = {
-    "data", "docs", "tests", "scripts", "design-demos",
+    "data", "docs", "tests", "scripts", "design-demos", "artifacts",
     "gui-test-screenshots", "__pycache__", ".pytest_cache", ".venv",
     ".git", ".DS_Store", "CHANGELOG.md", "README.md", "启动.command",
     "build", "dist", ".idea", ".vscode",

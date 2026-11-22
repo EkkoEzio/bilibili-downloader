@@ -56,7 +56,7 @@ BD_PORT=5051 ./启动.command
 
 - **首页推荐**：登录账号的 B 站首页个性化推荐流，当 B 站刷；首屏按视口容量自动铺满整页，滚到底持续追加，封面左下角显示播放/点赞数，可勾选批量下载；广告位与直播自动过滤。打开时先展示上次缓存，后台拉到新数据直接静默上屏（不清掉已勾选项），B 站风控返回空列表时自动重试。
 - **关注动态**：关注 UP 的近期投稿流，滚动加载更早内容，可多选下载。
-- **关注 UP**：站内关注 × 本地自动下载清单合并成一张卡管理——UP 名后一键关注/取关，自动下载档位平铺分段点选（不自动下载 / 最高 / 4K / 2K / 1080 / 720 / 仅音频），页头可立即检查新视频。
+- **关注 UP**：站内关注 × 本地自动下载清单合并成一张卡管理——UP 名后一键关注/取关，自动下载档位平铺分段点选（不自动下载 / 最高 / 4K / 2K / 1080 / 仅音频），页头可立即检查新视频。
 - **追更合集 / 我的收藏 / 稍后再看**：支持搜索、列表/网格切换、进入内容和批量下载；合集与收藏夹可在卡片上直接开关「新入库自动下载」。
 - **观看历史**：显示观看进度，滚动加载更早记录，可多选下载。
 - **下载记录**：进行中任务置顶；显示进度、速度、剩余时间、取消、失败原因、文件定位和记录清理；封面右下角可播放（已完成播本地文件，未完成的在线播），任务卡与已完成卡共用「UP 主 · 时间」身份行。
@@ -112,7 +112,7 @@ data/cache/accounts/<account-fingerprint>/i-<incarnation>/g-<generation>/<key>.j
 ### 自动下载清单
 
 - 添加 UP 时以当前最新投稿为基线，只处理之后的新投稿。
-- 每个 UP 可配自动下载档位：纯分辨率（最高 / 4K / 2K / 1080 / 720，同分辨率默认最高帧率、缺档自动降档）或仅音频；存量旧档位（1080P60 等）读/写时自动归一。
+- 每个 UP 可配自动下载档位：纯分辨率（最高 / 4K / 2K / 1080，同分辨率默认最高帧率、缺档自动降档，最低可选 1080）或仅音频；存量旧档位（1080P60、720 系等）读/写时自动归一到现行档。
 - 手动与定时检查共享同一个非阻塞原子预约；只有预约成功才报告已启动，同一时刻的重复触发直接跳过、不排队，也不改写上一轮状态。
 - 预约一直持有到本轮成功或错误终态状态写完，避免两轮生命周期状态交错。
 - 使用“时间戳 + 同秒 BVID 集合”游标；单轮最多扫描 3 页，未跨过旧游标时保存续扫状态。首页漂移后同时推进 deep 前沿并持久修复低页接缝；即使 deep 已找到末页/旧游标，也要等 `head_repair_until_pn` 连续闭合后才提交新游标，避免跨轮永久漏页。
@@ -182,11 +182,13 @@ data/cache/accounts/<account-fingerprint>/i-<incarnation>/g-<generation>/<key>.j
 
 | 产物 | 适用 | 在哪构建 |
 |---|---|---|
-| `BiliDownloader-<版本>-arm64.dmg` | Apple Silicon (M 系列) | 本机脚本 / CI (macos-15-arm64) |
+| `BiliDownloader-<版本>-arm64.dmg` | Apple Silicon (M 系列) | 本机脚本 / CI (macos-15) |
+| `BiliDownloader-<版本>-arm64.pkg` | Apple Silicon（安装向导） | 本机脚本 / CI (macos-15) |
 | `BiliDownloader-<版本>-x86_64.dmg` | Intel Mac | CI (macos-15-intel) |
+| `BiliDownloader-<版本>-x86_64.pkg` | Intel Mac（安装向导） | CI (macos-15-intel) |
 | `BiliDownloader-Setup-<版本>-x64.exe` | Windows 10/11 64 位 | CI (windows-latest) |
 
-**在哪下载**：Releases 页（`https://github.com/EkkoEzio/bilibili-downloader/releases`），每个版本下面三个安装包。
+**在哪下载**：Releases 页（`https://github.com/EkkoEzio/bilibili-downloader/releases`），每个版本下面五个安装包（mac 两种架构各出 dmg 与 .pkg 安装向导，Windows 出 exe）。
 
 **首次打开**：安装包**没有签名也没有公证**（暂未购买开发者证书）——
 macOS 第一次要先右键点「打开」再点「打开」，Windows 第一次点「更多信息 → 仍要运行」。
@@ -197,13 +199,13 @@ macOS 第一次要先右键点「打开」再点「打开」，Windows 第一次
 
 **发版**：`scripts/release.sh`（自动把次版本号 +1）或 `scripts/release.sh 2.9.1`（指定版本号）
 —— bump 版本（VERSION / CHANGELOG / Inno 脚本三处同步）→ 提交 → 打 tag → 推送；
-之后 GitHub Actions 自动出三个安装包并发布到 Releases 页。
+之后 GitHub Actions 自动出五个安装包（mac 两种架构各出 dmg 与 .pkg，Windows 出 exe）并发布到 Releases 页。
 
 **本机构建**：`ARCH=arm64 scripts/build_local.sh`（产物在 `dist/`）。构建依赖装在**独立 venv** 里，不碰项目运行时环境。
 
 **打包隐私红线**（构建脚本强制执行，命中即构建失败）：
 
-- **白名单**：只有运行时代码 + `templates/` + `static/` + 内置 ffmpeg 进包。`data/`（登录态、任务史、UP 清单、页面缓存、日志）、`docs/`、`tests/`、`gui-test-screenshots/`（截图里含账号昵称）一律不进。
+- **白名单**：只有运行时代码 + `templates/` + `static/` + 内置 ffmpeg 进包。`data/`（登录态、任务史、UP 清单、页面缓存、日志）、`docs/`、`tests/`、`artifacts/`（测试截图、设计稿；截图里含账号昵称）一律不进。
 - **暂存打包**：源码先复制到不含个人信息的临时目录再编译——`.pyc` 的 `co_filename` 会留下编译时的源码路径，直接在开发目录打包会把家目录路径烧进安装包。
 - **产物扫描**：`packaging/scan_artifact.py` 三层检查（禁止路径清单 → 文本关键词 → 二进制字符串），关键词从构建机环境动态推导（含家目录名、`data/` 里的真实账号指纹与 UP UID），不写死在仓库里。
 - **元数据留名**：Info.plist / Inno Setup 的开发者字段不写个人名；bundle 目录名用 ASCII（`BiliDownloader.app`），界面显示名仍是中文。
@@ -220,7 +222,9 @@ macOS 第一次要先右键点「打开」再点「打开」，Windows 第一次
 ```text
 ├── app.py              # Flask 路由、本机同源守卫、严格错误、聚合 SSE、日志
 ├── instance_lock.py    # 跨平台工作区单实例文件锁
+├── runtime_paths.py    # 源码/打包态数据目录与锁路径的唯一来源
 ├── bilibili_auth.py    # 登录、认证快照、指纹/incarnation/generation、Cookie 来源
+├── browser_cookies.py  # Edge 免登录：遍历全部 profile 取真正带 SESSDATA 的
 ├── bilibili_api.py     # B 站读接口与完整认证上下文内存缓存
 ├── online.py           # 在线播放：登录态 DASH 直链解析、token 化媒体流转发
 ├── request_governor.py # 项目直接 HTTP 调用的并发、间隔与冷却
@@ -235,9 +239,13 @@ macOS 第一次要先右键点「打开」再点「打开」，Windows 第一次
 ├── config.py           # 运行时配置与 BD_PORT
 ├── extras.py           # 弹幕、BVID、文件名等工具
 ├── quality.py          # 清晰度归一化
+├── desktop.py          # pywebview 桌面壳、托盘、退出应用
 ├── templates/index.html
 ├── static/css/main.css
 ├── static/js/          # 原生 ES modules：页面控制器、聚合任务流、本地/在线播放器、关注状态、搜索缓存、确认对话框
+├── packaging/         # 打包：PyInstaller spec、Inno Setup、pkg 安装向导、隐私扫描
+├── scripts/           # 构建 / 发版 / 图标脚本
+├── docs/              # 需求、合规、待办与历史设计文档
 ├── tests/
 ├── data/
 │   ├── auth-context.json
@@ -246,6 +254,8 @@ macOS 第一次要先右键点「打开」再点「打开」，Windows 第一次
 │   ├── up_list.json
 │   ├── cache/accounts/<fingerprint>/i-<incarnation>/g-<generation>/
 │   └── app.log*
+├── artifacts/          # 过程生成物：界面测试截图、设计稿（不入库、不进包）
+├── dist/               # 本机构建产物：安装包与中间产物（不入库、不进包）
 └── 启动.command
 ```
 

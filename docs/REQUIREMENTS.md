@@ -1,6 +1,6 @@
 # bilibili download — 当前需求与实现约束
 
-> 状态：**v2.8.0（2026-11-22）**。
+> 状态：**v2.10.0（2026-11-22）**。
 >
 > 本文描述当前产品行为与安全边界，不记录易漂移的源码行数、路由总数或测试数量；发布历史见 `CHANGELOG.md`，历史产品批次见 `docs/BACKLOG.md`。
 
@@ -10,7 +10,7 @@
 
 ### R1 本地网页应用
 
-- 形态：Python Flask 后端 + 原生 ES modules 单页前端。
+- 形态：Python Flask 后端 + 原生 ES modules 单页前端；另有 pywebview 桌面壳与安装包形态（见「播放与桌面应用形态」一节）。
 - 默认地址：`http://localhost:5050`；可通过 `BD_PORT` 选择 1–65535 的其他端口。
 - 数据：配置、认证凭据、任务史、UP 清单与页面缓存持久化在本机 `data/`。
 - 网络：登录、内容读取、解析和下载会访问 B 站及媒体地址；项目不提供自己的远端账号或遥测服务。
@@ -289,25 +289,50 @@
 
 ---
 
-## 11. 当前边界与非目标
+## 11. 播放与桌面应用形态
+
+### R25 播放（本地与在线）
+
+- 每张内容卡封面提供播放入口；已下载任务播放本地文件，未下载任务在线播放，两者共用同一个弹层播放器。
+- 本地回放走 `/api/stream/<task_id>`，支持 Range 请求（可拖进度条）；倍速与音量由前端提供。
+- 在线播放由后端用应用登录态解析 B 站 DASH 直链（`/api/online/qualities` + `/online/stream/<token>`）：解析优先 B 站 view + playurl 轻接口，失败回落 yt-dlp；媒体地址经短时 token 转发，不向页面暴露登录 Cookie 或长期直链。
+- 前端用 `<video>` + `<audio>` 双轨按同一时间轴同步，切清晰度保留播放位置；进度、倍速、音量按本机记忆，本地视频支持从上次位置续播。
+- 可选清晰度由账号权限与上游决定，不绕过平台限制；浏览器不支持的封装（如部分 mkv）明确提示改用系统播放器。
+
+### R26 桌面应用与打包
+
+- 源码形态是本地网页应用（`启动.command`，遵循 `BD_PORT`，端口冲突只报告）；桌面形态是 `desktop.py`（pywebview 壳，内嵌 Flask 服务），安装后双击即用。
+- 桌面壳关窗口 = 隐藏窗口，后台继续监控与下载；真正退出走账号抽屉「退出应用」（`/api/app/quit` 文件信号，不打断任务记录持久化）或托盘菜单；单实例冲突时打开客户端窗口连接已有实例；端口被占自动向后寻找空闲端口。
+- 打包白名单：只有运行时代码 + `templates/` + `static/` + 内置 ffmpeg 进包；`data/`、`docs/`、`tests/`、`scripts/` 与生成物目录（`dist/`、`artifacts/`）一律不进。
+- 构建先把源码复制到不含个人信息的暂存目录再编译（`.pyc` 的 `co_filename` 会留下源码路径）；产物必须通过 `packaging/scan_artifact.py` 隐私扫描（禁止路径清单 + 动态推导关键词 + 二进制字符串三层），命中即构建失败。
+- 打包态运行数据外置（`runtime_paths.py` 为唯一路径来源）：mac 用 `~/Library/Application Support/BiliDownloader`，Windows 用 `%APPDATA%\BiliDownloader`；`BD_DATA_DIR` 可覆盖；源码运行仍用项目内 `data/`。
+- 产物：mac 两种架构各出 `.dmg` 与 `.pkg` 安装向导，Windows 出 Inno Setup `.exe`；均未签名未公证，首次打开有引导说明。
+- 版本号唯一来源是仓库根 `VERSION` 文件；`scripts/release.sh` 同步 VERSION、CHANGELOG 与 Inno 脚本。
+
+---
+
+## 12. 当前边界与非目标
 
 - 单实例锁是同一工作区边界；复制仓库可形成不同锁域。
 - SSE 16 是单进程容量；当前部署模型不承诺跨进程共享额度。
 - durable-first 是应用发布顺序，不是数据库事务、目录 fsync 或掉电必达保证。
 - manifest 记录路径、角色与大小，不包含内容 hash；对外部恶意进程在路径校验与 unlink 之间替换文件的通用文件系统竞态不作绝对保证。
 - 自动追更从投稿搜索结果工作；同 BV 后续新增分 P 需要额外枚举接口，当前不承诺完整发现。
-- 不打包桌面常驻应用；关闭服务进程会中止运行任务，关闭浏览器不会。
+- 关闭服务进程会中止运行任务；关闭浏览器窗口或桌面窗口不会（桌面形态见「播放与桌面应用形态」一节）。
 - 法律与平台条款边界见 `docs/COMPLIANCE.md`，它不是法律意见。
 
 ---
 
-## 12. 主要模块
+## 13. 主要模块
 
 ```text
 instance_lock.py    工作区单实例锁
+runtime_paths.py    源码/打包态数据目录与锁路径的统一来源
 app.py              Flask 路由、严格输入/错误、本机同源、聚合 SSE、日志
 bilibili_auth.py    凭据来源、认证快照、fingerprint/incarnation/generation、CAS
+browser_cookies.py  Edge 多 profile Cookie 提取（免登录来源）
 bilibili_api.py     账号 API 与完整认证上下文内存缓存
+online.py           在线播放：登录态 DASH 直链解析与 token 化媒体流转发
 pagecache.py        fingerprint/incarnation/generation 磁盘缓存
 request_governor.py 项目直接 HTTP 调用的并发、间隔和冷却
 parsing.py          yt-dlp 解析与播放列表边界
@@ -317,5 +342,6 @@ files.py            落盘定位、改名对齐与冲突处理
 up_list.py          UP 清单、复合游标和 continuation
 auto_refresh.py     原子预约、自动扫描、同轮互斥和失败退避
 storage.py          JSON 原子替换、受限读取与损坏备份
+desktop.py          pywebview 桌面壳、托盘与退出编排
 static/js/          原生模块、聚合任务流、异步守卫和无障碍交互
 ```
