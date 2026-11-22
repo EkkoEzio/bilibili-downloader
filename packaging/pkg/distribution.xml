@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- macOS 安装向导的产品定义。构建时由 scripts/build_local.sh 替换
+     __VERSION__ / __HOSTARCH__ 两个占位符,再交给 productbuild。
+
+     为什么要有这个:dmg 是「拖到应用程序」,Windows 那边是安装向导,
+     两边体验不一致;这个 .pkg 让 mac 也走双击→下一步→装好的标准流程。 -->
+<installer-gui-script minSpecVersion="1">
+    <title>安装 B站下载</title>
+    <organization>com.ekko.bilibili</organization>
+    <icon file="icon.icns"/>
+    <options customize="never" require-scripts="false" hostArchitectures="__HOSTARCH__"/>
+    <domains enable_anywhere="false" enable_currentUserHome="false" enable_localSystem="true"/>
+    <welcome file="welcome.html"/>
+    <conclusion file="conclusion.html"/>
+    <pkg-ref id="com.ekko.bilibili.downloader"/>
+    <choices-outline>
+        <line choice="default">
+            <line choice="com.ekko.bilibili.downloader"/>
+        </line>
+    </choices-outline>
+    <choice id="default"/>
+    <choice id="com.ekko.bilibili.downloader" visible="false">
+        <pkg-ref id="com.ekko.bilibili.downloader"/>
+    </choice>
+    <!-- 最后这个 pkg-ref 的正文是「组件包文件名」,productbuild 按这个名字
+         从 package-path 目录里把组件包塞进成品。正文写成 "choice" 会让它被当成
+         分发 URL 去解析,成品里就只剩一个空壳(实测 payload 为 0 条)。 -->
+    <pkg-ref id="com.ekko.bilibili.downloader" version="__VERSION__" onConclusion="none">component.pkg</pkg-ref>
+</installer-gui-script>

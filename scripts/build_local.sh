@@ -49,6 +49,7 @@ mkdir -p "$STAGE/packaging"
 # 只复制运行时必需 + 打包所需的东西。data/ docs/ tests/ 等一律不进暂存目录,
 # 它们连「被打包的机会」都没有。
 for item in app.py desktop.py runtime_paths.py config.py storage.py instance_lock.py \
+            browser_cookies.py \
             bilibili_api.py bilibili_auth.py parsing.py downloader.py online.py \
             up_list.py auto_refresh.py extras.py quality.py request_governor.py \
             pagecache.py files.py taskstore.py requirements.txt requirements-build.txt \
@@ -96,7 +97,7 @@ done
 echo "==> 收集产物"
 mkdir -p "$ROOT/dist"
 rm -rf "$ROOT/dist/BiliDownloader.app" "$ROOT/dist/BiliDownloader"
-rm -f "$ROOT/dist/"*.dmg "$ROOT/dist/"*.exe
+rm -f "$ROOT/dist/"*.dmg "$ROOT/dist/"*.exe "$ROOT/dist/"*.pkg
 [[ -d "$APP_BUNDLE" ]] && cp -R "$APP_BUNDLE" "$ROOT/dist/"
 [[ -d "$ONEDIR" ]] && cp -R "$ONEDIR" "$ROOT/dist/"
 
@@ -118,6 +119,35 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
   ln -s /Applications "$STAGE_DMG/Applications"
   hdiutil create -volname "B站下载" -srcfolder "$STAGE_DMG" -ov -format UDZO "$DMG"
   echo "==> 产物: $DMG"
+
+  # ---- macOS 安装向导(.pkg)----
+  # dmg 是「拖到应用程序」,Windows 那边是安装向导,两边体验不一致。
+  # 这里额外出一个 .pkg:双击一步步装进 /Applications,和 Windows 对齐。
+  # hostArchitectures:x86_64 包在 Apple Silicon 上也能跑(Rosetta),两个都列;
+  # arm64 包只列 arm64,免得装到 Intel 机上根本跑不起来。
+  PKG="$ROOT/dist/BiliDownloader-${VERSION:-dev}-${ARCH}.pkg"
+  PKG_BUILD="$STAGE/pkg-build"
+  PKG_PAYLOAD="$STAGE/pkg-payload"
+  rm -rf "$PKG_PAYLOAD" "$PKG_BUILD"
+  mkdir -p "$PKG_PAYLOAD/Applications" "$PKG_BUILD"
+  cp -R "$ROOT/dist/BiliDownloader.app" "$PKG_PAYLOAD/Applications/"
+  if [[ "$ARCH" == "arm64" ]]; then
+    HOSTARCH="arm64"
+  else
+    HOSTARCH="x86_64,arm64"
+  fi
+  sed -e "s/__VERSION__/$VERSION/g" -e "s/__HOSTARCH__/$HOSTARCH/g" \
+      "$ROOT/packaging/pkg/distribution.xml" > "$PKG_BUILD/distribution.xml"
+  cp "$ROOT/packaging/pkg/welcome.html" "$ROOT/packaging/pkg/conclusion.html" "$PKG_BUILD/"
+  cp "$ROOT/packaging/icon.icns" "$PKG_BUILD/icon.icns"
+  pkgbuild --root "$PKG_PAYLOAD" --install-location / \
+           --identifier "com.ekko.bilibili.downloader" \
+           --version "$VERSION" "$PKG_BUILD/component.pkg"
+  productbuild --distribution "$PKG_BUILD/distribution.xml" \
+                --resources "$PKG_BUILD" \
+                --package-path "$PKG_BUILD" \
+                "$PKG"
+  echo "==> 产物: $PKG"
 else
   # Windows:Inno Setup 出单文件安装程序
   if command -v iscc >/dev/null 2>&1; then

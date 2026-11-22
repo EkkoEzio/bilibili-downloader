@@ -113,6 +113,7 @@ jobs:
           path: |
             dist/*.dmg
             dist/*.exe
+            dist/*.pkg
           if-no-files-found: error
 
   release:
@@ -134,5 +135,6 @@ jobs:
           files: |
             artifacts/*.dmg
             artifacts/*.exe
+            artifacts/*.pkg
           draft: false
           generate_release_notes: true
