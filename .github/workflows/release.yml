@@ -8,8 +8,12 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "手动触发时的版本号(如 2.8.0)"
-        required: true
+        description: "手动触发时的版本号(如 2.9.0)"
+        required: false
+      platforms:
+        description: '只构建这些平台,JSON 数组。如 ["win-x64"] 或 ["mac-arm64","mac-x86_64","win-x64"]'
+        default: '["mac-arm64","mac-x86_64","win-x64"]'
+        required: false
 
 permissions:
   contents: write
@@ -21,6 +25,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # 平台列表可由 workflow_dispatch 的 platforms 输入裁剪:
+        # 调试单个平台时不用等 macOS runner 排队(2026-11-22 实测 mac 排队很久)。
+        name: ${{ fromJSON(github.event.inputs.platforms || '["mac-arm64","mac-x86_64","win-x64"]') }}
         include:
           # runner 标签要显式写架构,不靠默认值:GitHub 已把 macos-14 下线
           # (报 "The configuration 'macos-14-arm64-us-default' is not

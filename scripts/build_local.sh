@@ -122,7 +122,10 @@ else
   # Windows:Inno Setup 出单文件安装程序
   if command -v iscc >/dev/null 2>&1; then
     echo "==> Inno Setup"
-    (cd "$ROOT" && iscc packaging/bilibili.iss)
+    # 绝对路径用 /D 宏传进去(Inno 的路径常量在 6.x 里 {src} 已废弃,
+    # 相对路径基准又容易和编译目录混淆)——Git Bash 下用 cygpath 转成 Windows 路径
+    ROOT_WIN="$(cygpath -w "$ROOT" 2>/dev/null || echo "$ROOT")"
+    (cd "$ROOT" && iscc "/DMyRoot=$ROOT_WIN" packaging/bilibili.iss)
     echo "==> 产物: $ROOT/dist/BiliDownloader-Setup-*.exe"
   else
     echo "==> 跳过安装程序(未找到 iscc;choco install innosetup 可装)"

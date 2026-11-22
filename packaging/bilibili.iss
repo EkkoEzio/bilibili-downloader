@@ -7,17 +7,21 @@
 #define AppPublisher "bilibili download"
 #define AppExeName "BiliDownloader.exe"
 
+; 仓库根的绝对路径由编译命令传入:iscc "/DMyRoot=<abs>" packaging/bilibili.iss
+; 不用 {src}/{source} 这类路径常量——Inno Setup 6 里 {src} 已废弃,
+; 而相对路径的基准(脚本目录)容易和编译目录混淆,踩过一次找不到路径的坑。
+#ifndef MyRoot
+  #error 请用 iscc "/DMyRoot=<仓库根绝对路径>" 编译
+#endif
+
 [Setup]
 AppId={{7C3A5F42-9B21-4C0E-9E7B-2A5D6C4E1B03}
 AppName={#AppName}
 AppVersion={#AppVersion}
 AppPublisher={#AppPublisher}
 DefaultDirName={autopf}\BiliDownloader
-; Inno 的相对路径基准是**脚本所在目录**,不是编译时的当前目录:
-; 写 packaging\icon.ico 会去找 packaging\packaging\icon.ico(找不到)。
-SetupIconFile={src}\icon.ico
-; 输出目录同理,默认落在 packaging/ 下,要指到仓库根的 dist/
-OutputDir={src}\..\dist
+SetupIconFile={#MyRoot}\packaging\icon.ico
+OutputDir={#MyRoot}\dist
 DefaultGroupName={#AppName}
 DisableProgramGroupPage=yes
 OutputBaseFilename=BiliDownloader-Setup-{#AppVersion}-x64
@@ -38,9 +42,7 @@ Name: "chinese"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务:"
 
 [Files]
-; {src} = 本脚本所在目录(packaging/),再往上一级才是仓库根——
-; Inno Setup 的相对路径基准是脚本目录,不是编译时的当前目录。
-Source: "{src}\..\dist\BiliDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#MyRoot}\dist\BiliDownloader\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 [Icons]
 Name: "{group}\{#AppName}"; Filename: "{app}\{#AppExeName}"
