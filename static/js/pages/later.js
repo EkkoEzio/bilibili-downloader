@@ -22,8 +22,8 @@ export async function loadWatchlater() {
     },
     apply: (b) => {
       replaceItems(b.items || []);
+      // 统计行由 renderPage → renderDefaultList 统一写(见 feed.js 同处说明)。
       renderPage();
-      libDom().meta.textContent = `共 ${state.items.length} 条`;
     },
   });
 }

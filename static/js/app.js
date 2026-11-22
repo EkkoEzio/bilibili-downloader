@@ -54,6 +54,7 @@ Object.assign(window, {
   saveDir: settings.saveDir,
   saveTheme: settings.saveTheme,
   resetConfigDir: settings.resetConfigDir,
+  quitApp: settings.quitApp,
   // 新建下载
   smartParse: newdl.smartParse,
   startDownload: newdl.startDownload,
@@ -137,6 +138,7 @@ syncStaticButtonLabels();
 /* ---------- 启动 ---------- */
 (async function init() {
   await settings.loadConfig();
+  settings.refreshAppExitRow();   // 桌面版才显示「退出应用」
   const stored = localStorage.getItem('bd_theme');
   const cfg = await net.getJSON('/api/config').catch(() => null);
   const t = stored || (cfg && cfg.theme) || 'auto';

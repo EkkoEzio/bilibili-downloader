@@ -31,10 +31,26 @@
   /* lib.js 首屏条数计算的事实源,勿删;也是全部内容网格的列宽下限 */
   --card-min:320px; --card-gap:16px;
 
+  /* 内容区留白:顶部留白必须落在 .page 上,不能留在 .content 上——
+     .content 的 padding-top 会把 .page 顶到可视区下方,sticky 页头就被
+     包含块挡在下面、只能钉在半空里,上方还会漏出一截滚动内容(2026-11-22)。 */
+  --content-pt:22px;
+  --content-px:28px;
+
   /* 控件与形状:Vercel lg=12 / sm=6,主 CTA 100px 胶囊 */
   --ctl-h:32px; --radius:12px; --radius-ctl:6px;
   --shadow-sm:0 1px 1px rgba(0,0,0,.02),0 2px 2px rgba(0,0,0,.04);
   --shadow-md:0 10px 15px -3px rgba(0,0,0,.10),0 4px 6px -4px rgba(0,0,0,.10);
+
+  /* 压在封面/图片上的覆盖件统一暗底:色值与不透明度只在这里定义一次。
+     2026-11-22 审查发现 rgba(20,21,24,…) 散在 9 处硬编码,改一次要动 9 个点;
+     现在全部走令牌,视觉零变化(数值逐个保持原样)。 */
+  /* 必须是逗号分隔:引用它的是 rgba(var(--overlay-rgb),.72) 这种逗号语法。
+     写成空格分隔(20 21 24)会让整条 background 声明语法失效,覆盖件底色
+     全部回落成透明(2026-11-22 实测踩过)。 */
+  --overlay-rgb:20, 21, 24;
+  --overlay-bg:rgba(var(--overlay-rgb),.72);
+  --overlay-bg-hover:rgba(var(--overlay-rgb),.9);
 
   --font:"Geist",Inter,-apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",system-ui,sans-serif;
   --mono:"Geist Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
@@ -80,7 +96,7 @@ svg{flex-shrink:0;width:1em;height:1em}
 /* ==================== 骨架:顶栏 + 满宽内容 ==================== */
 .app-shell{display:flex;flex-direction:column;height:100vh}
 .main{flex:1;min-height:0;display:flex;flex-direction:column}
-.content{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:22px 28px 130px}
+.content{flex:1;overflow-y:auto;overscroll-behavior:contain;padding:0 var(--content-px) 130px}
 body.action-bar-open .content{padding-bottom:150px}
 
 /* ---------- 顶栏 ---------- */
@@ -101,6 +117,13 @@ body.action-bar-open .content{padding-bottom:150px}
 .tb-right{display:flex;align-items:center;gap:10px;flex-shrink:0}
 /* 顶栏搜索框(2026-11-21 收进顶栏):导航右侧、功能按钮左侧,弹填剩余宽度 */
 .tb-search{flex:1;max-width:420px;min-width:140px}
+/* 窄窗时搜索框先让位。顶栏里 #nav 与搜索框都是 flex:1,剩余空间对半分,
+   而搜索框被 max-width 截住 → 导航被挤窄,第 8 个页签「下载」被裁掉
+   (1280 视口实测溢出 56px,页签只剩 18px 可见)。这里让搜索框收窄,
+   导航拿回内容宽度;≥1401px 维持原布局不变。 */
+@media (max-width:1400px){
+  .tb-search{flex:0 1 240px;min-width:150px}
+}
 .tb-search .search-input{width:100%}
 .tb-ic{width:32px;height:32px;border:1px solid var(--line);border-radius:6px;display:grid;place-items:center;color:var(--text-soft)}
 .tb-ic:hover{color:var(--text-main);border-color:var(--text-mute)}
@@ -127,7 +150,19 @@ body.action-bar-open .content{padding-bottom:150px}
 /* ==================== 页面与页头 ==================== */
 .page{display:none}
 .page.active{display:block}
-.page-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:16px}
+/* 页头固定在内容区顶部:标题行(标题 + 信息行 + 操作钮)不随卡片滚动。
+
+   它要读起来是「一条栏」,不是「一条浮在内容上的东西」(2026-11-22 用户报障):
+   · 背景用 --card(与顶栏同色)+ 底部分隔线 → 与顶栏连成上下两条栏;
+   · 左右负 margin 抵消 .content 的 padding → 铺满内容区可见宽度,两侧不露底;
+   · top:0 + 顶部留白由页头自己的 padding 承担 → 自然位置与吸顶位置一致,
+     滚动越过阈值时不会往上跳一下(2026-11-22 用户报障);
+   · 页头背景与顶栏同色 + 底部分隔线 → 与顶栏连成上下两条栏。 */
+.page-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;
+  position:sticky;top:0;z-index:20;
+  margin:0 calc(-1 * var(--content-px)) 16px;
+  padding:var(--content-pt) var(--content-px) 10px;
+  background:var(--card);border-bottom:1px solid var(--line)}
 /* 页标题由 sr-only 提升为可见(演示版同款) */
 .page-head h1{position:static;width:auto;height:auto;margin:0;overflow:visible;clip:auto;white-space:normal;
   font-size:20px;font-weight:600;letter-spacing:-.6px}
@@ -217,25 +252,33 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .lib-grid .dp-bar{margin:7px 13px 0}
 .lib-grid .dp-meta{padding:6px 13px 0}
 .lib-grid .dp-err{margin:6px 13px 0}
-.thumb-dur{position:absolute;right:8px;bottom:8px;background:rgba(20,21,24,.72);color:#fff;
+.thumb-dur{position:absolute;right:8px;bottom:8px;background:var(--overlay-bg);color:#fff;
   font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px;z-index:2}
 /* 右下角「在 Finder 中显示」:正中已有播放按钮,这里用中性玻璃色 + 文件夹图标,
    不再抢强调色——否则一张卡上两颗粉色圆按钮分不清谁播谁定位。
    必须压过勾选热区(z-index:3),否则点不动。 */
 .vi-play{position:absolute;right:8px;bottom:8px;width:28px;height:28px;border-radius:50%;
-  background:rgba(20,21,24,.66);color:#fff;display:grid;place-items:center;
+  background:rgba(var(--overlay-rgb),.66);color:#fff;display:grid;place-items:center;
   border:1px solid rgba(255,255,255,.22);z-index:4}
-.vi-play:hover{background:rgba(20,21,24,.86)}
+.vi-play:hover{background:rgba(var(--overlay-rgb),.86)}
+/* 封面底部条:左「观看/点赞」胶囊 + 右动作柱(播放键压时长胶囊)并进同一条 flex 行。
+   旧结构两块各自绝对定位贴角,列表小封面上「观看+点赞」会横向压住右下角时长胶囊
+   (2026-11-22 实测重叠 17–34px,用户报障)。同一行里统计块可收缩(宁可裁切也不压时长),
+   动作柱固定贴右,网格/列表两态都成立。
+   bar 本身不吃点击(pointer-events:none),中间空白仍落在勾选热区上,点封面照样能勾选。 */
+.thumb-bottom{position:absolute;left:8px;right:8px;bottom:8px;z-index:5;
+  display:flex;align-items:flex-end;gap:8px;pointer-events:none}
+.thumb-bottom>*{pointer-events:auto}
 /* 右下角动作区:播放键在上,时长/定位一排在下的同一列。
    播放键压在时长胶囊上方(用户要求),不再放正中挡封面。 */
-.thumb-actions{position:absolute;right:8px;bottom:8px;z-index:5;
+.thumb-actions{position:static;margin-left:auto;flex:0 0 auto;
   display:flex;flex-direction:column;align-items:flex-end;gap:6px}
 .thumb-row{display:flex;align-items:center;gap:6px}
 /* 时长与定位原本是绝对定位(各自贴封面角),进到动作区这一列后必须回到流内,
    否则两者都按封面右上/右下算坐标,会叠在一起(2026-11-16 实测重叠)。 */
 .thumb-row .thumb-dur,.thumb-row .vi-play{position:static;inset:auto}
 .vi-play-main{width:34px;height:34px;border-radius:50%;display:grid;place-items:center;
-  background:rgba(20,21,24,.62);color:#fff;border:1px solid rgba(255,255,255,.3);
+  background:rgba(var(--overlay-rgb),.62);color:#fff;border:1px solid rgba(255,255,255,.3);
   backdrop-filter:blur(3px);transition:background .16s,transform .16s}
 .vi-play-main svg{width:13px;height:13px;margin-left:2px}
 .video-item:hover .vi-play-main{background:var(--accent);border-color:transparent}
@@ -252,19 +295,21 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .vi-locate svg{width:12px;height:12px;margin:0}
 .vi-locate:hover{background:var(--accent);color:#fff;border-color:transparent}
 /* 左下角统计胶囊:和时长胶囊同一套半透明小药丸语言 */
-.thumb-stats{position:absolute;left:8px;bottom:8px;z-index:5;
+/* 左下角统计胶囊:和时长胶囊同一套半透明小药丸语言。
+   flex-shrink:1 + min-width:0 = 空间不够时自己收窄(裁切)而不是压住右边时长胶囊。 */
+.thumb-stats{position:static;flex:0 1 auto;min-width:0;overflow:hidden;
   display:flex;align-items:center;gap:5px}
 /* 封面上只用一种胶囊:半透明黑底 + 白字白图标。元信息行里那套
    「粉色播放药丸 / 中性点赞药丸」是画在浅色背景上的,搬到封面会糊在一起。 */
 .thumb-stats .vi-stat{display:inline-flex;align-items:center;gap:3px;
-  background:rgba(20,21,24,.72);color:#fff;border-radius:4px;
+  background:var(--overlay-bg);color:#fff;border-radius:4px;
   padding:1px 6px;font-family:var(--mono);font-size:11px;line-height:1.5;
   font-weight:400;white-space:nowrap}
 .thumb-stats .vi-stat svg{width:10px;height:10px;color:#fff}
 .thumb-stats .v-view svg,.thumb-stats .v-like svg{color:#fff}
-.thumb-stats .vi-stat.v-view,.thumb-stats .vi-stat.v-like{background:rgba(20,21,24,.72);color:#fff}
+.thumb-stats .vi-stat.v-view,.thumb-stats .vi-stat.v-like{background:var(--overlay-bg);color:#fff}
 .vi-play svg{width:12px;height:12px}
-.vi-play:hover{background:rgba(20,21,24,.86)}
+.vi-play:hover{background:rgba(var(--overlay-rgb),.86)}
 /* 勾选热区铺满「封面」——标签渲染在 .thumb-wrap 里,所以 inset:0 指封面。
    曾经铺满整张卡:标题链接与封面按钮全被它压在下面,点标题毫无反应
    (2026-11-16 用户报障)。热区仍是大方块,但只吃封面那一块。 */
@@ -303,7 +348,7 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .vi-stat svg{width:11px;height:11px}
 /* 观看进度条压在封面底边(2026-11-18 用户要求):暗轨亮粉填充,花封面上也读得出;
    3px 贴边成一条线,圆角由 thumb-wrap 的 overflow:hidden 裁出 */
-.vi-watchbar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(20,21,24,.55);overflow:hidden;z-index:2}
+.vi-watchbar{position:absolute;left:0;right:0;bottom:0;height:3px;background:rgba(var(--overlay-rgb),.55);overflow:hidden;z-index:2}
 .vi-watchbar i{display:block;height:100%;background:var(--accent-bright)}
 
 /* 状态角标统一为同一个组件的两种业务别名：封面角标(.uc-badge)与任务状态
@@ -319,7 +364,9 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 /* 列表模式 */
 .video-item.lv{display:flex;align-items:center;gap:13px;padding:9px 12px;border-radius:var(--radius-ctl);background:transparent;border-color:transparent}
 .video-item.lv:hover{background:var(--card);box-shadow:var(--shadow-sm);transform:translateY(-1px)}
-.video-item.lv .thumb-wrap{width:150px;flex-shrink:0;border-radius:8px}
+/* 列表封面宽度:底部要同时放下「观看+点赞」与时长胶囊两组胶囊,
+   150px 放不下(2026-11-22 实测两组横向重叠 17–34px),给到 200px 才排得开。 */
+.video-item.lv .thumb-wrap{width:200px;flex-shrink:0;border-radius:8px}
 .video-item.lv .lv-body{flex:1;min-width:0}
 .video-item.lv .vi-title{padding:0;font-weight:500}
 .video-item.lv .vi-meta{margin-top:4px}
@@ -330,8 +377,10 @@ select{padding-right:26px;border-radius:6px;appearance:none;
    任何浏览器都点得动。选中/未选保持同一形状同一尺寸,只换底色与对勾,不做方变圆的
    形状跳变(2026-11-17 用户反馈:选中变圆太奇怪)。 */
 .video-item .vi-check-hit::before{content:"";position:absolute;top:10px;left:10px;width:20px;height:20px;
-  border-radius:6px;border:1.5px solid rgba(255,255,255,.85);background:rgba(20,21,24,.35);opacity:0;transition:opacity .12s;pointer-events:none}
+  border-radius:6px;border:1.5px solid rgba(255,255,255,.85);background:rgba(var(--overlay-rgb),.35);opacity:0;transition:opacity .12s;pointer-events:none}
 .video-item:hover .vi-check-hit::before,.video-item.checked .vi-check-hit::before{opacity:1}
+/* 勾选框是真 input(1px opacity:0),可 Tab 聚焦;不画焦点框等于键盘用户看不见焦点 */
+.video-item .vi-check-hit:focus-within::before{opacity:1}
 .video-item.checked .vi-check-hit::before{background:var(--accent-bright);border-color:var(--accent-bright)}
 .video-item .vi-check-hit::after{content:"";position:absolute;top:16px;left:15px;width:10px;height:5px;
   border-left:2px solid #fff;border-bottom:2px solid #fff;transform:rotate(-45deg);border-radius:1px;opacity:0;pointer-events:none}
@@ -399,9 +448,9 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .uc-auto-row .uc-auto-pill:last-child{border-radius:0 999px 999px 0}
 .uc-auto-pill{flex:0 0 auto;height:22px;padding:0 7px;font-size:11.5px;
   line-height:1;display:inline-flex;align-items:center;white-space:nowrap;cursor:pointer;
-  color:#fff;background:rgba(20,21,24,.72);border:0;
+  color:#fff;background:var(--overlay-bg);border:0;
   transition:background .14s,color .14s,border-color .14s}
-.uc-auto-pill:hover{background:rgba(20,21,24,.9)}
+.uc-auto-pill:hover{background:var(--overlay-bg-hover)}
 .uc-auto-pill.on{color:#fff;background:var(--accent-bright);border-color:transparent}
 .uc-auto-pill.off.on{color:#171717;background:rgba(255,255,255,.92);border-color:transparent}
 /* 白卡面(UP 行式、合集/收藏卡的标题行与行式)分段配色:浅灰连条,当前档实底粉;
@@ -418,7 +467,7 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .uc-name a:hover{color:var(--accent)}
 /* UP 签名悬停气泡:固定定位挂在 body 上,卡片 overflow:hidden 裁不到它 */
 .sign-tip{position:fixed;z-index:120;display:none;max-width:420px;padding:8px 11px;border-radius:8px;
-  background:rgba(20,21,24,.92);color:#fff;font-size:12px;line-height:1.55;white-space:pre-wrap;
+  background:rgba(var(--overlay-rgb),.92);color:#fff;font-size:12px;line-height:1.55;white-space:pre-wrap;
   word-break:break-word;box-shadow:var(--shadow-md);pointer-events:none;text-align:left}
 .sign-tip.show{display:block}
 .uc-sign{font-size:12px;color:var(--text-mute);margin-top:3px;
@@ -496,7 +545,7 @@ select{padding-right:26px;border-radius:6px;appearance:none;
    (绝对定位钉在封面右上角,粉底白字=在追更);封面右下角仍是「N 个视频」计数,
    两个角互不干扰,各给一层 z-index 压住封面图。 */
 .fc-cover .uc-badge,.thumb-wrap .uc-badge{z-index:2}
-.fc-cover .fc-count{position:absolute;right:8px;bottom:8px;z-index:2;background:rgba(20,21,24,.72);color:#fff;
+.fc-cover .fc-count{position:absolute;right:8px;bottom:8px;z-index:2;background:var(--overlay-bg);color:#fff;
   font-family:var(--mono);font-size:11px;padding:1px 6px;border-radius:4px}
 /* 行式列表里分段固定成右侧一列:单行横滚,不挤名称列,逐行扫档位时对得齐 */
 .fav-folder .uc-auto-row{flex:0 1 auto;min-width:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none}
@@ -513,7 +562,7 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 
 /* ---------- 首屏骨架屏(缓存未命中时的占位卡,数据到达整体替换) ---------- */
 .video-item.sk{pointer-events:none}
-.video-item.lv.sk .sk-thumb{width:150px;aspect-ratio:16/9;border-radius:8px;flex-shrink:0}
+.video-item.lv.sk .sk-thumb{width:200px;aspect-ratio:16/9;border-radius:8px;flex-shrink:0}
 .sk .sk-block{position:relative;overflow:hidden;background:var(--bg-soft)}
 .sk .sk-thumb{aspect-ratio:16/9}
 .sk .sk-block::after{content:"";position:absolute;inset:0;transform:translateX(-100%);
@@ -621,6 +670,10 @@ body.dark .toast{background:#0c0e12;border:1px solid var(--line)}
 .acct-avatar svg{width:20px;height:20px}
 .acct-name{font-size:14.5px;font-weight:700}
 .acct-sub{font-size:12px;color:var(--text-mute);margin-top:2px;line-height:1.5}
+/* 账号抽屉里的「退出应用」一行:只桌面版出现 */
+.app-exit-row{margin-top:4px;padding-top:12px;border-top:1px solid var(--line);
+  display:flex;flex-direction:column;gap:6px;align-items:flex-start}
+.app-exit-row .hint{color:var(--text-mute);font-size:12px;line-height:1.5;max-width:420px}
 .acct-error{font-size:12px;color:var(--red);margin-top:4px}
 /* 登录方式 tabs */
 .tabs{display:flex;gap:4px;border-bottom:1px solid var(--line);margin-bottom:14px}
@@ -706,6 +759,13 @@ body.drawer-open{overflow:hidden}
   box-shadow:0 24px 60px rgba(0,0,0,.55)}
 .pl-stage video{display:block;width:100%;max-height:calc(100vh - 180px);background:#000}
 .pl-stage video{aspect-ratio:16/9;max-height:calc(100vh - 200px);object-fit:contain}
+/* 全屏态:全屏的是 .pl-box 整盒(含控制条,2026-11-22)——只全屏舞台会让
+   进度/倍速/音量留在全屏层外没法操作。全屏里隐藏标题行,舞台吃满剩余
+   高度,视频铺满舞台居中,黑边按比例分到两侧/上下;控制条贴底常驻。 */
+.pl-box:fullscreen{width:100%;height:100%;padding:8px 14px 10px;background:#000;justify-content:center}
+.pl-box:fullscreen .pl-head{display:none}
+.pl-box:fullscreen .pl-stage{flex:1 1 auto;min-height:0;max-height:none;border-radius:0;box-shadow:none}
+.pl-box:fullscreen .pl-stage video{width:100%;height:100%;max-height:none;aspect-ratio:auto;object-fit:contain}
 /* 本地播放的倍速 / 音量:原生控件没有倍速,只能自己给一条。
    [hidden] 必须显式归零——display:flex 的优先级会盖掉浏览器默认的 hidden 规则,
    否则在线播放时这条本地控件还挂在那儿(2026-11-16 实拍)。 */
@@ -776,8 +836,8 @@ body.player-open{overflow:hidden}
   .lib-grid,.up-grid{grid-template-columns:minmax(0,1fr)}
 }
 @media (max-width:920px){
-  .content{padding:16px 16px 130px}
+  :root{--content-pt:16px;--content-px:16px}
   /* 列表行不再因窄宽度折成大卡形态(2026-11-19 用户打回:选了列表,
-     任何宽度都应是列表行);150px 封面 + 文本自适应,窄窗口只是变挤 */
+     任何宽度都应是列表行);200px 封面 + 文本自适应,窄窗口只是变挤 */
   .up-card .uc-text{min-width:120px}
 }

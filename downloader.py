@@ -38,10 +38,10 @@ from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
                        artifact_lifecycle, refresh_task_manifest,
                        manifest_media_path, mark_persistence_pending,
                        mark_persistence_success, mark_persistence_failure,
-                       new_artifact_set_id,
+                       new_artifact_set_id, MEDIA_EXTS,
                        TASK_SCHEMA_VERSION, MANIFEST_VERSION)
 from parsing import parse_video, parse_part, resolve_playlist, _ydl_opts
-from files import (build_filename, tmpl_literal, _MEDIA_EXTS,
+from files import (build_filename, tmpl_literal,
                    align_task_file as _align_task_file,
                    resolve_rename_conflict, reveal_path, open_dir)
 
@@ -243,19 +243,22 @@ def _base_opts(fmt_str: str, page: int, task_id: str) -> dict:
     download_root = task_download_root(t)
     title = (t.get("title") or "").strip()
     uploader = (t.get("uploader") or "").strip()
+    # UP 子目录名只能是我们拼进去的「字面量」:yt-dlp 模板里的 %(uploader)s
+    # 是上游字符串,而 yt-dlp 的 sanitize_filename 不处理 ".."——UP 名恰为
+    # ".." 且开了按 UP 归档时,文件会落到下载根的父目录(2026-11-22 审查)。
+    # 我们的 sanitize_filename 会把 ".." 清成 "video",所以字面量这条路安全。
+    # 名字未知时不建 UP 子目录:平铺落在下载根里,不让上游字符串进路径分量。
+    up_dir = ""
+    if config.SORT_BY_UP and uploader:
+        up_dir = f"{tmpl_literal(extras.sanitize_filename(uploader))}/"
     if title and title != "(解析中)":
         stem = tmpl_literal(build_filename(title, page))
         name_tmpl = f"{stem}.%(ext)s"
-        # UP 子目录也用清洗后的字面名;批量任务没透传 UP 名时退回 live 字段
-        if config.SORT_BY_UP:
-            sub = (f"{tmpl_literal(extras.sanitize_filename(uploader))}/"
-                   if uploader else "%(uploader)s/")
-        else:
-            sub = ""
+        sub = up_dir
     else:
         name_tmpl = ("%(title).150B - P%(playlist_index)s.%(ext)s" if page > 1
                      else "%(title).200B.%(ext)s")
-        sub = "%(uploader)s/" if config.SORT_BY_UP else ""
+        sub = up_dir
     # 流数决定进度聚合的分母与「全部完成」判据。组合轨 a+b → 2 流;
     # "best" 必须按 2 流计:它可能被 yt-dlp 解析成 bestvideo+bestaudio(下面
     # merge_output_format 正是为此而设),只数 "+" 会把它当单流——第一条流
@@ -323,7 +326,7 @@ def _notification_media_path(actual_filename: str, files: list[Path],
         except UnsafeDownloadPathError:
             continue
         if (path not in seen and path.is_file()
-                and path.suffix.lower() in _MEDIA_EXTS):
+                and path.suffix.lower() in MEDIA_EXTS):
             seen.add(path)
             media.append(path)
     return str(media[0]) if len(media) == 1 else None
@@ -414,7 +417,7 @@ def _pp_hook(task_id: str):
             if fp:
                 log.error("拒绝越界 postprocessor 路径 task_id=%s path=%s", task_id, fp)
             return
-        if safe.suffix.lower() in _MEDIA_EXTS:
+        if safe.suffix.lower() in MEDIA_EXTS:
             with _final_paths_lock:
                 _final_paths[task_id] = str(safe)
     return hook
@@ -930,10 +933,12 @@ def _quiesce_task_ids(task_ids: list[str], *, cancel_active: bool,
             ready.append(task_id)
 
     wait_budget = DELETE_QUIESCE_TIMEOUT if timeout is None else max(0.0, float(timeout))
-    deadline = time.monotonic() + wait_budget
     for task_id, runtime in waiting:
-        remaining = max(0.0, deadline - time.monotonic())
-        if not runtime.quiesced.wait(remaining):
+        # 每个任务独立预算。此前共用一个 deadline:前一个耗尽 10s 之后
+        # remaining=0,后续任务直接判超时 → 批量删除时只有第一个能等到静默,
+        # 其余全部「保留任务和文件」,用户看着像点了删除没反应(2026-11-22 审查)。
+        # 各任务并发跑,实际总等待接近单个任务而非累加。
+        if not runtime.quiesced.wait(wait_budget):
             log.warning("等待下载线程静默超时，保留任务和文件 task_id=%s", task_id)
             continue
         latest = get_task(task_id)

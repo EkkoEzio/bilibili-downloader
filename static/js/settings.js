@@ -1,12 +1,45 @@
 /* 设置（账号抽屉下半部分）：改动即生效，无保存按钮。 */
-import { getJSON, postJSON } from './net.js';
+import { getJSON, postJSON, postEmpty } from './net.js';
 import { applyTheme } from './theme.js';
-import { toast } from './confirm.js';
+import { toast, confirmAction } from './confirm.js';
 
 export let DL_DIR = '~/Downloads/bilibili';
 let _statusTimer = null;
 
 export function setDlDir(v) { DL_DIR = v; }
+
+/* 「退出应用」入口(仅打包版)。
+   窗口关掉只是最小化到 Dock,后台照常监控下载;想彻底停掉走这里,
+   不用去猜菜单栏那个小图标在哪(2026-11-22 用户报障「退不出去」)。 */
+export async function quitApp() {
+  const info = await getJSON('/api/app/info').catch(() => null);
+  if (!info || !info.packaged) {
+    toast('源码运行模式:请在启动终端按 Ctrl-C 退出');
+    return;
+  }
+  const ok = await confirmAction({
+    title: '退出应用',
+    message: '退出会停掉后台的自动监控与下载队列，正在下载的任务会中断。',
+    detail: '确定退出吗？',
+    confirmLabel: '退出',
+    danger: true,
+  });
+  if (!ok) return;
+  try {
+    await postEmpty('/api/app/quit');
+    toast('正在退出…');
+  } catch (error) {
+    toast(error.message || '退出请求失败');
+  }
+}
+
+/* 打包版才显示「退出应用」那一行。 */
+export async function refreshAppExitRow() {
+  const row = document.getElementById('app-exit-row');
+  if (!row) return;
+  const info = await getJSON('/api/app/info').catch(() => null);
+  row.hidden = !(info && info.packaged);
+}
 
 function formatStatusTime(value) {
   const timestamp = Number(value);

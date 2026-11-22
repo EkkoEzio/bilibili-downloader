@@ -881,6 +881,36 @@ def _js_dir():
     return Path(__file__).resolve().parent.parent / "static" / "js"
 
 
+def _in_media_block(css_text: str, needle: str) -> bool:
+    """判断某段 CSS 是否落在 @media 块内部(按花括号配对扫描)。
+
+    不能用「第一个 @media 出现的位置」来判断:页面里任何一处窄屏媒体查询
+    都会让后面无关的顶层规则被误判成「在断点内」(2026-11-22 顶栏新增窄屏
+    媒体查询后暴露)。
+    """
+    stack = []
+    i = 0
+    n = len(css_text)
+    while i < n:
+        if css_text.startswith("@media", i):
+            brace = css_text.find("{", i)
+            if brace == -1:
+                return False
+            stack.append("media")
+            i = brace + 1
+            continue
+        ch = css_text[i]
+        if ch == "{":
+            stack.append("other")
+        elif ch == "}":
+            if stack:
+                stack.pop()
+        elif css_text.startswith(needle, i):
+            return "media" in stack
+        i += 1
+    return False
+
+
 def _strip_block_comments(src: str) -> str:
     """去掉 /* */ 块注释:注释里的示例代码不是真实引用(app.js 的桥说明里
     就有 onclick="xxx()" 这种占位)。"""
@@ -1254,12 +1284,17 @@ def test_task_card_keeps_uploader_ident_and_progress_discipline():
     不再画 0% 空灰条。
     """
     dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
     card = _js_func_body(dl_js, "taskCardHtml")
 
     # UP 身份行与标准卡同一套控件:vi-ident + UP 主页链接,关注按钮保留。
-    assert '<span class="vi-ident">' in card, "任务卡要有「UP 主 · 时间」身份行"
-    assert "space.bilibili.com" in card
-    assert 'class="vi-follow"' in card
+    # 2026-11-22 起这行由 lib.js 的公共件 metaRowHtml 渲染——任务卡与已
+    # 完成卡此前各写一份,已经各自漂移过一次(见同文件下方回归测试)。
+    assert 'metaRowHtml(it, uploaderMid, revealButton)' in card, \
+        "任务卡要复用公共件 metaRowHtml 渲染身份行+关注+定位钮"
+    assert '<span class="vi-ident">' in lib_js, "身份行控件在公共件里"
+    assert "space.bilibili.com" in lib_js, "身份行带 UP 主页链接"
+    assert 'class="vi-follow"' in lib_js, "关注按钮保留"
     assert '<div class="vi-meta">${metaHtml}</div>' in card
 
     # 行序:身份行在进度条之前(网格与行式两个分支同序,取首处出现位置)。
@@ -2396,10 +2431,11 @@ def test_action_bar_bottom_pill():
     不占布局。此前的「顶部条」回归点由终选设计替代,如需回改请连同本测试。
     """
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
-    # 静态规则必须落在响应式断点之前(桌面与窄屏同用底部胶囊)
-    bar_at = css.index(".action-bar{")
-    mq_at = css.find("@media (max-width")
-    assert bar_at != -1 and (mq_at == -1 or bar_at < mq_at), \
+    # 静态规则必须落在顶层(桌面与窄屏同用底部胶囊)。
+    # 用括号配对判断,不能靠「第一个 @media 的位置」——顶栏新增窄屏媒体查询
+    # 后那种启发式会把顶层规则误判成在断点内。
+    assert css.index(".action-bar{") != -1, "操作条规则要存在"
+    assert not _in_media_block(css, ".action-bar{"), \
         "操作条规则不应塞进响应式断点内"
     assert ".action-bar{position:fixed;left:50%;bottom:22px;" in css, \
         "操作条应固定在底部居中(胶囊)"
@@ -3546,9 +3582,10 @@ def test_local_player_frontend_contract():
     # 勾选热区只能压封面:曾经铺满整卡,把标题链接和封面按钮一起压死
     assert ".vi-check-hit{position:absolute;inset:0;z-index:3;cursor:pointer}" in css
     # 播放按钮要压过热区,否则点播放会变成勾选
-    actions_rule = css[css.index(".thumb-actions{"):]
-    actions_rule = actions_rule[:actions_rule.index("}")]
-    assert "z-index:5" in actions_rule, "封面动作区必须高于勾选热区(z-index:3)"
+    # (2026-11-22 起 z-index 落在封面底部条 .thumb-bottom 上,动作柱/统计块都是它的子节点)
+    bar_rule = css[css.index(".thumb-bottom{"):]
+    bar_rule = bar_rule[:bar_rule.index("}")]
+    assert "z-index:5" in bar_rule, "封面底部条必须高于勾选热区(z-index:3)"
     assert ".pl-controls[hidden]" in css, \
         "display:flex 会盖掉 hidden,必须显式归零,否则在线播放时本地控件还在"
     for name in ("lib.js", "pages/downloads.js"):
@@ -3803,21 +3840,46 @@ def test_online_resolve_api_path_honors_page_param(monkeypatch):
 # ---------- 卡片封面布局 / 关注 / 滑条 ----------
 
 def test_cover_layout_play_bottom_right_stats_bottom_left():
-    """播放键在右下角时长胶囊上方,播放/点赞胶囊在封面左下角。"""
+    """播放键在右下角时长胶囊上方,播放/点赞胶囊在封面左下角。
+
+    2026-11-22 起两块并进封面底部条 .thumb-bottom(同一条 flex 行、各贴一端):
+    旧结构两块各自绝对定位贴角,列表小封面上「观看+点赞」会横向压住时长胶囊。
+    """
     lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert 'class="thumb-bottom"' in lib_js, "封面底部要有统一底部条"
     assert 'class="thumb-actions"' in lib_js, "封面右下角要有动作区"
     assert 'class="thumb-row"' in lib_js, "时长/定位与播放键同列"
     assert 'class="vi-play-main"' in lib_js, "播放键用 vi-play-main(不再放正中)"
     assert 'class="thumb-stats"' in lib_js, "播放/点赞胶囊要搬到封面左下角"
     assert "vi-play-center" not in lib_js, "原来的居中播放键应彻底退役"
     css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    bar = css[css.index(".thumb-bottom{"):]
+    bar = bar[:bar.index("}")]
+    assert "left:8px" in bar and "right:8px" in bar and "bottom:8px" in bar, "底部条横贯封面底边"
+    assert "display:flex" in bar, "统计胶囊与动作柱必须同处一条 flex 行(各贴一端才不互压)"
+    assert "pointer-events:none" in bar, "底部条本身不吃点击,空白处仍要落在勾选热区上"
     actions = css[css.index(".thumb-actions{"):]
     actions = actions[:actions.index("}")]
-    assert "right:8px" in actions and "bottom:8px" in actions, "动作区贴右下角"
     assert "flex-direction:column" in actions, "播放键要在时长上方而非并排"
+    assert "margin-left:auto" in actions, "动作柱贴右端"
     stats = css[css.index(".thumb-stats{"):]
     stats = stats[:stats.index("}")]
-    assert "left:8px" in stats and "bottom:8px" in stats, "统计胶囊贴左下角"
+    assert "flex:0 1 auto" in stats and "min-width:0" in stats, "统计块要可收缩,宁可裁切也不压时长胶囊"
+
+
+def test_list_cover_wide_enough_for_cover_pills():
+    """列表封面底部要同时放得下「观看+点赞」与时长胶囊两组胶囊。
+
+    回归:列表封面只有 150px 宽时,左下角统计组与右下角时长胶囊横向重叠
+    17–34px(2026-11-22 实测,用户报障)。封面宽度不足,底部条再怎么排也排不开。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    rule = css[css.index(".video-item.lv .thumb-wrap{"):]
+    rule = rule[:rule.index("}")]
+    assert "width:200px" in rule, "列表封面宽度固定 200px,底部两组胶囊才排得开"
+    sk = css[css.index(".video-item.lv.sk .sk-thumb{"):]
+    sk = sk[:sk.index("}")]
+    assert "width:200px" in sk, "骨架屏封面宽度要与真实封面一致,否则首屏会跳"
 
 
 def test_follow_chip_and_batch_status_endpoint(client, monkeypatch):
@@ -4087,12 +4149,329 @@ def test_face_player_top_quality_and_reveal_button_move():
         "thumb-row 不再塞 Finder 按钮(时间胶囊恢复独占)"
     assert "${durHtml}${revealButton}" not in dl_js, \
         "下载记录卡同样不再塞 Finder 按钮"
-    assert "<span class=\"vi-meta-actions\">${locateHtml}${followChip}</span>" in lib_js, \
+    assert "export function metaRowHtml" in lib_js, \
+        "元信息行(身份+定位钮+关注胶囊)收进公共件 metaRowHtml(2026-11-22 收敛)"
+    assert "<span class=\"vi-meta-actions\">${locateHtml}${followChipHtml(mid, it.uploader)}</span>" in lib_js, \
         "Finder 钮与关注胶囊同排放元信息行(2026-11-19 用户要求,网格/列表两态通用)"
-    assert "<span class=\"vi-meta-actions\">${revealButton}${followChip}</span>" in dl_js, \
+    assert "metaRowHtml(it, uploaderMid, locateHtml)" in lib_js, \
+        "标准卡走公共件渲染元信息行"
+    assert "metaRowHtml(it, uploaderMid, revealButton)" in dl_js, \
         "任务卡的 Finder 钮同样进元信息行右侧组"
     assert "${revealButton}${mainPlay}" not in dl_js, "封面动作柱不再叠 Finder 钮"
     assert ".vi-locate{" in css and ".vi-meta-actions{" in css, \
         "元信息行 Finder 钮要有自己的内联样式"
     assert ".thumb-actions > .vi-reveal" not in css, \
         "封面动作柱里的 Finder 圆钮规则应随搬迁退役"
+
+
+# ---------- 2026-11-22 全量审查的回归锁定 ----------
+
+def test_progress_card_finder_button_stays_in_meta_row():
+    """下载记录页「在 Finder 中显示」不能逃出元信息行。
+
+    2026-11-22 审查发现的真 bug:下载页的任务卡(排队/下载中/失败/取消)
+    自写了一份 Finder 按钮,类名是 .vi-play vi-reveal——.vi-reveal 在 CSS 里
+    根本没有定义,于是继承 .vi-play 的 position:absolute,按钮脱离元信息行
+    落到卡片右下角,压住关注胶囊/进度条。已完成卡走 lib.js 的 .vi-locate
+    是对的,所以只有「任务还在跑」时才露出来。
+    """
+    dl_js = (_js_dir() / "pages" / "downloads.js").read_text(encoding="utf-8")
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert "vi-reveal" not in _strip_block_comments(dl_js), \
+        "下载页不该再出现没有 CSS 定义的 .vi-reveal 类(会继承绝对定位)"
+    assert 'class="vi-locate"' in dl_js, \
+        "任务卡的 Finder 钮要用有定义的 .vi-locate 内联胶囊"
+    start = css.index(".vi-locate{")
+    locate_rule = css[start:css.index("}", start)]
+    assert "position:absolute" not in locate_rule, \
+        ".vi-locate 是元信息行里的流内胶囊,不能绝对定位"
+    assert "position:static" not in locate_rule, \
+        ".vi-locate 是流内元素,不需要额外复位"
+
+
+def test_online_prefetch_failure_is_not_cached_forever():
+    """预热失败不能把该视频整个会话废掉。
+
+    2026-11-22 审查发现的真 bug:prefetchOnline 失败时把 resolve 成 null 的
+    promise 留在 prefetched Map 里,openOnlinePlayer 直接复用它 → 拿到 null
+    只提示报错、不再发请求。一次网络抖动后该视频整个会话都点不开。
+    """
+    player_js = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    prefetch_body = _js_func_body(player_js, "prefetchOnline")
+    assert "prefetched.delete(url)" in prefetch_body, \
+        "预热失败要把条目从缓存里摘掉,让下一次点击能重新请求"
+    assert "catch" in prefetch_body, "预热仍要兜住网络异常"
+    open_body = _js_func_body(player_js, "openOnlinePlayer")
+    assert "requestQualities" in open_body, \
+        "播放路径要能自己重发一次请求(复用失败结果时)"
+    assert "prefetched.delete(url)" in open_body, \
+        "复用失败结果后要清掉缓存,别让失败结果继续被复用"
+    # 重发必须有上限:不能递归成无限重试
+    assert open_body.count("requestQualities()") <= 2, \
+        "重发只允许一次,不能无限递归"
+
+
+def test_topbar_narrow_window_keeps_all_page_tabs_reachable():
+    """窄窗口下顶栏第 8 个页签不能被裁掉。
+
+    2026-11-22 审查发现的真 bug:#nav 与搜索框都是 flex:1,剩余空间对半分,
+    而搜索框被 max-width 截住 → 导航被挤窄。1280 视口实测 nav 溢出 56px,
+    「下载」页签只剩 18px 可见(可横向滚动,但默认看不见)。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert "@media (max-width:1400px)" in css, \
+        "窄屏要有一段媒体查询把搜索框收窄,给导航让位"
+    assert ".tb-search{flex:0 1 240px" in css, \
+        "窄屏下搜索框要可收缩(flex-shrink 生效),而不是硬占宽度"
+    assert not _in_media_block(css, ".action-bar{"), \
+        "顶栏新增的媒体查询不能影响操作条规则所在层级"
+
+
+def test_home_page_uses_shared_business_id():
+    """首页翻页去重必须用统一的业务 ID。
+
+    2026-11-22 审查发现的真 bug:首页自写了一份 video:<bvid>#p<page> 拼接,
+    首页数据缺 bvid 时会退化成 video:undefined#p1,与 state.itemById 的键
+    对不上 → 翻页去重永久失效(同一批反复追加)。
+    """
+    home_js = (_js_dir() / "pages" / "home.js").read_text(encoding="utf-8")
+    lib_js = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert "itemLibId" not in home_js, "首页不该再自写业务 ID"
+    assert "itemBusinessId" in home_js, "首页要用 lib.js 的统一业务 ID"
+    assert "export function itemBusinessId" in lib_js, "业务 ID 的唯一来源要在 lib.js"
+
+
+def test_overlay_dark_background_uses_css_tokens():
+    """封面覆盖件的暗底色要有单一来源。
+
+    2026-11-22 审查发现:rgba(20,21,24,…) 在 main.css 里硬编码 9 处,
+    改一次要动 9 个点。现在统一走 --overlay-rgb / --overlay-bg 令牌,
+    数值逐个保持原样(视觉零变化)。
+    """
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    body = css[css.index(":root{"):]
+    # 必须是逗号分隔:引用处是 rgba(var(--overlay-rgb),.72) 这种逗号语法,
+    # 变量值写成空格分隔会让整条 background 失效 → 覆盖件底色全透明
+    # (2026-11-22 实测踩过:播放量/点赞/时长都变成透明背景白字)。
+    assert "--overlay-rgb:20, 21, 24" in body, "暗底色要有令牌化的唯一来源(逗号分隔)"
+    assert "--overlay-rgb:20 21 24" not in body, \
+        "空格分隔的令牌值配 rgba(逗号语法) 会让声明失效"
+    assert "--overlay-bg:" in body, "覆盖件底色要有语义令牌"
+    # 注释里出现色值字面量是正常的(说明来历),只查真正的规则
+    import re
+    rules = re.sub(r"/\*.*?\*/", "", css, flags=re.S)
+    leftovers = [line for line in rules.splitlines()
+                 if "rgba(20,21,24" in line and "--overlay" not in line]
+    assert not leftovers, f"不应再有裸写的 rgba(20,21,24,…): {leftovers}"
+
+
+def test_follow_chip_state_update_is_single_pass():
+    """关注状态回写不能对每个 UP 都做一次全文档查询。
+
+    2026-11-22 审查发现:applyToDom 每个 mid 都做一次全页 querySelectorAll,
+    三十张卡就是三十次全页扫描。现在一次收集 mid → 胶囊列表再回写。
+    """
+    follow_js = (_js_dir() / "follow.js").read_text(encoding="utf-8")
+    assert "function collectChipsByMid" in follow_js, \
+        "要一次收集 mid → 胶囊列表"
+    refresh_body = _js_func_body(follow_js, "refreshFollowChips")
+    assert "collectChipsByMid" in refresh_body, \
+        "批量刷新要复用收集好的映射,而不是逐个 mid 查全文档"
+    assert "applyToDom(mid," not in refresh_body, \
+        "批量刷新里不应再逐 mid 调 applyToDom(每次都全文档查询)"
+
+
+# ---------- 打包链路的不变量 ----------
+
+def test_packaging_uses_single_whitelist_and_data_dir():
+    """打包的两条地基不能被改坏:白名单不含运行数据、数据目录只有一个来源。
+
+    2026-11-22 打包地基改造:路径规则必须只来自 runtime_paths,
+    instance_lock.py 再自写一份 data/ 路径的话,打包后锁会与数据目录分叉。
+    """
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+    config_src = open(_os.path.join(base, "config.py"), encoding="utf-8").read()
+    lock_src = open(_os.path.join(base, "instance_lock.py"), encoding="utf-8").read()
+    paths_src = open(_os.path.join(base, "runtime_paths.py"), encoding="utf-8").read()
+    assert "runtime_paths" in config_src, "config 要从 runtime_paths 取数据目录"
+    assert "runtime_paths" in lock_src, "instance_lock 要从 runtime_paths 取锁路径"
+    assert 'Path(__file__).resolve().parent / "data"' not in lock_src, \
+        "instance_lock 不许再自写第二个数据目录来源"
+    assert "is_frozen" in paths_src, "路径规则要认打包态(frozen)"
+    assert "Application Support" in paths_src and "APPDATA" in paths_src, \
+        "mac 与 windows 的用户数据目录都要有"
+    assert "BD_DATA_DIR" in paths_src, "要能显式覆盖数据目录(便携版/自测)"
+
+
+def test_packaging_spec_only_ships_runtime_files():
+    """打包白名单:只有 templates/static 进包,运行数据与个人痕迹一律不进。"""
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    spec = open(_os.path.join(base, "packaging", "bilibili.spec"), encoding="utf-8").read()
+    for forbidden in ('"data"', '"docs"', '"tests"', '"gui-test-screenshots"',
+                      '"design-demos"', '".git"'):
+        assert forbidden not in spec, f"打包白名单不得包含 {forbidden}"
+    assert '"templates"' in spec and '"static"' in spec, \
+        "模板与静态资源是运行必需,必须在白名单里"
+    assert "block_cipher = None" in spec, "spec 要显式声明 block_cipher"
+
+
+def test_artifact_scanner_exists_and_blocks_forbidden_paths():
+    """产物扫描脚本必须在,且禁掉开发者的运行数据目录。"""
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    scan_path = _os.path.join(base, "packaging", "scan_artifact.py")
+    assert _os.path.isfile(scan_path), "产物隐私扫描脚本要存在"
+    scan = open(scan_path, encoding="utf-8").read()
+    for forbidden in ("data", "docs", "tests", "gui-test-screenshots", ".DS_Store"):
+        assert f'"{forbidden}"' in scan, f"扫描清单必须禁掉 {forbidden}"
+    assert "rgba" not in scan or True  # 占位:扫描脚本不做像素级判断
+    assert "HOME_PATH_PATTERNS" in scan, "要扫家目录路径(开发者用户名)"
+    assert "data_dir" in scan, "要从构建机 data/ 动态提取真实指纹与 UID"
+    # 关键词不能写死在仓库里:那等于把个人信息带进仓库
+    assert "hushen" not in scan, "扫描脚本里不能写死开发者用户名"
+
+
+def test_app_icon_assets_exist_and_are_vector_first():
+    """应用图标资产要齐,且源文件是矢量(小尺寸不糊)。
+
+    2026-11-22:顶栏 logo 原是 2px 细描边小电视,30px 下细碎发虚。
+    改为手写矢量 packaging/icon.svg,同一份源文件出 16px–1024px 全尺寸。
+    """
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+    svg_path = _os.path.join(base, "packaging", "icon.svg")
+    assert _os.path.isfile(svg_path), "图标矢量源文件要在 packaging/icon.svg"
+    svg = open(svg_path, encoding="utf-8").read()
+    assert "<svg" in svg and "viewBox" in svg, "源文件要是矢量 SVG"
+    assert "#fb7299" in svg, "图标要用 B 站粉做品牌色"
+
+    for name in ("icon.icns", "icon.ico"):
+        path = _os.path.join(base, "packaging", name)
+        assert _os.path.isfile(path), f"打包需要的 {name} 要提交进仓库"
+        assert _os.path.getsize(path) > 1000, f"{name} 看起来是空文件"
+
+    assert _os.path.isfile(_os.path.join(base, "static", "icons", "app-icon.png")), \
+        "界面用的图标 PNG 要在"
+
+    # 顶栏 logo 用的是同一套字形,不能再是旧的细描边版本
+    html = _tpl()
+    assert "M7.55 7.92" in html, "顶栏 logo 要换成新的小电视字形"
+    assert 'stroke-width="2" stroke-linecap="round" stroke-linejoin="round"' not in \
+        html.split('class="logo"')[1][:600], "顶栏 logo 不该再是旧的细描边版本"
+
+
+def test_desktop_shell_keeps_running_after_window_close():
+    """桌面壳:关窗口要收进后台,不能退出进程。
+
+    2026-11-22 用户报障:点左上角关闭会弹崩溃报错,而且应用就死了——
+    但这东西本质是监控器,关窗口不该停掉下载与追更。
+    """
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    src = open(_os.path.join(base, "desktop.py"), encoding="utf-8").read()
+
+    # macOS 上 pystray 只能用 run_detached():run() 会再跑一次 NSApp.run(),
+    # 和 pywebview 的事件循环撞车 → SIGTRAP 直接崩(实测踩过)。
+    assert "run_detached()" in src, "macOS 托盘必须用 run_detached(),不能起第二个事件循环"
+    assert "tray.run(" not in src, "tray.run() 会和 pywebview 抢 NSApp 主循环"
+
+    # 关闭处理器必须是「隐藏 + 返回 False」
+    assert "def make_closing_handler(window, state):" in src, \
+        "关闭逻辑要抽成可测函数"
+    assert "window.hide()" in src, "关窗口要隐藏窗口而不是退出进程"
+    assert 'state.get("quitting")' in src, "托盘里的「退出应用」才允许真的关掉"
+
+    # 关窗口要最小化(留个能回来的入口),不能藏得凭空消失
+    assert "window.minimize()" in src, "关窗口应最小化到 Dock,用户点 Dock 图标就能回来"
+    assert "window.hide()" in src, "最小化不可用时才回退到隐藏"
+
+    # 再双击一次要能打开窗口,而不是弹「已有另一个实例在运行」
+    assert "def _open_client_window(" in src, "已有实例时要有「只开窗口」的客户端模式"
+    assert "return _open_client_window()" in src, "单实例锁冲突时走客户端模式"
+    assert "def read_instance_port(" in src, "客户端要能读到已有实例的端口"
+    assert "write_instance_info(port)" in src, "主实例要记录自己的端口"
+
+    # 退出入口:界面里能点,不靠猜菜单栏图标
+    assert "def watch_quit_request(" in src, "桌面壳要盯着退出请求"
+    assert "quit.request" in src, "退出请求走数据目录里的标记文件"
+
+    # 页头要真正贴顶,而且读起来是「一条栏」而不是浮在内容上的一条
+    css = (_js_dir().parent / "css" / "main.css").read_text(encoding="utf-8")
+    assert "padding:0 var(--content-px) 130px" in css, \
+        "内容区的顶部留白要归零(否则 .page 被顶下去,sticky 页头只能钉在半空)"
+    head_rule = css[css.index(".page-head{"):css.index(".page-head{") + 420]
+    assert "position:sticky" in head_rule, "页头要吸顶"
+    assert "background:var(--card)" in head_rule, \
+        "页头背景要与顶栏同色,读起来是「一条栏」而不是浮在内容上的灰带"
+    assert "border-bottom:1px solid var(--line)" in head_rule, "页头要有底部分隔线"
+    assert "calc(-1 * var(--content-px))" in head_rule, \
+        "页头要铺满内容区可见宽度,两侧不露底"
+    assert "padding:var(--content-pt) var(--content-px)" in head_rule, \
+        "顶部留白要由页头自己的 padding 承担,自然位置与吸顶位置才一致(否则滚动时会往上跳一下)"
+    html = _tpl()
+    assert 'id="app-exit-row"' in html, "账号抽屉里要有「退出应用」这一行"
+    assert "quitApp()" in html, "退出按钮要能点"
+    assert "export async function quitApp(" in open(
+        _os.path.join(base, "static", "js", "settings.js"), encoding="utf-8").read(), \
+        "前端要有 quitApp 实现"
+
+    # 后端:打包版才允许通过接口退出
+    app_src = open(_os.path.join(base, "app.py"), encoding="utf-8").read()
+    assert '@app.route("/api/app/quit"' in app_src, "要有退出应用的接口"
+    assert "not_packaged" in app_src, "源码运行模式不允许接口退出(Ctrl-C 才是对的)"
+    assert '@app.route("/api/app/info")' in app_src, "前端要能知道自己是不是打包版"
+
+
+def test_relation_status_accepts_a_full_page_of_mids():
+    """关注状态批量查询要能吃下整页卡片的 UP 列表。
+
+    2026-11-22 实测:一页 30 张卡拼出的 mids 有 300+ 字符,超过通用文本
+    上限 256 → 接口直接 400,关注按钮永远停在未知态(卡片一多就失效)。
+    """
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    src = open(_os.path.join(base, "app.py"), encoding="utf-8").read()
+    assert "_MAX_MIDS_TEXT" in src, "mids 要有专门的长度上限,不能沿用通用文本上限"
+    assert "max_length=_MAX_MIDS_TEXT" in src, "mids 要用这个上限"
+    import re
+    match = re.search(r"_MAX_MIDS_TEXT = (\d+)", src)
+    assert match and int(match.group(1)) >= 200 * 21, "上限要容得下 200 个 20 位 id"
+
+    # 前端分批也要在 URL 长度内:100 个 id 约 2100 字符
+    follow_js = open(_os.path.join(base, "static", "js", "follow.js"),
+                    encoding="utf-8").read()
+    assert "i += 100" in follow_js, "前端按 100 个一批分查"
+
+    # 托盘必须真的打进包:pystray 的平台后端是动态导入的,不显式收集就会
+    # 在打包产物里消失 → 托盘静默降级(窗口关掉后唤不回来、也没法优雅退出)。
+    spec = open(_os.path.join(base, "packaging", "bilibili.spec"),
+                encoding="utf-8").read()
+    assert 'collect_submodules("pystray")' in spec, \
+        "spec 要显式收集 pystray 及其平台后端"
+
+
+
+def test_desktop_shell_picks_a_free_port_when_default_is_taken():
+    """打包版双击启动时,默认端口被占不该就打不开。
+
+    2026-11-22 实测:用户双击打包版起不来,原因是我留的源码版占着 5050
+    (打包版默认也用 5050)。源码版/装好的副本/浏览器版都可能占着它。
+    """
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    src = open(_os.path.join(base, "desktop.py"), encoding="utf-8").read()
+    assert "def start_server_on_free_port(" in src, "端口被占时要往后找空闲端口,而不是直接失败"
+    assert "except (OSError, SystemExit) as exc:" in src, \
+        "werkzeug 绑定失败走的是 sys.exit(1)(SystemExit),只接 OSError 会让应用静默退出"
+    assert "start_server_on_free_port(app_module" in src, "启动路径要走空闲端口查找"
+    assert 'show_error("无法启动", f"端口 {port} 已被占用' not in src, \
+        "不再因为端口被占就直接退出(改成往后找空闲端口)"
+    assert 'collect_submodules("pystray")' in open(
+        _os.path.join(base, "requirements-build.txt"), encoding="utf-8").read() \
+        or "pystray" in open(_os.path.join(base, "requirements-build.txt"),
+                            encoding="utf-8").read(), \
+        "pystray 要在构建依赖里"

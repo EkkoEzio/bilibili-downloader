@@ -15,12 +15,10 @@ from taskstore import (_tasks, _tasks_lock, _persist, _final_paths,
                        task_download_root, is_owned_sidecar,
                        artifact_lifecycle, refresh_task_manifest,
                        manifest_media_path, mark_persistence_pending,
-                       mark_persistence_success, mark_persistence_failure)
+                       mark_persistence_success, mark_persistence_failure,
+                       MEDIA_EXTS, legacy_dirs)
 
 log = logging.getLogger("bd.files")
-
-_MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
-               ".m4a", ".mp3", ".aac", ".opus", ".ogg"}
 
 
 def tmpl_literal(s: str) -> str:
@@ -40,27 +38,9 @@ def _safe_media(path, *, root=None) -> Path | None:
         candidate = resolve_download_path(path, root=root)
     except UnsafeDownloadPathError:
         return None
-    if candidate.is_file() and candidate.suffix.lower() in _MEDIA_EXTS:
+    if candidate.is_file() and candidate.suffix.lower() in MEDIA_EXTS:
         return candidate
     return None
-
-
-def _legacy_dirs() -> list[Path]:
-    root = Path(config.DOWNLOAD_DIR).expanduser().resolve(strict=False)
-    dirs = [root]
-    try:
-        for child in root.iterdir():
-            if not child.is_dir():
-                continue
-            try:
-                safe = resolve_download_path(child)
-            except UnsafeDownloadPathError:
-                continue
-            if safe.is_dir():
-                dirs.append(safe)
-    except OSError:
-        pass
-    return dirs
 
 
 def _find_actual_file(task_id: str, expected_stem: str):
@@ -87,7 +67,7 @@ def _find_actual_file(task_id: str, expected_stem: str):
 
     exact: list[Path] = []
     belongs: list[Path] = []
-    for directory in _legacy_dirs():
+    for directory in legacy_dirs(root=root):
         try:
             children = list(directory.iterdir())
         except OSError:
@@ -112,7 +92,7 @@ def _find_actual_file(task_id: str, expected_stem: str):
 def _rename_with_sidecars(source: Path, new_stem: str, *, root=None) -> Path:
     """安全、尽量事务化地改名主媒体及白名单封面/字幕/弹幕副件。"""
     source = resolve_download_path(source, must_exist=True, root=root)
-    if not source.is_file() or source.suffix.lower() not in _MEDIA_EXTS:
+    if not source.is_file() or source.suffix.lower() not in MEDIA_EXTS:
         raise FileNotFoundError(source)
     target = resolve_download_path(source.with_name(new_stem + source.suffix), root=root)
 
@@ -132,12 +112,21 @@ def _rename_with_sidecars(source: Path, new_stem: str, *, root=None) -> Path:
         suffix_chain = safe_side.name[len(source.stem):]
         side_target = resolve_download_path(
             safe_side.with_name(new_stem + suffix_chain), root=root)
+        # 副件目标名已存在(同标题的旧封面/字幕)时,只跳过这个副件,
+        # 不连坐主媒体。此前整体 raise FileExistsError → 主文件也不改名 →
+        # 上层把任务判 failed → manifest 为空 → 文件留在磁盘上,却进不了
+        # UI 的删除列表(2026-11-22 审查)。
+        if side_target.exists() and not _same_file(safe_side, side_target):
+            log.warning("副件改名目标已存在,跳过该副件 %s -> %s",
+                        safe_side.name, side_target.name)
+            continue
         plan.append((safe_side, side_target))
-    plan.append((source, target))  # 主文件最后改，减少失败时的可见窗口。
+    plan.append((source, target))  # 主文件最后改,减少失败时的可见窗口。
 
-    for old, new in plan:
-        if new.exists() and not _same_file(old, new):
-            raise FileExistsError(new)
+    # 主文件的目标冲突由上层单独处理(记 rename_conflict 并保留原名),
+    # 走到这里还冲突说明状态变了,明确失败而不是默默覆盖。
+    if target.exists() and not _same_file(source, target):
+        raise FileExistsError(target)
 
     moved: list[tuple[Path, Path]] = []
     try:

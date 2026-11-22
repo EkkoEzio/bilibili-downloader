@@ -245,6 +245,20 @@ export function renderPage() {
   (ctrl.render || renderDefaultList)(d);
 }
 
+/* 追加渲染:只把新增条目拼到列表末尾,已渲染的卡片 DOM 不动。
+   滚动加载走这条——整表重建会让图片全部重载,滚着滚着整屏闪一下
+   (2026-11-22 用户报障)。自定义 render 的页面仍走整表渲染。 */
+export function appendPageItems() {
+  const d = libDom();
+  if (!d.list) return;
+  const ctrl = page();
+  if (typeof ctrl.render === 'function') { ctrl.render(d); return; }
+  const q = renderFilterQuery();
+  const pairs = visiblePairs(q);
+  renderLibList(pairs, d.list, { append: true });
+  updateMeta(d, q, pairs);   // 追加后统计行要跟着更新,否则一直停在旧计数
+}
+
 function matchesQuery(it, q) {
   const t = (it.title || '').toLowerCase();
   const u = (it.uploader || '-').toLowerCase();
@@ -263,22 +277,57 @@ export function visiblePairs(q) {
   return pairs;
 }
 
+/* ---------- 卡片元信息行（公共件） ----------
+
+   身份行 = vi-ident「UP 主 · 时间」+ 右侧操作组 vi-meta-actions（定位 / 关注）。
+   下载记录页与其它列表页共用同一套控件，抽到这里避免两处各写一份再各自
+   漂移：2026-11-22 审查发现下载页自写了一份 Finder 按钮，类名写成
+   .vi-play vi-reveal（.vi-reveal 没有对应 CSS）→ 继承 .vi-play 的绝对定位，
+   在「下载中/失败/取消」的任务卡上逃出元信息行、落到卡片右下角。 */
+export function followChipHtml(mid, name, fallback = '该UP') {
+  if (!mid) return '';
+  const safeMid = escapeAttr(String(mid));
+  const label = escapeAttr(name || fallback);
+  return `<button class="vi-follow" type="button" data-mid="${safeMid}"`
+    + ` data-name="${escapeAttr(name || '')}" aria-pressed="false"`
+    + ` aria-label="关注 ${label}">关注</button>`;
+}
+
+export function identityHtml(it, mid) {
+  const upName = escapeHtml(it.uploader || '-');
+  const parts = [mid
+    ? `<a href="https://space.bilibili.com/${escapeAttr(String(mid))}" target="_blank" rel="noopener">${upName}</a>`
+    : upName];
+  if (it.view_at) parts.push(escapeHtml(formatTime(it.view_at)));
+  return `<span class="vi-ident">${parts.join(' · ')}</span>`;
+}
+
+/* locateHtml: 行内操作钮（如 Finder 定位），由调用方按页面语义决定是否渲染。 */
+export function metaRowHtml(it, mid, locateHtml = '') {
+  return `${identityHtml(it, mid)}`
+    + `<span class="vi-meta-actions">${locateHtml}${followChipHtml(mid, it.uploader)}</span>`;
+}
+
+/* 统计行文案。metaText 给"总数拿不到"的页面自己定义统计口径
+   (如观看历史是服务端分页,上游只回当页列表)。缺省仍是「共 N 条」;
+   showCount:false 会留出一整行空白,只在确实没话可说时才用。
+   整表渲染与增量追加共用这一份,否则追加后计数会停在旧值。 */
+function updateMeta(d, q, pairs) {
+  if (!d || !d.meta) return;
+  const ctrl = page();
+  if (typeof ctrl.metaText === 'function') d.meta.textContent = ctrl.metaText(q, pairs);
+  else d.meta.textContent = q
+    ? `共 ${state.items.length} 条 · 匹配 ${pairs.length}`
+    : (ctrl.showCount === false ? '' : `共 ${state.items.length} 条`);
+}
+
 export function renderDefaultList(d = libDom()) {
   if (!d || !d.list) return;
-  const ctrl = page();
   const q = renderFilterQuery();
   if (!state.shown) state.shown = curChunk();
   const pairs = visiblePairs(q);
   renderLibList(pairs, d.list);
-  if (d.meta) {
-    // metaText 给"总数拿不到"的页面自己定义统计口径(如观看历史是服务端分页,
-    // 上游只回当页列表)。缺省仍是「共 N 条」;showCount:false 会留出一整行空白,
-    // 只在确实没话可说时才用。
-    if (typeof ctrl.metaText === 'function') d.meta.textContent = ctrl.metaText(q, pairs);
-    else d.meta.textContent = q
-      ? `共 ${state.items.length} 条 · 匹配 ${pairs.length}`
-      : (ctrl.showCount === false ? '' : `共 ${state.items.length} 条`);
-  }
+  updateMeta(d, q, pairs);
   maybeFillScreen();
 }
 
@@ -321,7 +370,7 @@ export function advanceDefaultChunk() {
     return false;
   }
   state.shown += curChunk();
-  renderLibList(visiblePairs(renderFilterQuery()), libDom().list);
+  renderLibList(visiblePairs(renderFilterQuery()), libDom().list, { append: true });
   return true;
 }
 
@@ -459,7 +508,13 @@ const _itemExtras = {
 export function setItemExtras(x) { Object.assign(_itemExtras, x); }
 export function isUrlDownloaded(url) { return _itemExtras.isDownloaded(url); }
 
-export function renderLibList(pairs, container) {
+/* 每个容器已渲染的业务 ID:增量追加时用来判断哪些是新的。
+   整表重建(innerHTML = ...)会把所有 <img> 重建,浏览器重新请求
+   (loading="lazy" 的也会重新触发)→ 滚动加载时整屏闪一下
+   (2026-11-22 用户报障:「滚着滚着一会儿闪一下」)。 */
+const _renderedIds = new WeakMap();
+
+export function renderLibList(pairs, container, options = {}) {
   if (pairs.length === 0) {
     const ctrl = page();
     const q = getLibSearchQuery();
@@ -477,7 +532,11 @@ export function renderLibList(pairs, container) {
   }
   const isGrid = state.view === 'grid';
   container.className = 'lib-list' + (isGrid ? ' lib-grid' : '');
-  container.innerHTML = pairs.map(({ it, id }) => {
+  const seen = _renderedIds.get(container);
+  const fresh = (options.append && seen)
+    ? pairs.filter((pair) => !seen.has(String(pair.id)))
+    : pairs;
+  const html = fresh.map(({ it, id }) => {
     const libId = String(id);
     const checked = state.checked.has(libId);
     const checkedAttr = checked ? 'checked' : '';
@@ -500,12 +559,7 @@ export function renderLibList(pairs, container) {
     const watchbar = showProgress
       ? `<div class="vi-watchbar" role="progressbar" aria-label="观看进度" aria-valuemin="0" aria-valuemax="100" aria-valuenow="${Math.min(pct, 100)}"><i style="width:${Math.min(pct, 100)}%"></i></div>`
       : '';
-    const upName = escapeHtml(it.uploader || '-');
     const uploaderMid = safeDecimalId(it.uploader_mid);
-    const identParts = [uploaderMid
-      ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
-      : upName];
-    if (it.view_at) identParts.push(escapeHtml(formatTime(it.view_at)));
     // 播放/点赞搬到封面左下角,和右下角的时长胶囊同一种视觉语言(半透明小胶囊):
     // 视频卡上「关于这个视频的数字」集中在一块,标题下面只留身份与关注。
     const statParts = [];
@@ -514,10 +568,7 @@ export function renderLibList(pairs, container) {
     const coverStats = statParts.length
       ? `<div class="thumb-stats">${statParts.join('')}</div>` : '';
     // 关注状态:按钮先渲染成未知态,follow.js 批量查完再落成「关注 / 已关注」。
-    const followChip = uploaderMid
-      ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`
-        + ` data-name="${escapeAttr(it.uploader || '')}" aria-pressed="false" aria-label="关注 ${escapeAttr(it.uploader || '')}">关注</button>`
-      : '';
+    // 模板在 followChipHtml（公共件）里,下载记录页复用同一份。
     const taskArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
     // 「在 Finder 中显示」:下载记录专属操作,放元信息行与关注胶囊同排
     // (2026-11-19 用户要求,找一处网格/列表两态都放得下的位置——封面动作柱
@@ -525,7 +576,7 @@ export function renderLibList(pairs, container) {
     // 区分开,不抢「谁播谁定位」的语义。
     const locateHtml = (state.mode === 'downloads' && it.task_id)
       ? `<button class="vi-locate" type="button" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${itemLabel}" onclick="event.stopPropagation();revealTask(${taskArg})">${icon('folder')}</button>` : '';
-    const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span><span class="vi-meta-actions">${locateHtml}${followChip}</span>`;
+    const metaHtml = metaRowHtml(it, uploaderMid, locateHtml);
     const targetUrl = safeHttpUrl(it.url);
     // 已下载的条目:标题带 data-play-task,点一下就地播放(见 player.js);
     // 没下载过的仍是普通 B 站链接,不拦截、不改语义。
@@ -558,10 +609,12 @@ export function renderLibList(pairs, container) {
         <div class="${thumbCls}">
           ${checkHtml}
           <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
-          ${coverStats}
-          <div class="thumb-actions">
-            ${mainPlay}
-            <div class="thumb-row">${durHtml}</div>
+          <div class="thumb-bottom">
+            ${coverStats}
+            <div class="thumb-actions">
+              ${mainPlay}
+              <div class="thumb-row">${durHtml}</div>
+            </div>
           </div>
           ${watchbar}
           ${coverBadgeHtml}
@@ -578,10 +631,12 @@ export function renderLibList(pairs, container) {
       <div class="${thumbCls}">
         ${checkHtml}
         <img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">
-        ${coverStats}
-        <div class="thumb-actions">
-          ${mainPlay}
-          <div class="thumb-row">${durHtml}</div>
+        <div class="thumb-bottom">
+          ${coverStats}
+          <div class="thumb-actions">
+            ${mainPlay}
+            <div class="thumb-row">${durHtml}</div>
+          </div>
         </div>
         ${watchbar}
         ${coverBadgeHtml}
@@ -591,6 +646,16 @@ export function renderLibList(pairs, container) {
       ${warnHtml}
     </div>`;
   }).join('');
+  if (options.append && seen && seen.size) {
+    // 增量:只往末尾追加,已渲染的卡片 DOM 完全不动(图片不重载 → 不闪)
+    container.insertAdjacentHTML('beforeend', html);
+  } else {
+    container.innerHTML = html;
+    if (seen) seen.clear();
+  }
+  const rendered = seen || new Set();
+  fresh.forEach((pair) => rendered.add(String(pair.id)));
+  _renderedIds.set(container, rendered);
   updateLibCount();
   // 卡片渲染完再批量落关注状态:一次请求覆盖这一页所有 UP 主
   refreshFollowChips();
@@ -629,11 +694,7 @@ export function collectionCard({ id, title, count, cover = '', badge = '', cover
   // 元信息行(2026-11-17 用户要求,做成视频卡式):UP 名 · 更新时间 · 关注胶囊。
   // 关注按钮复用视频卡的 .vi-follow:follow.js 在 document 上委托接管状态与
   // 点击,渲染后 refreshFollowChips() 批量落「关注/已关注」。
-  const followChip = upMid
-    ? `<button class="vi-follow" type="button" data-mid="${escapeAttr(String(upMid))}"`
-      + ` data-name="${escapeAttr(upName || '')}" aria-pressed="false"`
-      + ` aria-label="关注 ${escapeAttr(upName || '该UP')}">关注</button>`
-    : '';
+  const followChip = followChipHtml(upMid, upName);
   // UP 名与视频卡 .vi-ident 同构:space 主页链接,新标签打开
   const upHtml = upName
     ? (upMid

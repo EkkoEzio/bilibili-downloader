@@ -8,8 +8,9 @@
    - 翻页用 fresh_idx 递增（B 站推荐流约定），本地已见条目渲染完再拉下一页；
    - 首屏必须铺满视口：按网格容量一次要够条数，不够再补拉，不留半屏空白；
    - 推荐理由 / 播放点赞数是本页独有的卡片信息。 */
-import { registerPage, state, libDom, renderPage, appendItems, replaceItems,
-         getLibSearchQuery, defaultChunk, cancelCachedLoads, dismissFresh } from '../lib.js';
+import { registerPage, state, libDom, renderPage, appendPageItems, appendItems, replaceItems,
+         getLibSearchQuery, defaultChunk, cancelCachedLoads, dismissFresh,
+         itemBusinessId } from '../lib.js';
 import { getJSON, isAbortError } from '../net.js';
 import { emptyStateHtml, loadingStateHtml as loadingHtml } from '../lib.js';
 import { icon } from '../icons.js';
@@ -52,9 +53,9 @@ function requestIsCurrent(generation, controller) {
     && state.mode === 'home';
 }
 
-function itemLibId(it) {
-  return `video:${it.bvid}#p${it.page || 1}`;
-}
+/* 业务 ID 统一走 lib.js 的 itemBusinessId：它与 state.itemById 的键
+   同源。此前这里自写一份 `video:${it.bvid}#p${page}`,首页数据缺 bvid 时
+   会退化成 'video:undefined#p1',与已见集合的键对不上,翻页去重永久失效。 */
 
 /* 首屏条数：网格容量（列×行），列表视图按列表容量。 */
 function firstPageSize() {
@@ -242,11 +243,12 @@ export async function fetchMoreHome() {
       return 0;
     }
     const seen = new Set(state.itemById.keys());
-    const fresh = items.filter(it => !seen.has(itemLibId(it)));
+    const fresh = items.filter(it => !seen.has(itemBusinessId(it)));
     if (!fresh.length) return 0;  // 整页都是已见过的，别再空转
     appendItems(fresh);
     state.shown = state.items.length;
-    renderPage();
+    // 增量追加:只拼新卡片,已渲染的不动(整表重建会重载图片 → 闪烁)
+    appendPageItems();
     return fresh.length;
   } catch (error) {
     if (isAbortError(error) || !requestIsCurrent(generation, controller)) return 0;

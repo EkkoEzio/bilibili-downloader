@@ -39,8 +39,11 @@ MAX_TOTAL_TASKS = 10_000
 MAX_TASKS_FILE_BYTES = 64 * 1024 * 1024
 _ARTIFACT_SET_NAMESPACE = uuid.UUID("fd30f3f2-93ee-5e58-a7ad-72c0e0a5b91a")
 _ARTIFACT_ID_NAMESPACE = uuid.UUID("a3151d53-7519-553f-973f-9e497b503fb5")
-_MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
-               ".m4a", ".mp3", ".aac", ".opus", ".ogg"}
+# 主媒体扩展名集合的唯一来源:manifest 判定、删除判定、落盘识别
+# 三处必须用同一份,否则「算不算媒体」与「允不允许删」会分裂
+# (2026-11-22 审查:此前 files.py 与 taskstore.py 各写一份)。
+MEDIA_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".avi", ".flv",
+              ".m4a", ".mp3", ".aac", ".opus", ".ogg"}
 _SIDECAR_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".avif", ".gif",
                  ".srt", ".vtt", ".ass", ".ssa", ".lrc", ".xml"}
 
@@ -861,7 +864,8 @@ def manifest_media_path(task: dict) -> Optional[Path]:
     return media[0] if len(media) == 1 else None
 
 
-def _legacy_dirs(*, root=None) -> list[Path]:
+def legacy_dirs(*, root=None) -> list[Path]:
+    """下载根 + 其一级子目录。任务根可指定:新任务用创建时固定的根。"""
     safe_root = _download_root() if root is None else _canonical_root(root)
     dirs = [safe_root]
     try:
@@ -910,7 +914,7 @@ def _partial_download_files(expected_stem: str, *, root=None) -> list[Path]:
     except UnsafeDownloadPathError:
         return []
     out: list[Path] = []
-    for directory in _legacy_dirs(root=safe_root):
+    for directory in legacy_dirs(root=safe_root):
         try:
             children = list(directory.iterdir())
         except OSError:
@@ -953,7 +957,7 @@ def _legacy_primary_candidates(task: dict, *, root=None) -> list[Path]:
     exact: list[Path] = []
     belongs: list[Path] = []
     safe_root = _download_root() if root is None else _canonical_root(root)
-    for directory in _legacy_dirs(root=safe_root):
+    for directory in legacy_dirs(root=safe_root):
         try:
             children = list(directory.iterdir())
         except OSError:
@@ -963,7 +967,7 @@ def _legacy_primary_candidates(task: dict, *, root=None) -> list[Path]:
                 safe = resolve_download_path(child, root=safe_root)
             except UnsafeDownloadPathError:
                 continue
-            if not safe.is_file() or safe.suffix.lower() not in _MEDIA_EXTS:
+            if not safe.is_file() or safe.suffix.lower() not in MEDIA_EXTS:
                 continue
             if safe.stem == expected:
                 exact.append(safe)
@@ -1016,7 +1020,7 @@ def playable_media(task: Optional[dict]) -> Optional[Path]:
     if not task:
         return None
     candidates = [path for path in _task_files(task)
-                  if path.suffix.lower() in _MEDIA_EXTS]
+                  if path.suffix.lower() in MEDIA_EXTS]
     if not candidates:
         return None
     candidates.sort(key=lambda path: 0 if path.suffix.lower() in _PLAY_BROWSER_EXTS else 1)

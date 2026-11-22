@@ -231,6 +231,34 @@ function openOverlay() {
   document.body.classList.add('player-open');
 }
 
+/* 播放器弹层内的可聚焦元素。抽屉有 Tab 圈定,播放器此前没有——
+   键盘用户 Tab 出去会跑到背后的页面(2026-11-22 审查补齐)。 */
+function playerFocusable() {
+  const overlay = byId('player');
+  if (!overlay) return [];
+  return [...overlay.querySelectorAll(
+    'button:not(:disabled), a[href], input:not(:disabled), select:not(:disabled), '
+    + 'textarea:not(:disabled), video[controls], audio[controls], '
+    + '[tabindex]:not([tabindex="-1"])',
+  )].filter((element) => !element.hidden && element.getClientRects().length > 0);
+}
+
+function trapPlayerFocus(event) {
+  const focusable = playerFocusable();
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  const active = document.activeElement;
+  const inside = focusable.includes(active);
+  if (event.shiftKey && (active === first || !inside)) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && (active === last || !inside)) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
 /* ---------- 音画同步(仅在线) ---------- */
 
 function syncAudioToVideo() {
@@ -516,29 +544,47 @@ export function openOnlinePlayer(url, meta = {}) {
   setMuted(false);
 
   // 悬停时可能已经预解析过,这里优先复用,省掉等待
+  const requestQualities = () =>
+    fetch(`/api/online/qualities?url=${encodeURIComponent(url)}`,
+          { headers: { Accept: 'application/json' } }).then(r => r.json());
   const pendingTask = prefetched.get(url);
-  const request = pendingTask
-    || fetch(`/api/online/qualities?url=${encodeURIComponent(url)}`,
-             { headers: { Accept: 'application/json' } }).then(r => r.json());
+  const request = pendingTask || requestQualities();
   prefetched.set(url, request);
+
+  const applyPayload = (payload) => {
+    if (currentMode !== 'online') return false;
+    if (!payload || !payload.ok || !payload.qualities || !payload.qualities.length) {
+      setTip('没能解析出可播放的清晰度,可以点右上角「B 站」在原站观看');
+      return false;
+    }
+    fillQualities(payload, meta);
+    const index = onlineState.index;
+    // 顶部提示当前档;档位不再跨会话记忆,每次起播默认最高(2026-11-18 用户要求)
+    const chosen = onlineState.qualities[index];
+    const label = chosen ? chosen.label : '';
+    setTip(label ? `${label} · 按你的登录态播放` : '');
+    // 直接起播:手势还在就带声音,过期了就先静音播、下一次点击开声音
+    playOnlineAt(index, { keepTime: false, autoplay: true });
+    return true;
+  };
 
   request
     .then((payload) => {
-      if (currentMode !== 'online') return;
-      if (!payload || !payload.ok || !payload.qualities || !payload.qualities.length) {
-        setTip('没能解析出可播放的清晰度,可以点右上角「B 站」在原站观看');
-        return;
-      }
-      fillQualities(payload, meta);
-      const index = onlineState.index;
-      // 顶部提示当前档;档位不再跨会话记忆,每次起播默认最高(2026-11-18 用户要求)
-      const chosen = onlineState.qualities[index];
-      const label = chosen ? chosen.label : '';
-      setTip(label ? `${label} · 按你的登录态播放` : '');
-      // 直接起播:手势还在就带声音,过期了就先静音播、下一次点击开声音
-      playOnlineAt(index, { keepTime: false, autoplay: true });
+      if (applyPayload(payload)) return;
+      // 复用的预热结果失败时(可能是一条 resolve 成 null 的旧 promise),
+      // 摘掉缓存并重发一次真实请求,别让用户必须点第二下才能看
+      prefetched.delete(url);
+      requestQualities()
+        .then((fresh) => {
+          if (fresh && fresh.ok) prefetched.set(url, Promise.resolve(fresh));
+          applyPayload(fresh);
+        })
+        .catch(() => {
+          if (currentMode === 'online') setTip('解析失败,可以点右上角「B 站」在原站观看');
+        });
     })
     .catch(() => {
+      prefetched.delete(url);
       if (currentMode === 'online') setTip('解析失败,可以点右上角「B 站」在原站观看');
     });
 
@@ -612,7 +658,13 @@ function prefetchOnline(url) {
   const task = fetch(`/api/online/qualities?url=${encodeURIComponent(url)}`,
     { headers: { Accept: 'application/json' } })
     .then((response) => response.json())
-    .catch(() => null);
+    .catch(() => {
+      // 失败条目不能留在缓存里:它会 resolve 成 null,而 openOnlinePlayer
+      // 会直接复用这个 promise —— 一次网络抖动就把该视频整个会话废掉
+      // (2026-11-22 审查)。摘掉后下一次预热/点击会重新发请求。
+      prefetched.delete(url);
+      return null;
+    });
   prefetched.set(url, task);
   return task;
 }
@@ -634,12 +686,13 @@ let warmInflight = 0;
 
 export function warmVisibleCovers() {
   if (warmTimer) return;
-  const buttons = [...document.querySelectorAll('.page.active .vi-play-main[data-play-online]')]
+  // 先滤掉已预热过的再截断:反过来的话,前 6 张预热完后队列恒空,
+  // 后续追加的卡片再也轮不到预解析,点开要干等(2026-11-22 审查)。
+  const queue = [...document.querySelectorAll('.page.active .vi-play-main[data-play-online]')]
     .filter(button => button.offsetParent !== null)
-    .slice(0, WARM_LIMIT);
-  const queue = buttons
     .map(button => button.dataset.playOnline || '')
-    .filter(url => url && !prefetched.has(url));
+    .filter(url => url && !prefetched.has(url))
+    .slice(0, WARM_LIMIT);
   if (!queue.length) return;
   const step = () => {
     if (warmInflight >= MAX_INFLIGHT_WARM) { warmTimer = setTimeout(step, WARM_GAP_MS); return; }
@@ -699,6 +752,16 @@ document.addEventListener('keydown', (event) => {
     closeLocalPlayer();
     return;
   }
+  if (event.key === 'Tab') {
+    trapPlayerFocus(event);
+    return;
+  }
+  if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
+    // 焦点在进度条/音量条上时让给原生步进(方向键本来就在调它们)
+    if (event.target.closest('select, input, textarea')) return;
+    event.preventDefault();
+    seekBy(event.key === 'ArrowLeft' ? -5 : 5);
+  }
   if (event.key === ' ' || event.key === 'k') {
     // 焦点在控件上时不要抢空格
     if (event.target.closest('select, input, textarea, button')) return;
@@ -707,6 +770,21 @@ document.addEventListener('keydown', (event) => {
     if (v) { if (v.paused) v.play().catch(() => {}); else v.pause(); }
   }
 });
+
+/* ±N 秒快进快退(方向键与未来其它入口共用):视频与 DASH 音轨同步跳,
+   进度条/时间标签走既有同步函数;越过片头/片尾时夹到边界。 */
+function seekBy(seconds) {
+  const v = video();
+  if (!v || !Number.isFinite(v.duration) || !Number.isFinite(v.currentTime)) return;
+  const next = Math.min(v.duration - 0.2, Math.max(0, v.currentTime + seconds));
+  v.currentTime = next;
+  const a = audio();
+  if (a && !a.hidden) {
+    try { a.currentTime = next; } catch (error) { /* 忽略 */ }
+  }
+  syncSeekBar(next, v.duration);
+  setTimeLabel(next, v.duration);
+}
 
 /* 控制条交互 */
 document.addEventListener('click', (event) => {
@@ -765,10 +843,12 @@ document.addEventListener('click', (event) => {
     return;
   }
   if (event.target.closest('#pl-full')) {
-    const stage = document.querySelector('.pl-stage');
-    if (!stage) return;
+    // 全屏整个播放器盒子(2026-11-22):只全屏舞台会把控制条(进度/倍速/音量)
+    // 留在全屏层外,全屏里没法拖进度;盒子含标题/舞台/控制条,全屏态由 CSS 收拾。
+    const box = document.querySelector('.pl-stage')?.closest('.pl-box');
+    if (!box) return;
     if (document.fullscreenElement) document.exitFullscreen();
-    else if (stage.requestFullscreen) stage.requestFullscreen();
+    else if (box.requestFullscreen) box.requestFullscreen();
   }
 });
 

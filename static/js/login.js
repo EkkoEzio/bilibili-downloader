@@ -20,7 +20,9 @@ let _qrGeneration = 0;
 const AUTH_SOURCE_LABELS = {
   qr: '扫码会话',
   cookie_file: 'cookies.txt',
-  browser: 'Edge 浏览器',
+  // Edge 来源 = 每次请求都从本机 Edge 现读 B 站 Cookie,所以应用里看不到
+  // 登录流程(打开就是登录态)。来源写清楚,免得以为应用"没走登录"。
+  browser: 'Edge 浏览器（免登录，直接读本机 Cookie）',
   none: '未选择',
 };
 

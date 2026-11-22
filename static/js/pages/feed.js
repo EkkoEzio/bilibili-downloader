@@ -23,8 +23,10 @@ export async function loadFollowBili() {
     },
     apply: (b) => {
       replaceItems(b.items || []);
+      // 统计行由 renderPage → renderDefaultList 统一写(共用口径:
+      // 搜索过滤时是「共 N 条 · 匹配 M」)。此前这里再写一遍「共 N 条」,
+      // 会把过滤态的「匹配 M」覆盖掉。
       renderPage();
-      libDom().meta.textContent = `共 ${state.items.length} 条`;
     },
   });
 }

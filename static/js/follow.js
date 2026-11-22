@@ -16,13 +16,32 @@ const pending = new Set();         // 已在途的 mid,防止重复请求
 let flushTimer = null;
 let queue = new Set();
 
-function applyToDom(mid, followed) {
-  document.querySelectorAll(`.vi-follow[data-mid="${mid}"]`).forEach((chip) => {
-    chip.dataset.followed = followed ? '1' : '0';
-    chip.setAttribute('aria-pressed', followed ? 'true' : 'false');
-    chip.textContent = followed ? '已关注' : '关注';
-    chip.classList.toggle('on', followed);
-  });
+function setChipState(chip, followed) {
+  chip.dataset.followed = followed ? '1' : '0';
+  chip.setAttribute('aria-pressed', followed ? 'true' : 'false');
+  chip.textContent = followed ? '已关注' : '关注';
+  chip.classList.toggle('on', followed);
+}
+
+/* 一次收集 mid → 关注胶囊列表。原先每个 mid 都单独做一次全文档
+   querySelectorAll,一张列表 N 个 UP 就是 N 次全页扫描(2026-11-22)。 */
+function collectChipsByMid() {
+  const map = new Map();
+  for (const chip of document.querySelectorAll('.vi-follow[data-mid]')) {
+    const mid = String(chip.dataset.mid || '');
+    if (!mid) continue;
+    let list = map.get(mid);
+    if (!list) { list = []; map.set(mid, list); }
+    list.push(chip);
+  }
+  return map;
+}
+
+function applyToDom(mid, followed, chipMap = null) {
+  const chips = chipMap
+    ? (chipMap.get(mid) || [])
+    : document.querySelectorAll(`.vi-follow[data-mid="${mid}"]`);
+  chips.forEach((chip) => setChipState(chip, followed));
 }
 
 async function flush() {
@@ -42,10 +61,11 @@ async function flush() {
         { headers: { Accept: 'application/json' } });
       const payload = await response.json();
       const statuses = payload && payload.statuses ? payload.statuses : {};
+      const chipMap = collectChipsByMid();
       for (const mid of chunk) {
         const followed = !!statuses[mid];
         statusByMid.set(mid, followed);
-        applyToDom(mid, followed);
+        applyToDom(mid, followed, chipMap);
       }
       // 未登录时后端 logged_in=false,按钮保持「关注」,点了会提示
       if (payload && payload.logged_in === false) {
@@ -63,13 +83,12 @@ async function flush() {
 
 /* 渲染完一页后调用:把这一页还没查过的 UP 主攒成一批去问。 */
 export function refreshFollowChips() {
-  const chips = document.querySelectorAll('.vi-follow[data-mid]');
-  if (!chips.length) return;
-  for (const chip of chips) {
-    const mid = String(chip.dataset.mid || '');
-    if (!mid) continue;
+  const chipMap = collectChipsByMid();
+  if (!chipMap.size) return;
+  for (const [mid, chips] of chipMap) {
     if (statusByMid.has(mid)) {
-      applyToDom(mid, statusByMid.get(mid));
+      const followed = statusByMid.get(mid);
+      for (const chip of chips) setChipState(chip, followed);
       continue;
     }
     queue.add(mid);

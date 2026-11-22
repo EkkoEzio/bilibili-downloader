@@ -1,10 +1,10 @@
 /* 下载记录页：稳定任务 ID 状态 + 单一聚合 SSE + 断线兜底轮询。 */
 import { registerPage, state, libDom, renderPage, setItemExtras, LIB_PAGES,
-         goPage, replaceItems, selectedVisibleItems } from '../lib.js';
+         goPage, replaceItems, selectedVisibleItems, metaRowHtml } from '../lib.js';
 import { getJSON, postJSON, postEmpty, isAbortError } from '../net.js';
 import { emptyStateHtml, loadingStateHtml } from '../lib.js';
 import { icon } from '../icons.js';
-import { escapeHtml, escapeAttr, formatBytes, formatDuration, formatTime, bvFromUrl, dlKey,
+import { escapeHtml, escapeAttr, formatBytes, formatDuration, bvFromUrl, dlKey,
          pageFromUrl, safeHttpUrl, safeDecimalId } from '../util.js';
 import { announce, confirmAction, toast, withPending } from '../confirm.js';
 
@@ -518,27 +518,22 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   // 这里沿用 JSON.stringify 生成字符串实参(与 lib.js 的 taskArg 同一写法)。
   const revealArg = escapeAttr(JSON.stringify(String(it.task_id ?? '')));
   const revealButton = it.task_id
-    ? `<button class="vi-play vi-reveal" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${escapeAttr(it.title || '')}" onclick="event.stopPropagation();revealTask(${revealArg})">${icon('folder')}</button>`
+    ? `<button class="vi-locate" type="button" title="在 Finder 中显示该视频" aria-label="在 Finder 中显示：${escapeAttr(it.title || '')}" onclick="event.stopPropagation();revealTask(${revealArg})">${icon('folder')}</button>`
     : '';
   // 「在 Finder 中显示」挪到元信息行与关注胶囊同排(2026-11-19 用户要求,
   // 与 lib.js 已完成卡同一位置);封面动作柱只留播放键 + 时长,列表小封面
   // 不会再被三件套撑爆裁切。
   const thumb = `<div class="thumb-wrap">${checkHtml}<img src="${escapeAttr(thumbnail)}" alt="" onerror="this.style.visibility='hidden'" loading="lazy">`
-    + `<div class="thumb-actions">${mainPlay}<div class="thumb-row">${durHtml}</div></div></div>`;
+    + `<div class="thumb-bottom"><div class="thumb-actions">${mainPlay}<div class="thumb-row">${durHtml}</div></div></div></div>`;
   const uploaderMid = safeDecimalId(it.uploader_mid);
-  const followChip = uploaderMid
-    ? `<button class="vi-follow" type="button" data-mid="${uploaderMid}"`
-      + ` data-name="${escapeAttr(it.uploader || '')}" aria-pressed="false" aria-label="关注 ${escapeAttr(it.uploader || '')}">关注</button>`
-    : '';
   /* 身份行与已完成卡(lib.js renderDefaultList)同一套控件:vi-ident「UP 主 · 时间」
      + 关注按钮。uploader/view_at 一直随任务下发,此前 vi-meta 只渲染关注按钮,
-     进行中/失败的卡把 UP 名丢了(2026-11-17 用户报障)。 */
-  const upName = escapeHtml(it.uploader || '-');
-  const identParts = [uploaderMid
-    ? `<a href="https://space.bilibili.com/${uploaderMid}" target="_blank" rel="noopener">${upName}</a>`
-    : upName];
-  if (it.view_at) identParts.push(escapeHtml(formatTime(it.view_at)));
-  const metaHtml = `<span class="vi-ident">${identParts.join(' · ')}</span><span class="vi-meta-actions">${revealButton}${followChip}</span>`;
+     进行中/失败的卡把 UP 名丢了(2026-11-17 用户报障)。
+     2026-11-22:整行改用 lib.js 的 metaRowHtml 公共件。此前这里自写一份,
+     与 lib.js 那份逐字重复后又各自漂移——Finder 按钮类名在本文件写成
+     .vi-play vi-reveal(.vi-reveal 无对应 CSS)→ 继承绝对定位,在「下载中/
+     失败/取消」的任务卡上逃出元信息行、落到卡片右下角。 */
+  const metaHtml = metaRowHtml(it, uploaderMid, revealButton);
   const warn = taskWarnHtml(it);
   const domId = escapeAttr(String(it.task_id ?? ''));
   if (!isGrid) {
