@@ -477,13 +477,21 @@ def auto_refresh_status():
 @app.route("/api/login/qrcode-image")
 @api_errors
 def login_qrcode_image():
-    """使用 generate 返回的同一 URL 画码，并严格限制为 B 站护照域名。"""
+    """使用 generate 返回的同一 URL 画码，并限制为 B 站自己的域名。
+
+    白名单不能写死单个域名:上游 2026-11 把扫码地址换成了
+    account.bilibili.com(此前是 passport.bilibili.com),写死旧域名会让
+    图片接口直接 400,登录框里就是一张裂图(2026-11-22 用户报障)。
+    规则放宽到「bilibili.com 及其子域」:既扛得住上游换域名,又仍然挡住
+    evil.com 这类钓鱼域名——扫码二维码只该指向 B 站自己。
+    """
     url = _string(request.args.get("url"), "url", required=True,
                   max_length=_MAX_URL_LENGTH)
     try:
         parsed = urlsplit(url)
+        host = (parsed.hostname or "").lower()
         valid = (parsed.scheme == "https"
-                 and (parsed.hostname or "").lower() == "passport.bilibili.com"
+                 and (host == "bilibili.com" or host.endswith(".bilibili.com"))
                  and parsed.username is None and parsed.password is None
                  and parsed.port in (None, 443))
     except ValueError:

@@ -516,6 +516,20 @@ def test_qrcode_image_uses_passed_url_not_new_key(client, monkeypatch):
     # 无 url / 非 B 站域名(防钓鱼二维码)一律拒绝
     assert client.get("/api/login/qrcode-image").status_code == 400
     assert client.get("/api/login/qrcode-image?url=https://evil.com/phish").status_code == 400
+    # 相似域名不能蒙混过关(必须真的落在 bilibili.com 下)
+    assert client.get("/api/login/qrcode-image?url=https://evilbilibili.com/x").status_code == 400
+    assert client.get("/api/login/qrcode-image?url=https://bilibili.com.evil.com/x").status_code == 400
+    # 上游 2026-11 把扫码地址换成了 account.bilibili.com:白名单写死旧域名
+    # 会让图片接口 400,登录框里直接是一张裂图(2026-11-22 用户报障)
+    r2 = client.get("/api/login/qrcode-image"
+                    "?url=https://account.bilibili.com/h5/account-h5/auth/scan-web?qrcode_key=x")
+    assert r2.status_code == 200 and r2.mimetype == "image/png"
+    # 真实上游 URL 的形态也要能画出来
+    r3 = client.get(
+        "/api/login/qrcode-image"
+        "?url=https://account.bilibili.com/h5/account-h5/auth/scan-web"
+        "?navhide=1&callback=close&qrcode_key=5833acee1ea94d3723326bf76e9f7fdd&from=")
+    assert r3.status_code == 200 and r3.mimetype == "image/png"
 
 
 def test_frontend_qrcode_img_passes_url():

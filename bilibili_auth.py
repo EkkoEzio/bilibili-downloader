@@ -19,6 +19,7 @@ from typing import Optional
 import requests
 import yt_dlp
 
+import browser_cookies
 import storage
 from config import SESSION_COOKIE_FILE, COOKIE_FILE, BROWSER_COOKIE_SOURCE
 from request_governor import UpstreamRateLimitError, governed_get, governor
@@ -531,6 +532,14 @@ def get_ytdlp_cookie_arg(context: Optional[dict] = None) -> dict:
     if source == "cookie_file":
         return {"cookiefile": str(COOKIE_FILE)} if _valid_cookie_file(COOKIE_FILE) else {}
     if source == "browser":
+        # 多 profile:把解析到的 profile 一起带上。
+        # 不带 profile 时 yt-dlp 只读「Cookies 库 mtime 最新」的那个 profile,
+        # 可能和界面显示登录态的那个不是同一个(本机 Edge 有 Default 与
+        # Profile 2,B 站登录态只在 Profile 2)。带上之后,解析/下载用的是
+        # 同一个 profile,不会出现「界面已登录、下载却是未登录 Cookie」。
+        profile = browser_cookies.resolved_profile(BROWSER_COOKIE_SOURCE)
+        if profile:
+            return {"cookiesfrombrowser": (BROWSER_COOKIE_SOURCE, profile)}
         return {"cookiesfrombrowser": (BROWSER_COOKIE_SOURCE,)}
     return {}
 
@@ -573,20 +582,23 @@ def get_cookiejar(context: Optional[dict] = None):
                 and _same_context(_cj_cache.get("context"), context)
                 and time.time() - _cj_cache["ts"] < 300):
             return _cj_cache["cj"]
-        cookie_arg = get_ytdlp_cookie_arg(context)
-        if "cookiefile" in cookie_arg:
+        source = context.get("source")
+        if source == "browser":
+            # 浏览器来源单独走:多 profile 感知在 browser_cookies 里。
+            # 不能在这里调 get_ytdlp_cookie_arg——它会再触发一次 profile 探测。
             try:
-                import http.cookiejar
-                jar = http.cookiejar.MozillaCookieJar(cookie_arg["cookiefile"])
-                jar.load(ignore_discard=True, ignore_expires=True)
+                jar, _profile = browser_cookies.extract_cookies(BROWSER_COOKIE_SOURCE)
             except Exception:
                 jar = None
-        elif "cookiesfrombrowser" in cookie_arg:
-            try:
-                with yt_dlp.YoutubeDL({"quiet": True, **cookie_arg}) as ydl:
-                    jar = ydl.cookiejar
-            except Exception:
-                jar = None
+        else:
+            cookie_arg = get_ytdlp_cookie_arg(context)
+            if "cookiefile" in cookie_arg:
+                try:
+                    import http.cookiejar
+                    jar = http.cookiejar.MozillaCookieJar(cookie_arg["cookiefile"])
+                    jar.load(ignore_discard=True, ignore_expires=True)
+                except Exception:
+                    jar = None
         if jar is not None and _is_auth_context_current_locked(context):
             _cj_cache.update(cj=jar, ts=time.time(), context=dict(context))
             dede_userid = _cookiejar_value(jar, "DedeUserID")
