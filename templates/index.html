@@ -74,7 +74,7 @@
       <!-- 设置齿轮已删(2026-11-21):与头像同调 openDrawer('account'),头像为账号抽屉唯一入口 -->
       <button class="tb-acct" onclick="openDrawer('account')" title="账号" aria-label="账号">
         <span class="acct-ava">
-          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <img class="ava-ph" src="/static/icons/app-icon.png" alt="" aria-hidden="true">
           <img id="acct-face-top" alt="" hidden>
           <i class="dot" id="account-dot"></i>
         </span>
@@ -232,7 +232,9 @@
     <div class="drawer-body">
       <div class="acct-card">
         <div class="acct-avatar">
-          <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+          <!-- 未登录占位:用应用自己的小电视图标(登录后被真实头像盖住)。
+               原来是默认「小人」线稿,看着像没做完的默认控件(2026-11-22 用户报障) -->
+          <img class="ava-ph" src="/static/icons/app-icon.png" alt="" aria-hidden="true">
           <img id="acct-face" alt="" hidden>
         </div>
         <div style="flex:1;">

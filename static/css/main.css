@@ -137,6 +137,9 @@ body.action-bar-open .content{padding-bottom:150px}
 .acct-ava svg{position:absolute;inset:0;width:100%;height:100%;padding:4px;
   box-sizing:border-box;border-radius:50%;background:var(--bg-soft);color:var(--text-mute)}
 .acct-ava img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover;border-radius:50%}
+/* 未登录占位:应用自己的小电视图标,等比缩放 + 留白,不再是一张默认「小人」 */
+.acct-ava .ava-ph{object-fit:contain;padding:4px;box-sizing:border-box;
+  background:var(--bg-soft);border-radius:50%}
 .acct-ava .dot{position:absolute;right:-2px;bottom:-2px;width:12px;height:12px;border-radius:50%;
   border:2px solid var(--card);box-sizing:border-box;background:var(--green);z-index:2}
 .acct-ava .dot.ok{box-shadow:none}
@@ -668,6 +671,8 @@ body.dark .toast{background:#0c0e12;border:1px solid var(--line)}
   display:grid;place-items:center;flex-shrink:0}
 .acct-avatar img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .acct-avatar svg{width:20px;height:20px}
+/* 未登录占位:应用自己的小电视图标(和 Dock 图标同一个),等比缩放留白 */
+.acct-avatar .ava-ph{object-fit:contain;padding:6px;box-sizing:border-box;border-radius:12px}
 .acct-name{font-size:14.5px;font-weight:700}
 .acct-sub{font-size:12px;color:var(--text-mute);margin-top:2px;line-height:1.5}
 /* 账号抽屉里的「退出应用」一行:只桌面版出现 */
