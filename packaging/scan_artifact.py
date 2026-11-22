@@ -54,6 +54,12 @@ HOME_PATH_PATTERNS = [
 TEXT_SUFFIXES = {".py", ".pyc", ".js", ".css", ".html", ".json", ".txt",
                  ".md", ".plist", ".cfg", ".ini", ".yaml", ".yml", ".xml",
                  ".spec", ".sh"}
+
+# 家目录/目录名里的通用词:出现在 CI 机器路径中,不能当泄露关键词
+GENERIC_HOME_NAMES = {
+    "runner", "admin", "user", "root", "build", "host", "ci", "docker",
+    "nobody", "github", "actions", "home", "tmp", "temp", "usr", "default",
+}
 BINARY_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".bin"}
 TEXT_CHARS = set(string.printable.encode("ascii"))
 
@@ -77,11 +83,16 @@ def collect_keywords(extra: list[str], data_dir: Path | None) -> list[str]:
     keywords.update(part.strip() for part in env_extra.split(",") if part.strip())
 
     # 构建机的家目录名与项目目录名
+    #
+    # 家目录名要排除通用词:CI 上家目录是 /home/runner,"runner" 这种词在
+    # 产物里到处都是(/home/runner/work/...),拿它当关键词会误伤整条构建
+    # (2026-11-22 首次发版 mac 与 Windows 同时死在扫描这一步)。
+    # 路径形式的泄露由 HOME_PATH_PATTERNS 负责,这里只补「路径之外的裸名字」。
     home = Path.home()
-    if home.name:
+    if home.name and home.name.lower() not in GENERIC_HOME_NAMES:
         keywords.add(home.name)
     project_name = Path.cwd().name
-    if project_name:
+    if project_name and project_name.lower() not in GENERIC_HOME_NAMES:
         keywords.add(project_name)
 
     # data/ 里的真实标识:账号指纹、UP UID、真实文件名
@@ -137,7 +148,9 @@ def scan_paths(root: Path) -> list[str]:
     return problems
 
 
-def scan_text(root: Path, keywords: list[str]) -> list[str]:
+def scan_text(root: Path, keywords: list[str],
+               allowed: list[str] | None = None) -> list[str]:
+    allowed = allowed or []
     problems = []
     for path in root.rglob("*"):
         if not path.is_file():
@@ -150,8 +163,18 @@ def scan_text(root: Path, keywords: list[str]) -> list[str]:
         except OSError:
             continue
         for keyword in keywords:
-            if keyword and keyword in text:
-                problems.append(f"[文本] {path.relative_to(root)} 命中关键词 {keyword!r}")
+            if not keyword:
+                continue
+            # 命中处若落在允许前缀内(如 CI 的 /home/runner/work/...),
+            # 不算泄露——否则 CI 机器自己的路径会让每次构建都失败。
+            index = text.find(keyword)
+            while index != -1:
+                window = text[max(0, index - 80):index + len(keyword) + 80]
+                if not any(prefix in window for prefix in allowed):
+                    problems.append(
+                        f"[文本] {path.relative_to(root)} 命中关键词 {keyword!r}")
+                    break
+                index = text.find(keyword, index + 1)
         for pattern in HOME_PATH_PATTERNS:
             match = pattern.search(text)
             if match:
@@ -217,11 +240,11 @@ def main() -> int:
     print(f"[扫描] 产物: {artifact}")
     print(f"[扫描] 关键词 {len(keywords)} 个(含构建机环境推导)")
 
+    allowed = DEFAULT_ALLOW_PREFIXES + list(args.allow_prefix)
     problems = scan_paths(artifact)
-    problems += scan_text(artifact, keywords)
+    problems += scan_text(artifact, keywords, allowed)
     problems += scan_binary(artifact, keywords)
 
-    allowed = DEFAULT_ALLOW_PREFIXES + list(args.allow_prefix)
     problems = [item for item in problems
                 if not any(prefix in item for prefix in allowed)]
 
