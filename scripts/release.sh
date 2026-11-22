@@ -110,11 +110,14 @@ readme = Path("README.md")
 readme_text = readme.read_text(encoding="utf-8")
 new_banner, count = re.subn(r"\*\*v\d+\.\d+\.\d+\*\*", f"**v{version}**",
                              readme_text, count=1)
-if count and new_banner != readme_text:
+if not count:
+    print("警告:README.md 顶部没找到 **vX.Y.Z** 横幅,未自动更新")
+elif new_banner == readme_text:
+    # 横幅本来就已经是目标版本号(手工预先改过)——不是错误,别再报「没找到」
+    print(f"README.md → 横幅版本号已是 v{version}(描述文案请人工检查是否还合适)")
+else:
     readme.write_text(new_banner, encoding="utf-8")
     print(f"README.md → 横幅版本号 → v{version}(描述文案请人工检查是否还合适)")
-else:
-    print("警告:README.md 顶部没找到 **vX.Y.Z** 横幅,未自动更新")
 
 # 3) Inno Setup 脚本里的版本宏(Windows 安装包元数据)
 iss = Path("packaging/bilibili.iss")
