@@ -182,8 +182,8 @@ data/cache/accounts/<account-fingerprint>/i-<incarnation>/g-<generation>/<key>.j
 
 | 产物 | 适用 | 在哪构建 |
 |---|---|---|
-| `BiliDownloader-<版本>-arm64.dmg` | Apple Silicon (M 系列) | 本机脚本 / CI (macos-14) |
-| `BiliDownloader-<版本>-x86_64.dmg` | Intel Mac | CI (macos-14 + x64 Python) |
+| `BiliDownloader-<版本>-arm64.dmg` | Apple Silicon (M 系列) | 本机脚本 / CI (macos-15-arm64) |
+| `BiliDownloader-<版本>-x86_64.dmg` | Intel Mac | CI (macos-15-intel) |
 | `BiliDownloader-Setup-<版本>-x64.exe` | Windows 10/11 64 位 | CI (windows-latest) |
 
 **在哪下载**：Releases 页（`https://github.com/EkkoEzio/bilibili-downloader/releases`），每个版本下面三个安装包。

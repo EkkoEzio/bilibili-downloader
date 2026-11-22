@@ -22,15 +22,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # runner 标签要显式写架构,不靠默认值:GitHub 已把 macos-14 下线
+          # (报 "The configuration 'macos-14-arm64-us-default' is not
+          # supported"),默认标签也会随时间漂移。macos-15 有 arm64/intel
+          # 两个变体,分别对应两个 mac 包。
           - name: mac-arm64
-            os: macos-14
+            os: macos-15-arm64
             arch: arm64
             py_arch: arm64
-          # Intel 包同样跑在 macos-14 上,只是装 x64 的 Python:
-          # 不依赖 macos-13 这个可能已退役的 runner 标签(PyInstaller 不能
-          # 交叉编译,只能打包当前解释器;runner 预装了 Rosetta)。
           - name: mac-x86_64
-            os: macos-14
+            os: macos-15-intel
             arch: x86_64
             py_arch: x64
           - name: win-x64
