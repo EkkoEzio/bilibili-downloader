@@ -183,10 +183,21 @@ data/cache/accounts/<account-fingerprint>/i-<incarnation>/g-<generation>/<key>.j
 | 产物 | 适用 | 在哪构建 |
 |---|---|---|
 | `BiliDownloader-<版本>-arm64.dmg` | Apple Silicon (M 系列) | 本机脚本 / CI (macos-14) |
-| `BiliDownloader-<版本>-x86_64.dmg` | Intel Mac | CI (macos-13) |
+| `BiliDownloader-<版本>-x86_64.dmg` | Intel Mac | CI (macos-14 + x64 Python) |
 | `BiliDownloader-Setup-<版本>-x64.exe` | Windows 10/11 64 位 | CI (windows-latest) |
 
-**发版**：`scripts/release.sh 2.8.0` —— bump 版本 → 提交 → 打 tag → 推送；之后 GitHub Actions 自动出三个安装包并发布到 Releases 页。
+**在哪下载**：Releases 页（`https://github.com/EkkoEzio/bilibili-downloader/releases`），每个版本下面三个安装包。
+
+**首次打开**：安装包**没有签名也没有公证**（暂未购买开发者证书）——
+macOS 第一次要先右键点「打开」再点「打开」，Windows 第一次点「更多信息 → 仍要运行」。
+之后就是正常双击启动。
+
+**窗口与后台**：关窗口不是退出——窗口最小化到 Dock，后台的自动监控与下载队列继续跑，
+点 Dock 图标能再唤回；想真正停掉，用顶栏「账号」抽屉里的**退出应用**（或右键 Dock 图标退出）。
+
+**发版**：`scripts/release.sh`（自动把次版本号 +1）或 `scripts/release.sh 2.9.1`（指定版本号）
+—— bump 版本（VERSION / CHANGELOG / Inno 脚本三处同步）→ 提交 → 打 tag → 推送；
+之后 GitHub Actions 自动出三个安装包并发布到 Releases 页。
 
 **本机构建**：`ARCH=arm64 scripts/build_local.sh`（产物在 `dist/`）。构建依赖装在**独立 venv** 里，不碰项目运行时环境。
 
@@ -198,6 +209,9 @@ data/cache/accounts/<account-fingerprint>/i-<incarnation>/g-<generation>/<key>.j
 - **元数据留名**：Info.plist / Inno Setup 的开发者字段不写个人名；bundle 目录名用 ASCII（`BiliDownloader.app`），界面显示名仍是中文。
 
 **打包态的运行数据外置**：源码运行用项目内 `data/`；打包后用 `~/Library/Application Support/BiliDownloader/`（mac）与 `%APPDATA%\BiliDownloader\`（win）。原因：.app bundle 与 Program Files 只读，写进去会破坏代码签名；onefile 模式随临时目录销毁会让登录态每次归零；同机多用户共用一份数据目录等于互相暴露 SESSDATA。`BD_DATA_DIR` 可覆盖。
+
+**版本号的唯一来源**：仓库根的 `VERSION` 文件。PyInstaller spec 读它写进 .app 元数据，
+`scripts/release.sh` 同步它与 CHANGELOG、Inno Setup 脚本 —— 不要在别处再写版本号。
 
 **未签名提醒**：未公证的 mac 包首次打开需右键 → 打开；Windows 首次运行需点「更多信息 → 仍要运行」。要免掉这步需要 Apple Developer 账号与代码签名证书。
 
