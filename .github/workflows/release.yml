@@ -53,6 +53,11 @@ jobs:
           python -m pip install -q --upgrade pip
           python -m pip install -q -r requirements.txt -r requirements-build.txt
 
+      # Windows 要出单文件安装程序,需要 Inno Setup(编译 .iss)
+      - name: 安装 Inno Setup(仅 Windows)
+        if: runner.os == 'Windows'
+        run: choco install innosetup --yes --no-progress
+
       # 源码先复制到不含个人信息的临时目录再打包:
       # .pyc 的 co_filename 会留下编译时的源码路径,在开发者机器上直接
       # 打包会把家目录路径烧进安装包。三个平台走同一套暂存+打包+扫描流程。
