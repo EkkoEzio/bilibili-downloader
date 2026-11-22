@@ -107,6 +107,6 @@ git push origin main
 git push origin "v$VERSION"
 
 echo
-echo "==> 已推送 v$VERSION。"
+echo "==> 已推送 v${VERSION}。"
 echo "    GitHub Actions 会自动出三个安装包并发布到 Releases 页。"
 echo "    查看进度: https://github.com/EkkoEzio/bilibili-downloader/actions"
