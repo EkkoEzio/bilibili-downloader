@@ -29,22 +29,29 @@ jobs:
         # 调试单个平台时不用等 macOS runner 排队(2026-11-22 实测 mac 排队很久)。
         name: ${{ fromJSON(github.event.inputs.platforms || '["mac-arm64","mac-x86_64","win-x64"]') }}
         include:
-          # runner 标签要显式写架构,不靠默认值:GitHub 已把 macos-14 下线
-          # (报 "The configuration 'macos-14-arm64-us-default' is not
-          # supported"),默认标签也会随时间漂移。macos-15 有 arm64/intel
-          # 两个变体,分别对应两个 mac 包。
+          # runner 标签要显式写架构,不靠默认值:默认标签会随时间漂移
+          # (macos-latest 现在指向 macos-26)。
+          #
+          # arm64 的标签是 `macos-15`,不是 `macos-15-arm64`——后者不是
+          # 有效标签(官方 runner-images README 里 macOS 15 Arm64 一行写的
+          # 是 `macos-15` / `macos-15-xlarge`)。写错的后果不是报错,而是
+          # job 永远排队不调度:2026-11-22 连续 5 次 run 的 mac-arm64 都是
+          # queued 且 runner_name 为空,而 mac-x86_64(macos-15-intel)秒起。
           - name: mac-arm64
-            os: macos-15-arm64
+            os: macos-15
             arch: arm64
             py_arch: arm64
+            archflags: "-arch arm64"
           - name: mac-x86_64
             os: macos-15-intel
             arch: x86_64
             py_arch: x64
+            archflags: "-arch x86_64"
           - name: win-x64
             os: windows-latest
             arch: x64
             py_arch: x64
+            archflags: ""
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +77,12 @@ jobs:
       # 打包会把家目录路径烧进安装包。三个平台走同一套暂存+打包+扫描流程。
       - name: 打包(暂存目录 + 隐私扫描)
         shell: bash
+        # macOS arm64 上 PyInstaller 链接大二进制时会报
+        # "Fatal error: too many symbols in thin binary"(Python 3.11+ 已知
+        # 问题),显式给 linker 指定架构可以绕开;x86_64 同理显式指定,
+        # 免得宿主架构漂移。Windows 不读这个变量。
+        env:
+          ARCHFLAGS: ${{ matrix.archflags }}
         run: |
           chmod +x scripts/build_local.sh
           ARCH=${{ matrix.arch }} bash scripts/build_local.sh
