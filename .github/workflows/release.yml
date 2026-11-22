@@ -89,11 +89,17 @@ jobs:
           "$BIN" --selftest
           echo "selftest 通过(exit=$?)"
 
-      - name: 上传产物
+      - name: 上传产物(只传安装包)
         uses: actions/upload-artifact@v4
         with:
           name: bili-${{ matrix.name }}
-          path: dist/
+          # 只上传安装包,不传 dist/ 整个目录:
+          # dist/ 里还有 .app bundle 和 Windows onedir 目录,这些目录会被
+          # Release job 的 artifacts/* 通配符当成「文件」上传,直接 EISDIR 失败。
+          # mac 出 .dmg,Windows 出 .exe,两个平台各命中自己那一个。
+          path: |
+            dist/*.dmg
+            dist/*.exe
           if-no-files-found: error
 
   release:
@@ -112,6 +118,8 @@ jobs:
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
-          files: artifacts/*
+          files: |
+            artifacts/*.dmg
+            artifacts/*.exe
           draft: false
           generate_release_notes: true
