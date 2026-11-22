@@ -7,3 +7,7 @@ data/
 downloads/
 gui-test-screenshots/
 design-demos/
+dist/
+build/
+packaging/bin/
+.scan_keywords.local

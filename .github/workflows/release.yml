@@ -1,0 +1,104 @@
+name: 打包发布
+
+# 发版:打一个 tag 就出三个安装包(mac arm64 / mac x86_64 / windows x64)
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "手动触发时的版本号(如 2.8.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: mac-arm64
+            os: macos-14
+            arch: arm64
+            py_arch: arm64
+          # Intel 包同样跑在 macos-14 上,只是装 x64 的 Python:
+          # 不依赖 macos-13 这个可能已退役的 runner 标签(PyInstaller 不能
+          # 交叉编译,只能打包当前解释器;runner 预装了 Rosetta)。
+          - name: mac-x86_64
+            os: macos-14
+            arch: x86_64
+            py_arch: x64
+          - name: win-x64
+            os: windows-latest
+            arch: x64
+            py_arch: x64
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          architecture: ${{ matrix.py_arch }}
+
+      - name: 安装依赖
+        run: |
+          echo "版本: $(cat VERSION)"
+          python -c "import platform,sys;print('解释器:',platform.machine(),sys.version.split()[0])"
+          python -m pip install -q --upgrade pip
+          python -m pip install -q -r requirements.txt -r requirements-build.txt
+
+      # 源码先复制到不含个人信息的临时目录再打包:
+      # .pyc 的 co_filename 会留下编译时的源码路径,在开发者机器上直接
+      # 打包会把家目录路径烧进安装包。三个平台走同一套暂存+打包+扫描流程。
+      - name: 打包(暂存目录 + 隐私扫描)
+        shell: bash
+        run: |
+          chmod +x scripts/build_local.sh
+          ARCH=${{ matrix.arch }} bash scripts/build_local.sh
+
+      # 冻结后的包必须能真的启动:模板找得到、静态资源出得来、
+      # 数据目录被外置——这是打包链路唯一能自动判定的端到端检查。
+      # 打包成 GUI 后没有终端,自检用退出码汇报(0 = 就绪)。
+      - name: 冒烟自检(冻结后的包能不能启动)
+        shell: bash
+        run: |
+          if [[ "$RUNNER_OS" == "macOS" ]]; then
+            BIN="dist/BiliDownloader.app/Contents/MacOS/BiliDownloader"
+          else
+            BIN="dist/BiliDownloader/BiliDownloader.exe"
+          fi
+          chmod +x "$BIN" 2>/dev/null || true
+          "$BIN" --selftest
+          echo "selftest 通过(exit=$?)"
+
+      - name: 上传产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: bili-${{ matrix.name }}
+          path: dist/
+          if-no-files-found: error
+
+  release:
+    name: 发布到 Releases
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: 列出产物
+        run: ls -la artifacts
+
+      - name: 创建 Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: false
+          generate_release_notes: true

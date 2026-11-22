@@ -1,0 +1,5 @@
+# 打包期依赖(只装进构建环境,不进运行时)
+# 运行时依赖看 requirements.txt
+pyinstaller>=6.10
+pywebview>=5.3
+pystray>=0.19

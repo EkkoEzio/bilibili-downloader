@@ -1,0 +1,40 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- B站下载 应用图标(矢量源文件)
+     设计:B 站粉渐变圆角方块 + 白色「小电视」(短撇天线,贴近 B 站官方 TV 造型)
+           + 屏幕内一个粉色下载箭头(挖空,底色透出来)
+     全部手写矢量而非位图:同一个文件能出 16px 到 1024px 全尺寸锐利,
+     小尺寸(Finder 列表 16/32px)不糊。 -->
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bd-bg" x1="0.05" y1="0" x2="0.85" y2="1">
+      <stop offset="0" stop-color="#ffb0ca"/>
+      <stop offset="0.4" stop-color="#fb7299"/>
+      <stop offset="1" stop-color="#ea5586"/>
+    </linearGradient>
+    <!-- 顶部高光 -->
+    <linearGradient id="bd-sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.44" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <!-- 底部压暗,做出体积感 -->
+    <linearGradient id="bd-depth" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0.68" stop-color="#a02050" stop-opacity="0"/>
+      <stop offset="1" stop-color="#a02050" stop-opacity="0.26"/>
+    </linearGradient>
+    <mask id="bd-screen">
+      <rect x="210" y="316" width="604" height="436" rx="118" fill="#ffffff"/>
+      <path d="M472 396 H552 V548 H636 L512 656 L388 548 H472 Z" fill="#000000"/>
+    </mask>
+  </defs>
+
+  <rect width="1024" height="1024" rx="228" fill="url(#bd-bg)"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#bd-depth)"/>
+  <rect width="1024" height="1024" rx="228" fill="url(#bd-sheen)"/>
+
+  <!-- 天线:B 站「小电视」的识别基因,短撇不喧宾夺主 -->
+  <path d="M322 338 L198 224" stroke="#ffffff" stroke-width="68" stroke-linecap="round"/>
+  <path d="M702 338 L826 224" stroke="#ffffff" stroke-width="68" stroke-linecap="round"/>
+
+  <!-- 屏幕:实心白,内部挖空一个向下的下载箭头(粉色透出来) -->
+  <rect x="210" y="316" width="604" height="436" rx="118" fill="#ffffff" mask="url(#bd-screen)"/>
+</svg>

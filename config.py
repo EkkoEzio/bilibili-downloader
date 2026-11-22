@@ -1,5 +1,8 @@
 """路径与配置。所有模块统一从这里取路径,避免硬编码。
 
+路径规则本身放在 runtime_paths.py(零依赖):instance_lock.py 必须在读取任何
+运行态数据之前拿到数据目录,不能绕一圈 import config。
+
 DOWNLOAD_DIR / MAX_CONCURRENT / RATELIMIT_MBPS 都是运行时可变的
 (用户在界面可改)。不要用 `from config import XXX` 拿快照,
 改用 `import config` + `config.XXX` 访问,这样能读到最新值。
@@ -13,12 +16,16 @@ import threading
 from pathlib import Path
 
 import storage
+import runtime_paths
 
 log = logging.getLogger("bd.config")
 
-BASE_DIR = Path(__file__).resolve().parent
-DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+# 源码运行:项目内 data/(已在 .gitignore 里)。
+# 打包运行:外置到系统用户数据目录——.app bundle 与 Program Files 都是
+# 只读的,写进去会破坏代码签名;onefile 模式还会随临时目录一起销毁,
+# 登录态与任务史每次启动归零(2026-11-22 审查)。
+BASE_DIR = runtime_paths.base_dir()
+DATA_DIR = runtime_paths.ensure_data_dir()
 
 COOKIE_FILE = DATA_DIR / "cookies.txt"
 SESSION_COOKIE_FILE = DATA_DIR / "sess.json"

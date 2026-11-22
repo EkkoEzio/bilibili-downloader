@@ -5,7 +5,9 @@ import ipaddress
 import json
 import logging
 import math
+import os
 import re
+import sys
 import threading
 import time
 from logging.handlers import RotatingFileHandler
@@ -52,7 +54,18 @@ logging.basicConfig(
 )
 log = logging.getLogger("bd.app")
 
-app = Flask(__name__)
+# 打包后 templates/ 与 static/ 由 PyInstaller --add-data 注入 bundle。
+# Flask 默认按 __file__ 推 root_path,冻结态下 __file__ 落在 bundle 根,
+# 恰好能用——但 onefile(临时解压目录)与 onedir(bundle/_internal)的落点
+# 不同,这里显式指死更稳(2026-11-22 打包地基)。
+if getattr(sys, "frozen", False):
+    _bundle_root = getattr(sys, "_MEIPASS",
+                           os.path.dirname(os.path.abspath(__file__)))
+    app = Flask(__name__,
+                template_folder=os.path.join(_bundle_root, "templates"),
+                static_folder=os.path.join(_bundle_root, "static"))
+else:
+    app = Flask(__name__)
 app.config["MAX_CONTENT_LENGTH"] = 1024 * 1024
 
 _DEFAULT_PORTS = {"http": 80, "https": 443}
@@ -60,6 +73,8 @@ _MAX_URL_LENGTH = 8192
 _MAX_TEXT_LENGTH = 256
 _MAX_BATCH_ITEMS = parsing.MAX_PLAYLIST_ITEMS
 _MAX_COOKIE_BYTES = 1024 * 1024
+# 批量关注状态查询的 mids 串长度上限:200 个 UP × (20 位数字 + 逗号) ≈ 4200
+_MAX_MIDS_TEXT = 4608
 _MAX_SSE_CONNECTIONS = 16
 _sse_slots = threading.BoundedSemaphore(_MAX_SSE_CONNECTIONS)
 _manual_check_lock = threading.Lock()
@@ -1134,8 +1149,11 @@ def relation_status():
     改为复用 fetch_followings_all 的 10 分钟缓存做本地匹配——关注 UP 页
     本来就要拉这份数据,这里不额外增加请求。
     """
+    # mids 是「逗号分隔的数字列表」,不是自由文本:100 个 UP 的 id 拼起来
+    # 就有 1000+ 字符,用通用文本上限(256)会直接 400——页面卡片一多,
+    # 关注状态就全查不到,按钮永远停在未知态(2026-11-22 实测)。
     raw = _string(request.args.get("mids"), "mids", required=True,
-                  max_length=_MAX_TEXT_LENGTH)
+                  max_length=_MAX_MIDS_TEXT)
     wanted = []
     for part in raw.split(","):
         part = part.strip()
@@ -1435,6 +1453,41 @@ def task_resolve_conflict(task_id):
     if action == "open_existing" and result.get("path"):
         downloader.reveal_path(result["path"])
     return jsonify(result)
+
+
+@app.route("/api/app/info")
+@api_errors
+def app_info():
+    """运行时形态:是不是打包版。
+
+    打包版才提供「退出应用」入口——源码运行(启动.command)的退出方式是
+    在启动终端按 Ctrl-C,不由接口代劳。
+    """
+    import runtime_paths
+
+    return jsonify({"ok": True, "packaged": runtime_paths.is_frozen()})
+
+
+@app.route("/api/app/quit", methods=["POST"])
+@api_errors
+def app_quit():
+    """请求退出应用(仅打包版)。
+
+    桌面壳有个守护线程盯着数据目录里的 quit.request:看到就优雅停掉
+    HTTP 服务、关窗口、退出进程。走文件而不是直接杀进程,是为了让
+    正在写的任务记录能落盘(直接 os._exit 会打断持久化)。
+    """
+    import runtime_paths
+
+    if not runtime_paths.is_frozen():
+        raise ApiError(400, "not_packaged",
+                       "源码运行模式下请在启动终端按 Ctrl-C 退出")
+    request_file = runtime_paths.data_dir() / "quit.request"
+    try:
+        request_file.write_text(str(os.getpid()), encoding="utf-8")
+    except OSError as exc:
+        raise ApiError(500, "quit_failed", f"无法写入退出请求:{exc}")
+    return jsonify({"ok": True})
 
 
 if __name__ == "__main__":

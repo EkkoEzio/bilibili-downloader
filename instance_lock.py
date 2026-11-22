@@ -13,6 +13,8 @@ import time
 from pathlib import Path
 from typing import BinaryIO, Optional
 
+import runtime_paths
+
 
 class AlreadyRunningError(RuntimeError):
     """同一数据目录已有进程持有实例锁。"""
@@ -23,7 +25,14 @@ _handle: Optional[BinaryIO] = None
 
 
 def _lock_path() -> Path:
-    return Path(__file__).resolve().parent / "data" / "app.lock"
+    """实例锁文件与其它运行数据同目录。
+
+    此前这里自写了一份 <项目目录>/data/app.lock,绕过了 config.py——
+    打包后数据目录外置了,锁还留在 bundle 内(只读)→ 锁拿不到,
+    单实例保护失效。改用 runtime_paths,与 config.DATA_DIR 同源
+    (2026-11-22 审查)。
+    """
+    return runtime_paths.data_dir() / "app.lock"
 
 
 def _try_lock(handle: BinaryIO) -> None:
