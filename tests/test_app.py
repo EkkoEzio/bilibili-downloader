@@ -5002,6 +5002,50 @@ def test_upstream_binary_markers_no_longer_skip_internal_per_se():
         "运行时动态库保留豁免"
 
 
+def test_artifact_scanner_exempts_onedir_python_runtime(tmp_path):
+    """onedir 形态的 CPython 解释器副本(_internal/Python)必须豁免。
+
+    回归(2026-11-23 发版实测):.app 形态的 Python.framework 早已豁免,于是
+    mac-x86_64 扫 .app 通过;但 PyInstaller onedir 目录形态(构建脚本也扫它)
+    里解释器副本在 _internal/Python,这条路径形态没被豁免,撞上 python.org
+    发行版里烙死的 /Users/nad → 整个 mac 构建红。
+    """
+    onedir = tmp_path / "BiliDownloader"
+    runtime = onedir / "_internal" / "Python"
+    runtime.parent.mkdir(parents=True)
+    runtime.write_bytes(b"\x00\xff" * 20 + b"build=/Users/nad/build/x" + b"\x00" * 20)
+
+    mod = _load_scanner()
+    assert mod.scan_binary(onedir, ["/Users/nad"]) == [], (
+        "CPython 解释器副本属上游,必须豁免(否则 CI 上每个 mac 包都失败)")
+
+    ours = onedir / "_internal" / "static" / "blob"
+    ours.parent.mkdir(parents=True)
+    ours.write_bytes(b"\x00\xff" * 20 + b"path=/Users/hushen/token" + b"\x00" * 20)
+    assert mod.scan_binary(onedir, ["/Users/hushen"]), (
+        "自家二进制里的开发者家目录路径仍必须被拦")
+
+
+def test_artifact_scanner_ignores_upstream_builder_home_path(tmp_path):
+    """上游发行版烙死的构建者家目录(/Users/nad)不是开发者隐私,不算泄露。
+
+    这条路径来自 CPython 官方 macOS 发行版本身,不可消除、也不含开发者
+    信息;但规则本意是「拦开发者自己的家目录路径」。放过已知上游构建者,
+    其他任何 /Users/xxx 仍照拦。
+    """
+    root = tmp_path / "BiliDownloader"
+    target = root / "somefile"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"\x00\xff" * 20 + b"build=/Users/nad/build/x" + b"\x00" * 20)
+
+    mod = _load_scanner()
+    assert mod.scan_binary(root, []) == [], "上游构建者家目录路径不该算泄露"
+
+    mine = root / "mine"
+    mine.write_bytes(b"\x00\xff" * 20 + b"path=/Users/hushen/token" + b"\x00" * 20)
+    assert mod.scan_binary(root, []), "开发者家目录路径必须照拦"
+
+
 def test_release_workflow_validates_tag_matches_version():
     """发版工作流必须在构建前校验 tag 与 VERSION 一致(遗留项 19)。
 

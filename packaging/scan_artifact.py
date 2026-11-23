@@ -69,6 +69,16 @@ GENERIC_HOME_NAMES = {
     "nobody", "github", "actions", "home", "tmp", "temp", "usr", "default",
     "_temp", "work", "project", "src", "app",
 }
+# 上游发行版里烙死的构建者家目录(python.org 的 macOS 通用构建就是 /Users/nad)。
+# 它来自 CPython 官方二进制本身:不可消除、不含开发者信息。红线本意是拦
+# 「开发者自己的家目录路径」,所以放过已知上游构建者,其他 /Users/xxx 照拦。
+UPSTREAM_HOME_NAMES = {"nad"}
+
+# PyInstaller onedir 里的 CPython 解释器副本(_internal/Python、_internal/python3.x)。
+# macOS 上 python.org 发行版里烙着 /Users/nad 这类上游构建者路径,而 .app 形态
+# 的 Python.framework 早已豁免——onedir 这条路径形态曾漏掉,导致 CI 上每个 mac
+# 包都死在扫描这一步(2026-11-23 发版实测:mac-x86_64 因 /Users/nad 红)。
+UPSTREAM_RUNTIME_NAMES = ("python", "pythonw")
 BINARY_SUFFIXES = {".so", ".dylib", ".dll", ".pyd", ".bin"}
 TEXT_CHARS = set(string.printable.encode("ascii"))
 
@@ -189,10 +199,11 @@ def scan_text(root: Path, keywords: list[str],
                     break
                 index = text.find(keyword, index + 1)
         for pattern in HOME_PATH_PATTERNS:
-            match = pattern.search(text)
-            if match:
+            hit = next((m.group(0) for m in pattern.finditer(text)
+                        if not is_upstream_home_path(m.group(0))), None)
+            if hit:
                 problems.append(
-                    f"[文本] {path.relative_to(root)} 含家目录路径 {match.group(0)!r}")
+                    f"[文本] {path.relative_to(root)} 含家目录路径 {hit!r}")
                 break
     return problems
 
@@ -212,7 +223,18 @@ BINARY_SKIP_MARKERS = (
 
 def is_upstream_binary(rel_path: str) -> bool:
     low = rel_path.lower().replace("\\", "/")
-    return any(marker in low for marker in BINARY_SKIP_MARKERS)
+    if any(marker in low for marker in BINARY_SKIP_MARKERS):
+        return True
+    # onedir 的解释器副本按文件名判定:_internal/Python、_internal/python3.13
+    name = low.rsplit("/", 1)[-1]
+    stem = name.split(".")[0]
+    return stem in UPSTREAM_RUNTIME_NAMES or stem.startswith("python3")
+
+
+def is_upstream_home_path(path: str) -> bool:
+    """这条家目录路径是不是上游发行版构建者的(与开发者无关)。"""
+    name = path.replace("\\", "/").rsplit("/", 1)[-1]
+    return name.lower() in UPSTREAM_HOME_NAMES
 
 
 def scan_binary(root: Path, keywords: list[str]) -> list[str]:
@@ -236,10 +258,12 @@ def scan_binary(root: Path, keywords: list[str]) -> list[str]:
             if keyword and keyword.encode("utf-8", "ignore") in blob:
                 problems.append(f"[二进制] {rel} 命中关键词 {keyword!r}")
         for pattern in HOME_PATH_PATTERNS:
-            match = pattern.search(blob.decode("latin-1", "ignore"))
-            if match:
+            blob_text = blob.decode("latin-1", "ignore")
+            hit = next((m.group(0) for m in pattern.finditer(blob_text)
+                        if not is_upstream_home_path(m.group(0))), None)
+            if hit:
                 problems.append(
-                    f"[二进制] {rel} 含家目录路径 {match.group(0)!r}")
+                    f"[二进制] {rel} 含家目录路径 {hit!r}")
                 break
     return problems
 

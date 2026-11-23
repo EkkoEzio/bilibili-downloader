@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: "手动触发时的版本号(如 2.9.0)"
+        description: "手动触发时的版本号(不带 v,如 2.9.0);会用于版本对账与发布 tag"
         required: false
       platforms:
         description: '只构建这些平台,JSON 数组。如 ["win-x64"] 或 ["mac-arm64","mac-x86_64","win-x64"]'
@@ -74,8 +74,12 @@ jobs:
             echo "手动触发未给 version 输入,以 VERSION 为准,跳过对账"
             exit 0
           fi
-          if [[ "${ACTUAL}" != "${EXPECTED}" ]]; then
-            echo "::error::版本不一致:触发标识 ${ACTUAL} 与 VERSION(${EXPECTED}) 不符"
+          # 两边都去掉可能存在的前导 v 再比:手动触发的 version 输入按
+          # 文档写的是不带 v 的 2.11.0,tag 触发带 v,原来直接比字符串会让
+          # 手动触发永远对账失败(该输入此前从未被读取,这条路径没人走过)。
+          NORMALIZED="${ACTUAL#v}"
+          if [[ "${NORMALIZED}" != "${VER}" ]]; then
+            echo "::error::版本不一致:触发标识 ${ACTUAL} 与 VERSION(${VER}) 不符"
             exit 1
           fi
           echo "版本对账通过:${EXPECTED}"
@@ -157,6 +161,10 @@ jobs:
       - name: 创建 Release
         uses: softprops/action-gh-release@v2
         with:
+          # 手动触发(workflow_dispatch)时 ref 是分支、没有 tag,不给
+          # tag_name 会发布失败;按 version 输入补出 vX.Y.Z。tag 触发时
+          # 直接用 ref 里的 tag 名。
+          tag_name: ${{ github.event_name == 'workflow_dispatch' && format('v{0}', inputs.version) || github.ref_name }}
           files: |
             artifacts/*.dmg
             artifacts/*.exe
