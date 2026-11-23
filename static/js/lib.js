@@ -162,7 +162,10 @@ export function goPage(name, skipLoad) {
     if (previous && previous !== page(name) && previous.deactivate) previous.deactivate();
     // 离开的页面若在站内搜索态:主动退出并撤提示条(换页清输入是程序赋值,
     // 不触发 input 事件,搜索态不会自行解除,提示条会残留到下次回到该页)。
-    if (isSearchMode(state.mode)) exitSearch(state.mode);
+    // 无条件退出搜索态(2026-11-23 审查,遗留项 25):搜索只是「发起」、
+    // 响应未落地时 isSearchMode 还是 false,只在搜索态才退出会让在途请求
+    // 跨页存活;exitSearch 现在会中止在途请求,无条件调用才是完整清理。
+    exitSearch(state.mode);
     cancelCachedLoads();
     state.mode = name;
     replaceItems([]);

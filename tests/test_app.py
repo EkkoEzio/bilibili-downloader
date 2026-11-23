@@ -1776,7 +1776,7 @@ def test_batch_download_enqueues_remaining_parts_end_to_end(client, monkeypatch,
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
 
     # ---- 打桩 1:resolve_playlist(断网),形态照 parsing.resolve_playlist 的真实产出
-    monkeypatch.setattr("app.downloader.resolve_playlist", lambda url: {
+    monkeypatch.setattr("app.downloader.resolve_playlist", lambda url, context=None: {
         "kind": "list", "title": "某合集",
         "items": [{"title": f"第 {n} 集", "url": f"{base}?p={n}", "duration": 60}
                   for n in range(1, 6)]})
@@ -3814,17 +3814,17 @@ def test_online_resolve_fast_path_direct_api(monkeypatch):
         "dash": {
             "video": [
                 {"id": 80, "height": 1080, "bandwidth": 2000000,
-                 "baseUrl": "https://upos-cd/v80.m4s"},
+                 "baseUrl": "https://upos-cd.bilivideo.com/v80.m4s"},
                 {"id": 116, "height": 1080, "bandwidth": 3000000,
-                 "baseUrl": "https://upos-cd/v116.m4s"},
+                 "baseUrl": "https://upos-cd.bilivideo.com/v116.m4s"},
                 {"id": 112, "height": 1080, "bandwidth": 2500000,
-                 "baseUrl": "https://upos-cd/v112.m4s"},
+                 "baseUrl": "https://upos-cd.bilivideo.com/v112.m4s"},
                 {"id": 64, "height": 720, "bandwidth": 800000,
-                 "baseUrl": "https://upos-cd/v64.m4s"},
+                 "baseUrl": "https://upos-cd.bilivideo.com/v64.m4s"},
             ],
             "audio": [
-                {"id": 30216, "bandwidth": 64000, "baseUrl": "https://upos-cd/a16.m4s"},
-                {"id": 30280, "bandwidth": 320000, "baseUrl": "https://upos-cd/a80.m4s"},
+                {"id": 30216, "bandwidth": 64000, "baseUrl": "https://upos-cd.bilivideo.com/a16.m4s"},
+                {"id": 30280, "bandwidth": 320000, "baseUrl": "https://upos-cd.bilivideo.com/a80.m4s"},
             ],
         },
     })
@@ -3857,9 +3857,9 @@ def test_online_resolve_falls_back_to_ytdlp_when_api_unavailable(monkeypatch):
         {"kind": "audio", "label": "音频", "format_id": "30216", "tbr": 60},
     ]}
     info = {"duration": 60, "formats": [
-        {"format_id": "30064", "url": "https://upos-fb/v64.m4s", "height": 720,
+        {"format_id": "30064", "url": "https://upos-fb.bilivideo.com/v64.m4s", "height": 720,
          "http_headers": {"Referer": "https://www.bilibili.com"}},
-        {"format_id": "30216", "url": "https://upos-fb/a16.m4s", "http_headers": {}},
+        {"format_id": "30216", "url": "https://upos-fb.bilivideo.com/a16.m4s", "http_headers": {}},
     ]}
     monkeypatch.setattr(parsing, "parse_video_with_info", lambda url: (summary, info))
     payload = online.resolve("https://www.bilibili.com/video/BV1fbck1xTst")
@@ -3885,7 +3885,7 @@ def test_online_resolve_api_path_honors_page_param(monkeypatch):
     def fake_playurl(bvid, cid, *, context=None):
         picked["cid"] = cid
         return {"dash": {"video": [{"id": 80, "height": 1080, "bandwidth": 1,
-                                    "baseUrl": "https://upos-pg/v.m4s"}],
+                                    "baseUrl": "https://upos-pg.bilivideo.com/v.m4s"}],
                          "audio": []}}
 
     monkeypatch.setattr(bapi, "fetch_playurl", fake_playurl)
@@ -4174,6 +4174,25 @@ def test_search_hint_no_inner_html_with_user_input():
     assert "replaceChildren" in body, "结构重建必须走 replaceChildren"
 
 
+def test_follow_cache_cleared_on_auth_changed():
+    """关注状态缓存必须随登录态切换清空,且 flush 只缓存成功响应。
+
+    回归:statusByMid 跨账号永不清理——A 已关注/B 未关注的 UP 在 B 登录后
+    仍显示「已关注」,点击胶囊即把 unfollow 发出去(2026-11-23 审查);
+    flush() 不检查 response.ok/payload.ok,mids 超上限的 400 JSON 会把整批
+    缓存成「未关注」。
+    """
+    follow_js = (_js_dir() / "follow.js").read_text(encoding="utf-8")
+    assert "addEventListener('auth:changed'" in follow_js, \
+        "必须挂 auth:changed 清缓存,否则关注状态跨账号复用"
+    assert "statusByMid.clear()" in follow_js, "缓存本体必须清空"
+    flush_body = _js_func_body(follow_js, "flush")
+    assert "response.ok" in flush_body and "payload.ok" in flush_body, \
+        "flush 写缓存前必须确认响应成功,失败响应不得缓存成 false"
+    assert "if (payloadOk) statusByMid.set" in flush_body, \
+        "只有成功响应才允许写入缓存"
+
+
 def test_search_result_cache_avoids_repeat_upstream_calls(monkeypatch):
     """同词同页的站内搜索在 TTL 内复用缓存,不再打上游(2026-11-17 性能)。
 
@@ -4403,9 +4422,12 @@ def test_online_prefetch_failure_is_not_cached_forever():
         "播放路径要能自己重发一次请求(复用失败结果时)"
     assert "prefetched.delete(url)" in open_body, \
         "复用失败结果后要清掉缓存,别让失败结果继续被复用"
-    # 重发必须有上限:不能递归成无限重试
-    assert open_body.count("requestQualities()") <= 2, \
-        "重发只允许一次,不能无限递归"
+    # 重发必须有上限:不能递归成无限重试。2026-11-23(遗留项 24)起有两条
+    # 互斥的重发路径——复用结果 resolve 成 null(then 分支)与请求被中止/
+    # 拒绝(catch 分支)——各自至多重发一次,fresh 的处理不再重发,
+    # 所以单条链仍然至多一次,总数上限从 2 放宽到 3。
+    assert open_body.count("requestQualities()") <= 3, \
+        "单条链至多重发一次,不能递归成无限重试"
 
 
 def test_topbar_narrow_window_keeps_all_page_tabs_reachable():
@@ -4529,6 +4551,191 @@ def test_artifact_scanner_exists_and_blocks_forbidden_paths():
     assert "data_dir" in scan, "要从构建机 data/ 动态提取真实指纹与 UID"
     # 关键词不能写死在仓库里:那等于把个人信息带进仓库
     assert "hushen" not in scan, "扫描脚本里不能写死开发者用户名"
+
+
+def _load_scanner():
+    """行为级加载 packaging/scan_artifact.py(非包模块,用 spec 加载)。"""
+    import os as _os
+    import importlib.util as _ilu
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    spec = _ilu.spec_from_file_location(
+        "scan_artifact", _os.path.join(base, "packaging", "scan_artifact.py"))
+    mod = _ilu.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_artifact_scanner_covers_internal_layout(tmp_path):
+    """收窄 _internal 豁免后:我们自己的文本/二进制文件必须仍被扫描。
+
+    回归(2026-11-23 审查,遗留项 18):PyInstaller≥6 onedir 把全部内容放进
+    _internal/——BINARY_SKIP_MARKERS 按「_internal/ 位置」整体豁免后,扫描
+    层对 bundle 主体是盲的:静态资源/数据文件里烧进的家目录路径与开发者
+    关键词全部漏检。收窄为按「上游二进制特征」豁免后,自家文件照常过
+    文本层与二进制层。
+    """
+    app_root = tmp_path / "BiliDownloader.app"
+    internal = app_root / "Contents" / "MacOS" / "_internal"
+    leak = internal / "static" / "leak.json"
+    leak.parent.mkdir(parents=True)
+    leak.write_text('{"p": "/Users/hushen/Desktop/secret"}', encoding="utf-8")
+    blob = internal / "static" / "blob"
+    # 可打印占比要低于 is_probably_text 的 0.85 阈值,否则二进制层会把它当
+    # 文本文件跳过(文本层覆盖)——测的就是二进制层,不能让它溜走。
+    blob.write_bytes(b"\x00\xff" * 20 + b"path=/Users/hushen/token" + b"\x00" * 20)
+
+    mod = _load_scanner()
+    text_problems = mod.scan_text(app_root, ["/Users/hushen"], [])
+    assert text_problems, \
+        "_internal 下的自家文本文件必须被文本层扫描(家目录路径或关键词命中)"
+    assert any("_internal" in p for p in text_problems)
+    binary_problems = mod.scan_binary(app_root, ["/Users/hushen"])
+    assert binary_problems, "_internal 下的无后缀二进制文件必须被二进制层扫描"
+
+
+def test_artifact_scanner_keeps_upstream_binary_exempt(tmp_path):
+    """上游二进制豁免不得回潮:运行时/ffmpeg/.so 仍豁免(防误报回潮)。
+
+    2026-11-22 CI 死于误报:上游运行时嵌着上游构建机的家目录路径
+    (python.org 发行版里就是 /Users/nad)。收窄 _internal 时必须保留
+    这些豁免,否则 mac/win 构建再次全红。
+    """
+    app_root = tmp_path / "BiliDownloader.app"
+    fw = app_root / "Contents" / "Frameworks" / "Python.framework" / "V" / "3.13"
+    fw.mkdir(parents=True)
+    (fw / "upstream.py").write_text("# co_filename /Users/nad/make/x", encoding="utf-8")
+    internal = app_root / "Contents" / "MacOS" / "_internal"
+    (internal / "bin").mkdir(parents=True)
+    (internal / "bin" / "ffmpeg").write_bytes(
+        b"\x00\xff--prefix=/home/builder/local\x00")
+    (internal / "lib").mkdir(parents=True)
+    (internal / "lib" / "x.so").write_bytes(b"\x00\xff/Users/nad\x00")
+
+    mod = _load_scanner()
+    assert mod.scan_text(app_root, ["/Users/nad"], []) == [], \
+        "Python.framework 里的上游 .py 仍要豁免,不得重蹈 2026-11-22 误报"
+    assert mod.scan_binary(app_root, ["/home/builder", "/Users/nad"], ) == [], \
+        "内置 ffmpeg 与上游 .so 仍要豁免"
+
+
+def test_upstream_binary_markers_no_longer_skip_internal_per_se():
+    """is_upstream_binary 按「上游特征」判定,不再按 _internal 位置一刀切。
+
+    同一份 _internal 路径:自家静态资源不豁免,上游二进制(ffmpeg/.so)
+    仍豁免——这正是遗留项 18 收窄的语义。
+    """
+    mod = _load_scanner()
+    assert not mod.is_upstream_binary("Contents/MacOS/_internal/static/app.css"), \
+        "自家静态资源不得因 _internal 位置被整体漏扫"
+    assert mod.is_upstream_binary("Contents/MacOS/_internal/bin/ffmpeg"), \
+        "内置 ffmpeg 是上游二进制,保留豁免"
+    assert mod.is_upstream_binary(
+        "Contents/Frameworks/Python.framework/V/3.13/x.so"), \
+        "运行时动态库保留豁免"
+
+
+def test_release_workflow_validates_tag_matches_version():
+    """发版工作流必须在构建前校验 tag 与 VERSION 一致(遗留项 19)。
+
+    回归:release.yml 对任意 v* tag 触发构建,VERSION 内容与触发标识从不
+    对账——tag 打错(VERSION 已是 2.10.0 却打了 v2.9)时,整套构建会以
+    错误版本号出包并发布到 Releases。新增第一道闸:不一致直接 fail-fast;
+    workflow_dispatch 手动触发时显式给的 version 输入同样对账(该输入
+    原先从未被读取)。
+    """
+    import os as _os
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    src = open(_os.path.join(base, ".github", "workflows", "release.yml"),
+               encoding="utf-8").read()
+    assert "校验 tag 与 VERSION 一致" in src, "必须有 tag==VERSION 的对账步骤"
+    assert "GITHUB_REF_NAME" in src, "tag 触发时用 GITHUB_REF_NAME 对账"
+    assert "github.event.inputs.version" in src, \
+        "手动触发的 version 输入必须参与对账(原先从未被读取)"
+    assert "cat VERSION" in src, "对账基准是仓库根 VERSION 文件"
+    assert "exit 1" in src, "不一致必须 fail-fast"
+
+
+def test_player_online_session_generation_guards():
+    """在线会话竞态:响应只属于发起它的那一代会话(遗留项 24)。
+
+    回归(2026-11-23 审查):applyPayload 只守 currentMode !== 'online'——
+    用户关掉播放器立刻打开另一个视频时,旧会话的解析响应落地成新会话的
+    档位与 token;解析 fetch 没有 AbortController,旧请求继续跑、旧响应
+    继续抢;playOnlineAt 每次 append loadedmetadata 监听却不摘旧的,
+    快速换档监听越叠越多,旧 onReady 还会往新 src 上 seek。
+    修法=会话代号(每次打开递增)+ 会话级 abort + 监听先摘后挂。
+    """
+    src = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    assert "let onlineSessionSeq = 0;" in src, "必须有会话代号声明"
+    assert "let onlineSessionAbort = null;" in src, "必须有会话级中止器"
+
+    open_body = _js_func_body(src, "openOnlinePlayer")
+    assert "++onlineSessionSeq" in open_body, "每次打开必须递增会话代号"
+    assert "new AbortController()" in open_body, "打开新会话要建中止器"
+    assert "abort()" in open_body, "打开新会话要中止上一代在途请求"
+    assert "seq !== onlineSessionSeq" in open_body, \
+        "响应落地前必须核对会话代号"
+
+    play_body = _js_func_body(src, "playOnlineAt")
+    assert "onlineOnReady" in play_body, \
+        "loadedmetadata 监听必须先摘旧再挂新,不许越叠越多"
+
+    recover_body = _js_func_body(src, "recoverOnlineStream")
+    assert "onlineSessionSeq" in recover_body, \
+        "断流自恢复同样只属于当前会话"
+
+    close_body = _js_func_body(src, "closeLocalPlayer")
+    assert "onlineSessionAbort" in close_body and "abort()" in close_body, \
+        "关闭播放器要中止在途解析请求"
+    assert "onlineSessionSeq += 1" in close_body, \
+        "关闭后旧会话的迟到响应必须全部作废"
+
+
+def test_search_results_belong_to_current_page():
+    """跨页竞态:搜索响应落地必须核对发起页与轮次(遗留项 25)。
+
+    回归(2026-11-23 审查):runSearch 的落地检查只校验顶栏输入框的词,
+    不校验「现在还在不在发起页」。首页搜索在途时切页(如 downloads 等不
+    清空顶栏输入的页面),响应落地后 active={page:'home'}、home 的
+    apply 走 replaceItems 写全局列表再渲染当前活动页——别的页面被铺上
+    首页的搜索结果。修法=轮次代号+发起页核对,退出搜索态/换页时中止
+    在途请求。
+    """
+    src = (_js_dir() / "search.js").read_text(encoding="utf-8")
+    assert "let searchSeq = 0;" in src, "必须有轮次代号声明"
+    body = _js_func_body(src, "runSearch")
+    assert "++searchSeq" in body, "每轮搜索必须递增代号"
+    assert "seq !== searchSeq" in body, "落地前必须核对轮次"
+    assert "pageName !== currentPage()" in body, \
+        "落地前必须核对发起页仍是当前活动页"
+
+    exit_body = _js_func_body(src, "exitSearch")
+    assert "abort()" in exit_body, "退出搜索态要中止在途请求"
+
+    lib_src = (_js_dir() / "lib.js").read_text(encoding="utf-8")
+    assert "isSearchMode(state.mode)) exitSearch" not in lib_src, \
+        "goPage 必须无条件走 exitSearch(在途请求也要中止),不能只在搜索态才走"
+
+
+def test_pilot_deferred_session_behavior():
+    """试点单测:Node 最小 DOM 桩真实执行 player/search 模块(遗留项 27)。
+
+    绑定遗留项 24(player 会话代号)与 25(搜索响应页面归属)的行为:
+    静态断言锁结构,这里锁行为——延迟响应在会话已关闭/已换页时不得落地。
+    驱动是 tests/js_runner/pilot_session_test.mjs(零 npm 依赖,Node 18+
+    原生 ESM + 手写 DOM 桩),退出码 0 = 全部断言通过。修 search 跨页竞态
+    时,正是这个试点抓到了静态断言漏掉的真漏洞:退出搜索态后迟到的结果
+    会把搜索态重新打开。
+    """
+    import os as _os
+    import subprocess as _sp
+    base = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+    driver = _os.path.join(base, "tests", "js_runner", "pilot_session_test.mjs")
+    assert _os.path.isfile(driver), "试点驱动要存在"
+    proc = _sp.run(["node", driver], capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, \
+        f"试点行为断言失败(exit={proc.returncode}):\n{proc.stdout[-2000:]}\n{proc.stderr[-800:]}"
+    assert "RESULT: ALL PASS" in proc.stdout, "试点驱动必须显式报告全通过"
 
 
 def test_app_icon_assets_exist_and_are_vector_first():
@@ -4672,3 +4879,125 @@ def test_desktop_shell_picks_a_free_port_when_default_is_taken():
         or "pystray" in open(_os.path.join(base, "requirements-build.txt"),
                             encoding="utf-8").read(), \
         "pystray 要在构建依赖里"
+
+
+def test_parse_route_binds_request_auth_context(monkeypatch):
+    """/api/parse 把请求绑定的认证上下文传给解析调用(遗留项 20)。
+
+    回归:路由原先 downloader.parse_video(url) 不带 context,解析永远吃
+    「环境当前」身份;传上下文后,认证切换期间进入的旧请求拿不到新账号
+    Cookie(get_ytdlp_cookie_arg 对失效上下文返回匿名)。
+    """
+    import app as app_module
+
+    captured = {}
+    monkeypatch.setattr(app_module, "_request_auth_context",
+                        lambda: {"source": "qr", "fingerprint": "f" * 64})
+    monkeypatch.setattr(app_module.downloader, "parse_video",
+                        lambda url, context=None: captured.update(
+                            url=url, context=context)
+                        or {"title": "t", "formats": [], "thumbnail": "",
+                            "uploader": "", "uploader_mid": "", "duration": 1,
+                            "best_label": "", "parts": []})
+    monkeypatch.setattr(app_module.auth, "get_login_status",
+                        lambda: {"logged_in": True})
+    resp = app_module.app.test_client().post(
+        "/api/parse", json={"url": "https://www.bilibili.com/video/BVx"})
+    assert resp.status_code == 200
+    assert captured["context"] == {"source": "qr", "fingerprint": "f" * 64}, \
+        "解析调用必须收到请求绑定的上下文"
+
+
+def test_online_register_rejects_offsite_upstream():
+    """_register 只放行 B 站 CDN 白名单内的回源 URL(遗留项 21)。
+
+    回归:qualities 路由原先只用子串判断("bilibili.com" in url),挡不住
+    https://evil.com/?x=bilibili.com 与 https://bilibili.com.evil.com/;
+    yt-dlp generic 提取器又允许任意站点出 formats——token 化代理
+    /online/stream/<token> 就退化成任意 URL 的读回代理(SSRF,可回源
+    内网与 service 自身)。fail-loud:白名单外一律拒绝注册。
+    """
+    import online
+    made = []
+    try:
+        with pytest.raises(ValueError):
+            online._register("https://evil.com/?x=bilibili.com/v.m4s", {})
+        with pytest.raises(ValueError):
+            online._register("https://bilibili.com.evil.com/v.m4s", {})
+        with pytest.raises(ValueError):
+            online._register("ftp://upos.bilivideo.com/v.m4s", {})
+        made.append(online._register("https://upos-sz-upos.bilivideo.com/v.m4s", {}))
+        made.append(online._register("https://mcdn.bilivideo.cn:4483/v.m4s", {}))
+        made.append(online._register(
+            "https://upos-hz-mirrorakam.akamaized.net/v.m4s", {}))
+    finally:
+        with online._lock:
+            for t in made:
+                online._tokens.pop(t, None)
+
+
+def test_fetch_fav_folder_covers_reraises_rate_limit(monkeypatch):
+    """单夹网络失败可以吞(单夹失败不影响其他夹),412/429 必须上抛(遗留项 22)。
+
+    回归:fetch_fav_folder_covers 的单夹「except Exception: covers=[]」
+    把风控一并吞掉——上游 412/429 时,空封面被路由当作「成功」写进
+    10 分钟缓存,用户看到的是「收藏夹没有封面」而不是「稍后再试」,
+    风控信号彻底消失。
+    """
+    import bilibili_api as bapi
+
+    def fake_get(url, **kwargs):
+        raise bapi.UpstreamRateLimitError("429 too fast")
+
+    monkeypatch.setattr(bapi, "_get", fake_get)
+    monkeypatch.setattr(bapi, "_auth_session",
+                        lambda ctx=None: ({"source": "qr", "fingerprint": "f" * 64},
+                                          object()))
+    # 测试上下文不是真实登录态,身份终检桩掉——本用例只验限流的上抛路径。
+    monkeypatch.setattr(bapi, "_ensure_context_current", lambda ctx: None)
+    folders = [{"id": 1, "media_count": 3}, {"id": 2, "media_count": 0}]
+    with pytest.raises(bapi.UpstreamRateLimitError):
+        bapi.fetch_fav_folder_covers(folders)
+
+
+def test_fav_folder_covers_failure_not_cached(monkeypatch):
+    """/api/fav-folder-covers 失败必须如实 429,且不得写成功缓存(遗留项 22)。"""
+    import app as app_module
+
+    def boom(folders, context=None):
+        raise app_module.bapi.UpstreamRateLimitError("429")
+
+    monkeypatch.setattr(app_module.bapi, "fetch_fav_folders",
+                        lambda context=None: [{"id": 1, "media_count": 3}])
+    monkeypatch.setattr(app_module.bapi, "fetch_fav_folder_covers", boom)
+    monkeypatch.setattr(app_module, "_request_auth_context", lambda: None)
+    app_module._fav_folder_covers_cache.update({"at": 0.0, "payload": None})
+    client = app_module.app.test_client()
+    r = client.get("/api/fav-folder-covers")
+    assert r.status_code == 429, \
+        f"限流必须如实暴露(429),实际 {r.status_code}"
+    assert app_module._fav_folder_covers_cache["payload"] is None, \
+        "失败不得写成功缓存,否则风控期内 10 分钟都拿不到真实封面"
+
+
+def test_online_qualities_route_rejects_offsite_url(monkeypatch):
+    """qualities 路由必须用 hostname 白名单替换子串检查(遗留项 21)。"""
+    import app as app_module
+
+    called = {}
+
+    def fake_resolve(url):
+        called["url"] = url
+        return {"qualities": [{"label": "1080P", "token": "t"}], "audio": "a"}
+
+    monkeypatch.setattr(app_module.online, "resolve", fake_resolve)
+    client = app_module.app.test_client()
+    r = client.get(
+        "/api/online/qualities?url=https%3A%2F%2Fevil.com%2F%3Fx%3Dbilibili.com")
+    assert r.status_code == 400, \
+        "evil 域名即使含 bilibili.com 子串也必须拒绝,不得进入解析"
+    assert called == {}, "被拒 URL 不得触发解析"
+    r2 = client.get(
+        "/api/online/qualities?url=https%3A%2F%2Fwww.bilibili.com%2Fvideo%2FBVxx")
+    assert r2.status_code == 200
+    assert called.get("url") == "https://www.bilibili.com/video/BVxx"

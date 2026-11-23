@@ -34,6 +34,13 @@ let onlineUrl = '';          // 在线播放的原始链接:断流自恢复时�
 let onlineMeta = {};         // 打开播放器时的卡片元信息,恢复时还原标题
 let onlineRecoverLeft = 0;   // 剩余自动恢复次数,起播成功即回满
 
+// 会话代号与中止器(2026-11-23 审查,遗留项 24):在线会话的解析响应只属于
+// 发起它的那一代——关掉播放器立刻打开另一个视频时,旧响应不得落地成新会话
+// 的档位与 token;在途解析请求随会话更替一起 abort。
+let onlineSessionSeq = 0;
+let onlineSessionAbort = null;
+let onlineOnReady = null;     // playOnlineAt 最近挂的 loadedmetadata 监听,换档先摘后挂
+
 function byId(id) { return document.getElementById(id); }
 
 function isOpen() {
@@ -480,7 +487,12 @@ function playOnlineAt(index, { keepTime = true, autoplay = true } = {}) {
   }
   applySpeed(speed);
 
+  // 快速换档时旧监听不清,会越叠越多;旧 onReady 还会往新 src 上 seek
+  // (2026-11-23 审查,遗留项 24)。先摘旧再挂新,onReady 只认自己那一代。
+  if (onlineOnReady) v.removeEventListener('loadedmetadata', onlineOnReady);
   const onReady = () => {
+    if (onlineOnReady !== onReady) return;   // 已被更新的监听取代
+    onlineOnReady = null;
     v.removeEventListener('loadedmetadata', onReady);
     if (resumeAt > 0.5) {
       try { v.currentTime = resumeAt; } catch (error) { /* 忽略 */ }
@@ -488,6 +500,7 @@ function playOnlineAt(index, { keepTime = true, autoplay = true } = {}) {
     syncAudioToVideo();
     if (autoplay) attemptOnlinePlay();
   };
+  onlineOnReady = onReady;
   v.addEventListener('loadedmetadata', onReady);
   v.load();
   markQualitySegs(index);
@@ -504,12 +517,14 @@ function recoverOnlineStream() {
   }
   onlineRecoverLeft -= 1;
   const url = onlineUrl;
+  const seq = onlineSessionSeq;
+  const signal = onlineSessionAbort ? onlineSessionAbort.signal : undefined;
   setTip('播放中断,正在自动恢复…');
   fetch(`/api/online/qualities?url=${encodeURIComponent(url)}`,
-         { headers: { Accept: 'application/json' } })
+         { headers: { Accept: 'application/json' }, signal })
     .then(r => r.json())
     .then((payload) => {
-      if (currentMode !== 'online') return;
+      if (seq !== onlineSessionSeq || currentMode !== 'online') return;
       if (!payload || !payload.ok || !payload.qualities || !payload.qualities.length) {
         setTip('自动恢复失败:解析不到可播放的清晰度,请重新打开');
         return;
@@ -521,13 +536,21 @@ function recoverOnlineStream() {
       markQualitySegs(prevIndex);
       playOnlineAt(prevIndex, { keepTime: true, autoplay: true });
     })
-    .catch(() => { if (currentMode === 'online') setTip('自动恢复失败,请重新打开这个视频'); });
+    .catch(() => {
+      if (seq !== onlineSessionSeq || currentMode !== 'online') return;
+      setTip('自动恢复失败,请重新打开这个视频');
+    });
 }
 
 export function openOnlinePlayer(url, meta = {}) {
   const bv = bvFromUrl(url);
   const v = video();
   if (!bv || !v) return;
+
+  const seq = ++onlineSessionSeq;
+  if (onlineSessionAbort) { try { onlineSessionAbort.abort(); } catch (error) {} }
+  onlineSessionAbort = new AbortController();
+  const signal = onlineSessionAbort.signal;
 
   currentId = '';
   currentMode = 'online';
@@ -546,13 +569,13 @@ export function openOnlinePlayer(url, meta = {}) {
   // 悬停时可能已经预解析过,这里优先复用,省掉等待
   const requestQualities = () =>
     fetch(`/api/online/qualities?url=${encodeURIComponent(url)}`,
-          { headers: { Accept: 'application/json' } }).then(r => r.json());
+          { headers: { Accept: 'application/json' }, signal }).then(r => r.json());
   const pendingTask = prefetched.get(url);
   const request = pendingTask || requestQualities();
   prefetched.set(url, request);
 
   const applyPayload = (payload) => {
-    if (currentMode !== 'online') return false;
+    if (seq !== onlineSessionSeq || currentMode !== 'online') return false;
     if (!payload || !payload.ok || !payload.qualities || !payload.qualities.length) {
       setTip('没能解析出可播放的清晰度,可以点右上角「B 站」在原站观看');
       return false;
@@ -570,22 +593,36 @@ export function openOnlinePlayer(url, meta = {}) {
 
   request
     .then((payload) => {
+      if (seq !== onlineSessionSeq || currentMode !== 'online') return;
       if (applyPayload(payload)) return;
       // 复用的预热结果失败时(可能是一条 resolve 成 null 的旧 promise),
       // 摘掉缓存并重发一次真实请求,别让用户必须点第二下才能看
       prefetched.delete(url);
       requestQualities()
         .then((fresh) => {
+          if (seq !== onlineSessionSeq || currentMode !== 'online') return;
           if (fresh && fresh.ok) prefetched.set(url, Promise.resolve(fresh));
           applyPayload(fresh);
         })
         .catch(() => {
-          if (currentMode === 'online') setTip('解析失败,可以点右上角「B 站」在原站观看');
+          if (seq !== onlineSessionSeq || currentMode !== 'online') return;
+          setTip('解析失败,可以点右上角「B 站」在原站观看');
         });
     })
     .catch(() => {
       prefetched.delete(url);
-      if (currentMode === 'online') setTip('解析失败,可以点右上角「B 站」在原站观看');
+      if (seq !== onlineSessionSeq || currentMode !== 'online') return;
+      // 被中止的预热 promise 也落到这里;不重发的话用户要点第二次才能看
+      requestQualities()
+        .then((fresh) => {
+          if (seq !== onlineSessionSeq || currentMode !== 'online') return;
+          if (fresh && fresh.ok) prefetched.set(url, Promise.resolve(fresh));
+          applyPayload(fresh);
+        })
+        .catch(() => {
+          if (seq !== onlineSessionSeq || currentMode !== 'online') return;
+          setTip('解析失败,可以点右上角「B 站」在原站观看');
+        });
     });
 
   const focusTarget = byId('player-close');
@@ -619,6 +656,16 @@ export function closeLocalPlayer() {
   onlineUrl = '';
   onlineMeta = {};
   onlineRecoverLeft = 0;
+  // 会话终结:在途解析请求中止,代号递增让迟到响应全部作废;残留的
+  // loadedmetadata 监听一并摘掉(2026-11-23 审查,遗留项 24)。
+  if (onlineSessionAbort) { try { onlineSessionAbort.abort(); } catch (error) {} }
+  onlineSessionAbort = null;
+  onlineSessionSeq += 1;
+  if (onlineOnReady) {
+    const vReady = video();
+    if (vReady) vReady.removeEventListener('loadedmetadata', onlineOnReady);
+    onlineOnReady = null;
+  }
   if (lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
   lastFocus = null;
 }

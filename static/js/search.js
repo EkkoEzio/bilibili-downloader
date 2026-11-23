@@ -40,6 +40,7 @@ function cacheSet(key, items) {
 
 let active = null;          // { page, q } 当前处于搜索模式的页
 let inflight = null;
+let searchSeq = 0;          // 2026-11-23 审查(遗留项 25):每轮搜索自增,响应只认发起它的那一轮
 
 /* 该页是否处于站内搜索结果态(结果已由 /api/search 铺进列表)。
    渲染层用它跳过本地过滤:B 站搜索自带纠错/模糊匹配,搜「傅立叶」
@@ -107,6 +108,7 @@ async function runSearch(pageName) {
   if (inflight) inflight.abort();
   const controller = new AbortController();
   inflight = controller;
+  const seq = ++searchSeq;
   setHint(pageName, `搜索「${q}」中…`);
 
   try {
@@ -124,6 +126,10 @@ async function runSearch(pageName) {
     // 用户可能已清空输入或换了关键词,旧结果不覆盖
     const currentInput = inputFor();
     if (!currentInput || (currentInput.value || '').trim() !== q) return;
+    // 落地时人已经不在发起页(切到不清空顶栏输入的页面):结果绝不能铺。
+    // home 的 apply 会写全局列表再渲染当前活动页,跨页落地就是把首页搜索
+    // 结果铺到别的页(2026-11-23 审查,遗留项 25)。
+    if (seq !== searchSeq || pageName !== currentPage()) return;
     active = { page: pageName, q };
     const items = payload.items || [];
     cacheSet(cacheKey(pageName, target.kind, q), items);
@@ -141,6 +147,11 @@ export function exitSearch(pageName = active?.page) {
   if (!pageName) return;
   const target = targets.get(pageName);
   setHint(pageName, '');
+  // 退出搜索态时中止在途请求并作废其轮次:落地检查兜底之外,别让旧请求
+  // 继续占带宽,更不能让迟到结果把刚退出的搜索态重新打开(2026-11-23 审查,
+  // 遗留项 25;行为由 tests/js_runner/pilot_session_test.mjs 锁定)。
+  searchSeq += 1;
+  if (inflight) { inflight.abort(); inflight = null; }
   if (active && active.page === pageName) {
     active = null;
     if (target && target.exit) target.exit();

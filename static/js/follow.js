@@ -16,6 +16,21 @@ const pending = new Set();         // 已在途的 mid,防止重复请求
 let flushTimer = null;
 let queue = new Set();
 
+/* 缓存只属于当前登录账号:切换账号/登出后必须清空,否则 A 已关注/B 未关注
+   的 UP 会显示 A 的状态,点击胶囊就把取关请求发出去了(2026-11-23 审查)。
+   在途批次无法撤回,靠 flush 检查响应归属兜底(见下)。 */
+function clearAuthBoundCache() {
+  statusByMid.clear();
+  queue.clear();
+  if (flushTimer) { clearTimeout(flushTimer); flushTimer = null; }
+  document.querySelectorAll('.vi-follow').forEach((chip) => {
+    delete chip.dataset.followed;
+    delete chip.dataset.loggedOut;
+    setChipState(chip, false);
+  });
+}
+document.addEventListener('auth:changed', clearAuthBoundCache);
+
 function setChipState(chip, followed) {
   chip.dataset.followed = followed ? '1' : '0';
   chip.setAttribute('aria-pressed', followed ? 'true' : 'false');
@@ -60,11 +75,16 @@ async function flush() {
         `/api/relation/status?mids=${encodeURIComponent(chunk.join(','))}`,
         { headers: { Accept: 'application/json' } });
       const payload = await response.json();
-      const statuses = payload && payload.statuses ? payload.statuses : {};
+      // 失败响应(ok:false 的 JSON,如 mids 超上限的 400)statuses 为空:
+      // 不检查就把整批缓存成「未关注」,比不缓存更糟(2026-11-23 审查)。
+      // 非法 JSON/网络错误走 catch 保持未知;账号已切换时请求是旧账号发的,
+      // 结果也绝不入缓存。
+      const payloadOk = response.ok && payload && payload.ok !== false;
+      const statuses = payloadOk && payload.statuses ? payload.statuses : {};
       const chipMap = collectChipsByMid();
       for (const mid of chunk) {
         const followed = !!statuses[mid];
-        statusByMid.set(mid, followed);
+        if (payloadOk) statusByMid.set(mid, followed);
         applyToDom(mid, followed, chipMap);
       }
       // 未登录时后端 logged_in=false,按钮保持「关注」,点了会提示
