@@ -41,6 +41,9 @@ TOKEN_TTL_SECONDS = 30 * 60
 TOKEN_MAX_SECONDS = 105 * 60
 # 解析结果缓存:同一个视频反复点播放不必每次跑 yt-dlp(要几秒)。
 PARSE_TTL_SECONDS = 10 * 60
+# 直链被 CDN 拒绝(403)后按当前网络重新签发的冷却窗口:同一视频在窗口内
+# 只重新解析一次(音视频两轨、并发 Range 请求共用这一份结果)。
+REISSUE_COOLDOWN_SECONDS = 3.0
 
 _UPSTREAM_TIMEOUT = (10, 60)
 
@@ -56,10 +59,30 @@ _tokens: dict[str, dict] = {}          # token -> {"url", "headers", "expires"}
 _parse_cache: dict[str, dict] = {}     # url -> {"payload", "expires"}
 
 
+_reissue_lock = threading.Lock()
+_reissue_cache: dict[str, dict] = {}   # 视频链接 -> {"payload", "at"}:冷却窗口内的重签结果
+
+
+class VideoUnavailableError(RuntimeError):
+    """视频本身不可播(已删除/所在地区受限),不是服务端故障。"""
+
+
+# yt-dlp 的 B 站提取器对「已删除」与「地区限制」给的是同一句话;BV 号本身
+# 不存在(稿件被删后卡片还在列表里)则是提取器内部报错 KeyError('bvid')。
+_UNAVAILABLE_RE = re.compile(
+    r"deleted or geo-restricted|caused by KeyError\('bvid'\)", re.IGNORECASE)
+_UNAVAILABLE_MESSAGE = ("这个视频已失效,或在你当前网络所在的地区不可播放;"
+                        "可以点右上角「B 站」在原站观看")
+
+
 def _cleanup(now: float) -> None:
     for store in (_tokens, _parse_cache):
         for key in [k for k, v in store.items() if v.get("expires", 0) <= now]:
             store.pop(key, None)
+    # 重签结果的冷却记录:过期即清,别让长时间运行的进程一直攒着。
+    for source, entry in list(_reissue_cache.items()):
+        if now - entry.get("at", 0) > REISSUE_COOLDOWN_SECONDS:
+            _reissue_cache.pop(source, None)
     # 认证已失效的 token 一并淘汰:token 里锁的是解析时的上游直链,切换
     # 账号/登出后不该再被取用(2026-11-23 审查)。切换期间旧 token 只保留
     # 到 TTL,不做强制全局清空,避免正在播的会话被硬断。
@@ -105,7 +128,13 @@ def stream_url_allowed(url: str) -> bool:
                for s in _STREAM_HOST_SUFFIXES)
 
 
-def _register(url: str, headers: dict, context=None) -> str:
+def _register(url: str, headers: dict, context=None, source: str = "",
+              track: Optional[dict] = None) -> str:
+    """登记一条上游直链并发放 token。
+
+    source 是这条轨所属的视频链接,track 说明是哪条轨(视频档位名/音频):
+    直链被 CDN 拒绝时凭这两项按当前网络重新签发同一条轨(见 _reissue)。
+    """
     if not stream_url_allowed(url):
         # fail-loud:白名单外的 URL 一定不是 B 站 API 给的直链,宁可这一轨
         # 播不了,也不把代理变成任意 URL 读回。
@@ -116,7 +145,8 @@ def _register(url: str, headers: dict, context=None) -> str:
     with _lock:
         _tokens[token] = {"url": url, "headers": headers, "created": now,
                           "expires": now + TOKEN_TTL_SECONDS,
-                          "context": _context_key_of(context)}
+                          "context": _context_key_of(context),
+                          "source": source, "track": dict(track or {})}
     return token
 
 
@@ -259,7 +289,8 @@ def _resolve_via_api_with_context(url: str, context) -> Optional[dict]:
                 "label": label,
                 "height": entry.get("height") or 0,
                 "token": _register(entry.get("baseUrl") or entry.get("base_url") or "",
-                                   headers, context=context),
+                                   headers, context=context, source=url,
+                                   track={"kind": "video", "label": label}),
             })
         qualities.sort(key=lambda q: (-(q["height"] or 0),
                                       0 if "P60" in q["label"] else 1))
@@ -271,7 +302,7 @@ def _resolve_via_api_with_context(url: str, context) -> Optional[dict]:
                 best_audio = entry
         if best_audio:
             audio_token = _register(best_audio.get("baseUrl") or best_audio.get("base_url") or "",
-                                    headers, context=context)
+                                    headers, context=context, source=url, track={"kind": "audio"})
 
         return {
             "ok": True,
@@ -313,11 +344,43 @@ def resolve(url: str) -> dict:
     return payload
 
 
+def _resolve_uncached(url: str) -> Optional[dict]:
+    """绕过解析缓存重新解析一次,并把结果写回缓存。
+
+    缓存里那份的直链已经作废才需要重签;不写回的话,前端断流自恢复再打解析
+    接口,10 分钟内拿到的仍是同一批作废 token(2026-11-23 用户报障)。任何失败
+    都返回 None——重签是尽力而为的自愈,认输后照旧回 502 走前端恢复。
+    """
+    try:
+        context, _cookiejar = bilibili_auth.get_auth_snapshot()
+    except bilibili_auth.AuthContextChangedError:
+        context = None
+    try:
+        payload = _resolve_via_api(url)
+        if payload is None:
+            payload = _resolve_via_ytdlp(url, context=context)
+    except Exception as exc:
+        log.warning("在线播放重新签发直链失败: %s", type(exc).__name__)
+        return None
+    now = time.time()
+    with _lock:
+        _parse_cache[(_context_key_of(context), url)] = {
+            "payload": payload, "expires": now + PARSE_TTL_SECONDS}
+    return payload
+
+
 def _resolve_via_ytdlp(url: str, context=None) -> dict:
     """yt-dlp 路径(旧行为):番剧、直连 API 失败时的回落。"""
     # 一次提取同时拿归一化档位与直链 formats:原先这里连跑两遍 yt-dlp,
     # 每个预热请求双倍秒级 CPU,会拖慢同进程的其它接口(搜索实测被堵 23s)。
-    summary, info = parsing.parse_video_with_info(url)
+    try:
+        summary, info = parsing.parse_video_with_info(url)
+    except RuntimeError as exc:
+        # 已删除/地区限制是「这个视频不可播」,不是服务端故障:抛成带明确
+        # 含义的类型,路由翻成可回显的 404,而不是 500 + 整段 traceback。
+        if _UNAVAILABLE_RE.search(str(exc)):
+            raise VideoUnavailableError(_UNAVAILABLE_MESSAGE) from exc
+        raise
     formats = summary.get("formats", [])
     fmts = _format_map(info)
 
@@ -328,7 +391,7 @@ def _resolve_via_ytdlp(url: str, context=None) -> dict:
         if audio_format.get("url"):
             audio_token = _register(audio_format["url"],
                                     audio_format.get("http_headers") or {},
-                                    context=context)
+                                    context=context, source=url, track={"kind": "audio"})
 
     qualities = []
     for label, option in _pick_video_quality(formats):
@@ -339,7 +402,8 @@ def _resolve_via_ytdlp(url: str, context=None) -> dict:
             "label": label,
             "height": raw.get("height") or 0,
             "token": _register(raw["url"], raw.get("http_headers") or {},
-                               context=context),
+                               context=context, source=url,
+                               track={"kind": "video", "label": label}),
         })
 
     payload = {
@@ -352,27 +416,127 @@ def _resolve_via_ytdlp(url: str, context=None) -> dict:
     return payload
 
 
-def open_upstream(token: str, range_header: Optional[str]):
-    """把一条轨的请求转发给 CDN。返回 (response, error)。"""
-    item = lookup(token)
-    if not item:
-        return None, ("播放地址已过期,请重新打开", "token_expired")
-    headers = {k: v for k, v in (item.get("headers") or {}).items()
+def _safe_reason(exc: Exception) -> str:
+    """连接类异常的说明:只留异常类型与根因。
+
+    requests 的原文是「Max retries exceeded with url: /路径?查询串 (Caused by
+    ...)」,查询串里带着直链签名与账号参数(mid/buvid),不该进日志。
+    """
+    text = str(exc)
+    start = text.find("(Caused by")
+    cause = text[start:] if start != -1 else ""
+    if not cause:
+        return type(exc).__name__
+    return "%s: %s" % (type(exc).__name__, cause)
+
+
+def _upstream_headers(entry: dict, range_header: Optional[str]) -> dict:
+    """转发给 CDN 的请求头:白名单透传,缺 Referer 就补上(缺了视频轨 403)。"""
+    headers = {k: v for k, v in (entry.get("headers") or {}).items()
                if k.lower() in ("user-agent", "referer", "accept", "accept-language",
                                 "origin", "cookie")}
     if not any(k.lower() == "referer" for k in headers):
         headers["Referer"] = "https://www.bilibili.com"
     if range_header:
         headers["Range"] = range_header
+    return headers
+
+
+def _fetch_upstream(url: str, headers: dict):
+    """向 CDN 发一跳取流请求。返回 (response, error)。"""
+    # 顶层 requests.api.get 的原始实现:测试把顶层 requests.get 换成桩时让路,
+    # 生产才走连接池会话(与 bilibili_api._get 同一套兼容模式)。
     getter = requests.get if requests.get is not _requests_get else _CDN_SESSION.get
     try:
-        upstream = getter(item["url"], headers=headers, stream=True,
+        upstream = getter(url, headers=headers, stream=True,
                           timeout=_UPSTREAM_TIMEOUT)
     except requests.RequestException as exc:
-        log.warning("在线播放上游请求失败: %s", exc)
+        log.warning("在线播放上游请求失败 [%s]: %s",
+                    urlparse(url).hostname or "", _safe_reason(exc))
         return None, ("上游请求失败", "upstream_error")
-    if upstream.status_code not in (200, 206):
-        upstream.close()
-        log.warning("在线播放上游返回 %s", upstream.status_code)
-        return None, ("上游拒绝了这个播放地址", "upstream_rejected")
     return upstream, None
+
+
+def _match_track(payload: Optional[dict], track: dict) -> Optional[str]:
+    """在重新解析的结果里找回同一条轨的 token。
+
+    视频轨只认同档位名:换一档等于换文件,浏览器手里的字节区间就对不上;
+    这种情况宁可认输(回 502),让前端断流自恢复按新档位表重开。
+    """
+    if not payload or not payload.get("ok"):
+        return None
+    if track.get("kind") == "audio":
+        return payload.get("audio") or None
+    label = track.get("label")
+    for quality in payload.get("qualities") or []:
+        if quality.get("label") == label and quality.get("token"):
+            return quality["token"]
+    return None
+
+
+def _reissue(token: str) -> bool:
+    """把 token 背后的直链换成按当前网络重新解析出的同一条轨;换不到返回 False。
+
+    同一视频在冷却窗口内只重新解析一次:音视频两轨与并发 Range 请求同时
+    撞 403 时共用这一份结果,每次解析都是一次上游请求。
+    """
+    with _reissue_lock:
+        with _lock:
+            item = _tokens.get(token)
+        source = (item or {}).get("source")
+        if not item or not source:
+            return False
+        now = time.time()
+        cached = _reissue_cache.get(source)
+        if cached and now - cached.get("at", 0) < REISSUE_COOLDOWN_SECONDS:
+            payload = cached.get("payload")
+        else:
+            payload = _resolve_uncached(source)
+            with _lock:
+                _reissue_cache[source] = {"payload": payload, "at": now}
+        fresh_token = _match_track(payload, item.get("track") or {})
+        with _lock:
+            fresh = _tokens.get(fresh_token or "")
+            current = _tokens.get(token)
+        if not fresh or not current:
+            return False
+        with _lock:
+            current.update(url=fresh["url"], headers=fresh.get("headers") or {},
+                           context=fresh.get("context"))
+        return True
+
+
+def open_upstream(token: str, range_header: Optional[str]):
+    """把一条轨的请求转发给 CDN。返回 (response, error)。
+
+    CDN 回 403 时先自愈一次再认输:B 站直链与签发时的网络出口绑定,换节点/
+    换网络后解析缓存里的直链全部作废(2026-11-23 用户报障:解析全 200、取流
+    全 502,前端断流自恢复拿到的还是同一份缓存)。按当前网络重新解析,把新
+    直链换到同一个 token 上再试一跳——浏览器继续请求原 URL,无感恢复。
+    """
+    item = lookup(token)
+    if not item:
+        return None, ("播放地址已过期,请重新打开", "token_expired")
+    upstream, error = _fetch_upstream(item["url"], _upstream_headers(item, range_header))
+    if error:
+        return None, error
+    if upstream.status_code in (200, 206):
+        return upstream, None
+
+    status = upstream.status_code
+    upstream.close()
+    host = urlparse(item["url"]).hostname or ""
+    if status == 403 and _reissue(token):
+        item = lookup(token)
+        if item:
+            log.info("在线播放上游返回 403 [%s],已按当前网络重新签发直链", host)
+            retry, error = _fetch_upstream(item["url"],
+                                           _upstream_headers(item, range_header))
+            if error:
+                return None, error
+            if retry.status_code in (200, 206):
+                return retry, None
+            status = retry.status_code
+            retry.close()
+    log.warning("在线播放上游返回 %s [%s]", status, host)
+    return None, ("上游拒绝了这个播放地址", "upstream_rejected")

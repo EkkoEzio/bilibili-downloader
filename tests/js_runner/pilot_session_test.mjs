@@ -324,7 +324,50 @@ async function caseSearchPageOwnership() {
   }
 }
 
-const cases = [casePlayerSession, caseSearchPageOwnership];
+/* 场景 3(2026-11-23 在线播放加固):解析回「视频不可播」时提示照实说、不重发 */
+async function casePlayerUnavailableTip() {
+  const doc = makeDocumentStub();
+  const win = makeWindowStub();
+  const ls = makeLocalStorageStub();
+  const { fetchStub, calls } = makeFetchStub();
+  globalThis.document = doc;
+  globalThis.window = win;
+  globalThis.localStorage = ls;
+  globalThis.fetch = fetchStub;
+  globalThis.AbortController = AbortController;
+  globalThis.requestAnimationFrame = noop;
+  globalThis.matchMedia = () => ({ matches: false, addListener: noop, removeListener: noop });
+  try {
+    const playerUrl = pathToFileURL(path.join(jsRoot, 'player.js')).href;
+    const mod = await import(playerUrl);
+    const videoEl = doc.getElementById('player-video');
+    const reason = '这个视频已失效,或在你当前网络所在的地区不可播放';
+    mod.openOnlinePlayer('https://www.bilibili.com/video/BV1gone1xTst', { title: 'G' });
+    const firstCall = calls[0];
+    if (!firstCall) return record('player_unavailable_tip', false, '没有发起解析请求');
+    firstCall.resolveWithJson({ ok: false, code: 'video_unavailable', error: reason });
+    await flushMicrotasks();
+    if (calls.length !== 1) {
+      return record('player_unavailable_tip', false,
+        'video_unavailable 不应再重发解析请求,实际请求 ' + calls.length + ' 次');
+    }
+    const tip = doc.getElementById('player-tip').textContent;
+    if (tip !== reason) {
+      return record('player_unavailable_tip', false, '提示没有照实说,实际: ' + tip);
+    }
+    if (videoEl.props.src) {
+      return record('player_unavailable_tip', false, '不可播的视频不得设置视频源: ' + videoEl.props.src);
+    }
+    mod.closeLocalPlayer();
+    record('player_unavailable_tip', true, '不可播视频:提示照实说且不重发');
+  } finally {
+    delete globalThis.document; delete globalThis.window;
+    delete globalThis.localStorage; delete globalThis.fetch;
+    delete globalThis.matchMedia; delete globalThis.requestAnimationFrame;
+  }
+}
+
+const cases = [casePlayerSession, caseSearchPageOwnership, casePlayerUnavailableTip];
 for (const run of cases) {
   try { await run(); } catch (error) {
     record(run.name, false, '异常: ' + (error && error.stack ? error.stack.split('\n').slice(0, 4).join(' | ') : String(error)));

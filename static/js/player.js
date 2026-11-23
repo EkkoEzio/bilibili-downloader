@@ -577,6 +577,13 @@ export function openOnlinePlayer(url, meta = {}) {
   const applyPayload = (payload) => {
     if (seq !== onlineSessionSeq || currentMode !== 'online') return false;
     if (!payload || !payload.ok || !payload.qualities || !payload.qualities.length) {
+      // 服务端已判定「这个视频不可播」(已失效/地区限制):照实说,别笼统说
+      // 「没能解析出」,也别再白白重发一次解析(2026-11-23 加固)。
+      if (payload && payload.code === 'video_unavailable') {
+        prefetched.delete(url);
+        setTip(payload.error || '这个视频已失效,或在你当前网络所在的地区不可播放');
+        return true;
+      }
       setTip('没能解析出可播放的清晰度,可以点右上角「B 站」在原站观看');
       return false;
     }

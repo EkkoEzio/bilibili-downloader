@@ -405,6 +405,10 @@ def api_errors(f):
                                    retry_after=retry_after)
             response.headers["Retry-After"] = str(retry_after)
             return response
+        except online.VideoUnavailableError as exc:
+            # 视频本身不可播(已删除/地区限制)是预期态:回 404 + 可回显文案,不与
+            # 未知异常一起折叠成 500 + log.exception 噪音。
+            return _json_error(str(exc), 404, "video_unavailable")
         except Exception:
             log.exception("路由 %s 异常", f.__name__)
             return _json_error("服务器处理失败，请查看应用日志", 500,

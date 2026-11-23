@@ -3959,6 +3959,374 @@ def test_online_resolve_cache_isolated_by_auth_context(monkeypatch):
         "属于旧账号的 token 在切换后必须被淘汰"
 
 
+# ---------- 在线播放加固(2026-11-23 用户报障:换网络出口后播不了) ----------
+
+class _FakeUpstream:
+    """open_upstream 用到的最小上游响应桩。"""
+
+    def __init__(self, status=206):
+        self.status_code = status
+        self.headers = {"Content-Type": "video/mp4"}
+        self.closed = False
+
+    def close(self):
+        self.closed = True
+
+
+def _isolate_online_stores(monkeypatch):
+    """token 表 / 解析缓存 / 重签缓存都用空表,不与其它用例串数据。"""
+    import online
+
+    monkeypatch.setattr(online, "_tokens", {})
+    monkeypatch.setattr(online, "_parse_cache", {})
+    monkeypatch.setattr(online, "_reissue_cache", {}, raising=False)
+
+
+def _stub_cdn(monkeypatch, status_for_url):
+    """按 URL 决定 CDN 回什么状态码;返回上游调用记录(URL 列表)。"""
+    import online
+
+    calls = []
+
+    def fake_get(url, headers=None, stream=None, timeout=None):
+        calls.append(url)
+        return _FakeUpstream(status_for_url(url))
+
+    monkeypatch.setattr(online.requests, "get", fake_get)
+    return calls
+
+
+def test_online_upstream_403_reissues_link_on_same_token(monkeypatch):
+    """CDN 对旧直链回 403 时,按当前网络重新解析并把新直链换到同一个 token 上。
+
+    回归(2026-11-23 用户报障「播放器没办法播放」):换网络出口后,解析缓存里的
+    直链与取流出口 IP 对不上,每次取流都 403→502;前端断流自恢复再打解析接口,
+    拿到的还是同一份缓存。现在取流撞 403 就重签一次:浏览器继续请求原 token URL,
+    第二跳已经在用新直链,无感恢复。
+    """
+    import online
+
+    source = "https://www.bilibili.com/video/BV1reissue1xT"
+    old_url = "https://upos-old.bilivideo.com/v.m4s?e=old"
+    new_url = "https://upos-new.bilivideo.com/v.m4s?e=new"
+    _isolate_online_stores(monkeypatch)
+    token = online._register(old_url, {}, source=source,
+                             track={"kind": "video", "label": "1080P"})
+    resolved = []
+
+    def fake_resolve_uncached(url):
+        resolved.append(url)
+        fresh = online._register(new_url, {}, source=url,
+                                 track={"kind": "video", "label": "1080P"})
+        return {"ok": True, "title": "fresh", "duration": 1,
+                "qualities": [{"label": "1080P", "height": 1080, "token": fresh}],
+                "audio": ""}
+
+    monkeypatch.setattr(online, "_resolve_uncached", fake_resolve_uncached)
+    calls = _stub_cdn(monkeypatch, lambda url: 403 if url == old_url else 206)
+
+    upstream, error = online.open_upstream(token, "bytes=0-1023")
+
+    assert error is None, "重签后必须拿到上游响应"
+    assert upstream.status_code == 206
+    assert resolved == [source], "撞 403 必须按原视频链接重新解析一次"
+    assert calls == [old_url, new_url], "恰好两跳:旧直链被拒,新直链成功"
+    assert online.lookup(token)["url"] == new_url, "同一个 token 必须已指向新直链"
+
+
+def test_online_upstream_403_without_matching_track_gives_up(monkeypatch):
+    """重新解析后找不到同一档位时不乱换(换档会让 Range 对不上字节),照旧回 502。"""
+    import online
+
+    source = "https://www.bilibili.com/video/BV1nomatch1xT"
+    old_url = "https://upos-old.bilivideo.com/v.m4s"
+    _isolate_online_stores(monkeypatch)
+    token = online._register(old_url, {}, source=source,
+                             track={"kind": "video", "label": "1080P"})
+    other = online._register("https://upos-other.bilivideo.com/720.m4s", {},
+                             source=source, track={"kind": "video", "label": "720P"})
+    monkeypatch.setattr(online, "_resolve_uncached", lambda url: {
+        "ok": True, "qualities": [{"label": "720P", "height": 720, "token": other}],
+        "audio": ""})
+    calls = _stub_cdn(monkeypatch, lambda url: 403)
+
+    upstream, error = online.open_upstream(token, None)
+
+    assert upstream is None
+    assert error == ("上游拒绝了这个播放地址", "upstream_rejected")
+    assert calls == [old_url], "没有可换的直链就不再发第二跳"
+    assert online.lookup(token)["url"] == old_url, "token 不得指向别的档位"
+
+
+def test_online_upstream_403_after_reissue_stops_at_one_retry(monkeypatch):
+    """重签后的新直链仍被拒就如实回 502,不无限重签。"""
+    import online
+
+    source = "https://www.bilibili.com/video/BV1retry1xTst"
+    old_url = "https://upos-old.bilivideo.com/v.m4s"
+    new_url = "https://upos-new.bilivideo.com/v.m4s"
+    _isolate_online_stores(monkeypatch)
+    token = online._register(old_url, {}, source=source,
+                             track={"kind": "video", "label": "1080P"})
+    resolved = []
+
+    def fake_resolve_uncached(url):
+        resolved.append(url)
+        fresh = online._register(new_url, {}, source=url,
+                                 track={"kind": "video", "label": "1080P"})
+        return {"ok": True, "qualities": [{"label": "1080P", "height": 1080,
+                                           "token": fresh}], "audio": ""}
+
+    monkeypatch.setattr(online, "_resolve_uncached", fake_resolve_uncached)
+    calls = _stub_cdn(monkeypatch, lambda url: 403)
+
+    upstream, error = online.open_upstream(token, None)
+
+    assert upstream is None
+    assert error == ("上游拒绝了这个播放地址", "upstream_rejected")
+    assert calls == [old_url, new_url], "只重试一跳"
+    assert len(resolved) == 1, "只重新解析一次"
+
+
+def test_online_upstream_403_reissues_video_and_audio_with_one_resolve(monkeypatch):
+    """同一视频的音视频两轨同时撞 403 只重新解析一次(每次解析都是上游请求)。"""
+    import online
+
+    source = "https://www.bilibili.com/video/BV1bothtrk1xT"
+    old_v = "https://upos-old.bilivideo.com/v.m4s"
+    old_a = "https://upos-old.bilivideo.com/a.m4s"
+    new_v = "https://upos-new.bilivideo.com/v.m4s"
+    new_a = "https://upos-new.bilivideo.com/a.m4s"
+    _isolate_online_stores(monkeypatch)
+    v_tok = online._register(old_v, {}, source=source,
+                             track={"kind": "video", "label": "1080P"})
+    a_tok = online._register(old_a, {}, source=source, track={"kind": "audio"})
+    resolved = []
+
+    def fake_resolve_uncached(url):
+        resolved.append(url)
+        fresh_v = online._register(new_v, {}, source=url,
+                                   track={"kind": "video", "label": "1080P"})
+        fresh_a = online._register(new_a, {}, source=url, track={"kind": "audio"})
+        return {"ok": True, "qualities": [{"label": "1080P", "height": 1080,
+                                           "token": fresh_v}], "audio": fresh_a}
+
+    monkeypatch.setattr(online, "_resolve_uncached", fake_resolve_uncached)
+    rejected = {old_v, old_a}
+    calls = _stub_cdn(monkeypatch, lambda url: 403 if url in rejected else 206)
+
+    v_up, v_err = online.open_upstream(v_tok, None)
+    a_up, a_err = online.open_upstream(a_tok, None)
+
+    assert v_err is None and a_err is None
+    assert len(resolved) == 1, "两轨共用一次重新解析"
+    assert online.lookup(v_tok)["url"] == new_v
+    assert online.lookup(a_tok)["url"] == new_a
+    assert calls == [old_v, new_v, old_a, new_a]
+
+
+def test_online_resolve_uncached_skips_stale_cache_and_refreshes_it(monkeypatch):
+    """重签必须绕过 10 分钟解析缓存(缓存里就是作废的旧直链),并把缓存换成新结果:
+    前端断流自恢复再打解析接口时才拿得到新直链。"""
+    import online
+    import bilibili_auth
+
+    source = "https://www.bilibili.com/video/BV1uncached1xT"
+    ctx = {"authenticated": True, "source": "qr", "fingerprint": "a" * 64,
+           "incarnation": "9" * 32, "generation": 1}
+    _isolate_online_stores(monkeypatch)
+    stale = {"ok": True, "qualities": [{"label": "1080P", "token": "stale"}],
+             "audio": ""}
+    online._parse_cache[(online._context_key_of(ctx), source)] = {
+        "payload": stale, "expires": time.time() + 999}
+    monkeypatch.setattr(bilibili_auth, "get_auth_snapshot",
+                        lambda: (dict(ctx), object()))
+    seen = []
+
+    def fake_api(url):
+        seen.append(url)
+        return {"ok": True, "title": "fresh",
+                "qualities": [{"label": "1080P", "token": "fresh"}], "audio": ""}
+
+    monkeypatch.setattr(online, "_resolve_via_api", fake_api)
+
+    payload = online._resolve_uncached(source)
+
+    assert seen == [source], "重签不得命中旧缓存"
+    assert payload["qualities"][0]["token"] == "fresh"
+    cached = online._parse_cache[(online._context_key_of(ctx), source)]
+    assert cached["payload"]["qualities"][0]["token"] == "fresh", (
+        "解析缓存必须同步换成新直链")
+
+
+def test_online_upstream_failure_log_names_host_without_signed_query(monkeypatch, caplog):
+    """上游失败日志要带 CDN 主机名(定位是哪族节点在拒),但不得把直链的签名与
+    账号参数写进日志(日志随用户机器留存,不该落 mid/buvid)。"""
+    import logging
+    import online
+
+    host = "upos-hz-mirrorakam.akamaized.net"
+    signed = ("https://" + host + "/upgcxcode/v.m4s"
+              "?e=ig8euxZM2rNc&oi=2260952409&mid=2974547&buvid=ABC-infoc")
+    _isolate_online_stores(monkeypatch)
+    token = online._register(signed, {})
+    _stub_cdn(monkeypatch, lambda url: 403)
+
+    with caplog.at_level(logging.WARNING, logger="bd.online"):
+        online.open_upstream(token, None)
+
+    assert host in caplog.text and "403" in caplog.text, "403 日志要写出主机名"
+    assert ("mid=2974547" not in caplog.text and "buvid=" not in caplog.text
+            and "e=ig8" not in caplog.text), "403 日志不得带直链查询串"
+
+    caplog.clear()
+
+    def boom(url, headers=None, stream=None, timeout=None):
+        raise online.requests.exceptions.ConnectionError(
+            "HTTPSConnectionPool(host='" + host + "', port=443): Max retries "
+            "exceeded with url: /upgcxcode/v.m4s?e=ig8euxZM2rNc&oi=2260952409"
+            "&mid=2974547&buvid=ABC-infoc (Caused by SSLError(SSLEOFError(8, "
+            "'[SSL: UNEXPECTED_EOF_WHILE_READING] EOF occurred'))")
+
+    monkeypatch.setattr(online.requests, "get", boom)
+
+    with caplog.at_level(logging.WARNING, logger="bd.online"):
+        upstream, error = online.open_upstream(token, None)
+
+    assert upstream is None
+    assert error == ("上游请求失败", "upstream_error")
+    assert host in caplog.text, "连接失败也要写出主机名"
+    assert ("mid=2974547" not in caplog.text and "buvid=" not in caplog.text
+            and "e=ig8" not in caplog.text), "连接失败日志不得带直链查询串"
+
+
+def test_online_resolve_reports_unavailable_video_as_typed_error(monkeypatch):
+    """已删除/地区限制的视频不再裸抛 RuntimeError(→500 + 整段 traceback),而是抛
+    带明确含义的 VideoUnavailableError,由路由翻成友好提示。"""
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: None)
+
+    def gone(url, context=None):
+        raise RuntimeError(
+            "解析失败:ERROR: [BiliBili] 1gone1xTst: This video may be deleted or "
+            "geo-restricted. You might want to try a VPN or a proxy server "
+            "(with --proxy)")
+
+    monkeypatch.setattr(parsing, "parse_video_with_info", gone)
+    with pytest.raises(online.VideoUnavailableError) as caught:
+        online.resolve("https://www.bilibili.com/video/BV1gone1xTst")
+    assert "地区" in str(caught.value), "提示要说清「失效或所在地区不可播放」"
+
+
+def test_online_resolve_keeps_other_parse_errors_as_runtime_error(monkeypatch):
+    """只归类「视频不可播」;网络/风控等其它解析失败仍按原样抛,不混为一谈。"""
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: None)
+
+    def broken(url, context=None):
+        raise RuntimeError("解析失败:ERROR: [BiliBili] 1broken1xTst: Unable to "
+                           "download webpage")
+
+    monkeypatch.setattr(parsing, "parse_video_with_info", broken)
+    with pytest.raises(RuntimeError) as caught:
+        online.resolve("https://www.bilibili.com/video/BV1broken1xTst")
+    assert not isinstance(caught.value, online.VideoUnavailableError)
+
+
+def test_online_resolve_reports_missing_video_as_typed_error(monkeypatch):
+    """BV 号本身不存在(稿件被删后卡片还在列表里):yt-dlp 报的是提取器内部错误
+    (caused by KeyError('bvid')),同属「视频不可播」,不得落成 500。"""
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: None)
+
+    def missing(url, context=None):
+        raise RuntimeError(
+            "解析失败:ERROR: 1AAAAAAAAA: An extractor error has occurred. "
+            "(caused by KeyError('bvid')); please report this issue on")
+
+    monkeypatch.setattr(parsing, "parse_video_with_info", missing)
+    with pytest.raises(online.VideoUnavailableError):
+        online.resolve("https://www.bilibili.com/video/BV1AAAAAAAAA")
+
+
+def test_online_qualities_unavailable_video_is_friendly_404(client, monkeypatch):
+    """路由把「视频不可播」翻成 404 + video_unavailable,而不是 500 internal_error。"""
+    import online
+
+    def gone(url):
+        raise online.VideoUnavailableError(
+            "这个视频已失效,或在你当前网络所在的地区不可播放")
+
+    monkeypatch.setattr(online, "resolve", gone)
+    r = client.get("/api/online/qualities",
+                   query_string={"url": "https://www.bilibili.com/video/BV1gone1xTst"})
+    assert r.status_code == 404
+    body = r.get_json()
+    assert body["code"] == "video_unavailable"
+    assert "地区" in body["error"]
+
+
+
+
+def test_online_fast_path_token_survives_cdn_403_through_real_reissue(monkeypatch):
+    """端到端(不打桩重签内部函数):直连快速路径签发的 token 被 CDN 拒绝后,
+    走真实重签链路换到新直链;音轨复用同一份重签结果;解析缓存同步换新。"""
+    import online
+    import bilibili_api as bapi
+
+    source = "https://www.bilibili.com/video/BV1e2e4031xTst"
+    _isolate_online_stores(monkeypatch)
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: {
+        "bvid": bvid, "cid": 7, "title": "t", "duration": 10,
+        "pages": [{"page": 1, "cid": 7, "duration": 10}]})
+    playurl_calls = []
+
+    def fake_playurl(bvid, cid, *, context=None):
+        playurl_calls.append(cid)
+        # 第一次解析给旧直链(已被 CDN 作废),重签给新直链
+        host = "upos-old" if len(playurl_calls) == 1 else "upos-new"
+        return {"dash": {
+            "video": [
+                {"id": 116, "height": 1080, "bandwidth": 3000000,
+                 "baseUrl": "https://" + host + ".bilivideo.com/v116.m4s"},
+                {"id": 80, "height": 1080, "bandwidth": 1000000,
+                 "baseUrl": "https://" + host + ".bilivideo.com/v80.m4s"},
+            ],
+            "audio": [{"id": 30280, "bandwidth": 320000,
+                       "baseUrl": "https://" + host + ".bilivideo.com/a.m4s"}]}}
+
+    monkeypatch.setattr(bapi, "fetch_playurl", fake_playurl)
+    _stub_cdn(monkeypatch, lambda url: 403 if "upos-old" in url else 206)
+
+    payload = online.resolve(source)
+    hd = payload["qualities"][0]
+    assert hd["label"] == "1080P60"
+    upstream, error = online.open_upstream(hd["token"], None)
+    assert error is None and upstream.status_code == 206, "重签后应拿到新直链的响应"
+    assert online.lookup(hd["token"])["url"] == "https://upos-new.bilivideo.com/v116.m4s", (
+        "同一个 token 必须已指向重签出的同档位新直链")
+
+    audio_up, audio_err = online.open_upstream(payload["audio"], None)
+    assert audio_err is None
+    assert online.lookup(payload["audio"])["url"] == "https://upos-new.bilivideo.com/a.m4s"
+    assert len(playurl_calls) == 2, "首次解析一次 + 重签一次;音轨重签复用同一份结果"
+
+    cached = next(iter(online._parse_cache.values()))["payload"]
+    assert online.lookup(cached["qualities"][0]["token"])["url"].startswith(
+        "https://upos-new."), "解析缓存必须同步换成新直链"
+
+
+
+
 # ---------- 卡片封面布局 / 关注 / 滑条 ----------
 
 def test_cover_layout_play_bottom_right_stats_bottom_left():
