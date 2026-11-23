@@ -197,12 +197,16 @@ def scan_text(root: Path, keywords: list[str],
     return problems
 
 
-# 上游 Python 运行时与第三方动态库:里面嵌的是 CPython / 依赖自己的构建机
-# 路径(python.org 发行版里就是 /Users/nad),与开发者无关,不能算泄露。
-# 不豁免的话,CI 上每个 mac 包都会因为这条误判失败(2026-11-22 实测)。
+# 上游二进制与运行时豁免(2026-11-23 审查,遗留项 18 收窄):里面嵌的是
+# CPython/依赖/ffmpeg 自己的构建机路径(python.org 发行版里就是 /Users/nad),
+# 与开发者无关,不能算泄露。不豁免的话,CI 上每个 mac 包都会因为这条误判
+# 失败(2026-11-22 实测)。豁免按「上游特征」判定——后缀(.so/.dylib/.pyd)、
+# 运行时目录(frameworks/、python.framework)、内置 ffmpeg/ffprobe——不再按
+# _internal/ 位置整体豁免:PyInstaller 6+ onedir 把我们自己的代码与静态资源
+# 也放 _internal/,整体跳过等于对 bundle 主体失明。
 BINARY_SKIP_MARKERS = (
     "frameworks/", "contents/resources/python", "python.framework",
-    "_internal/", ".dylib", ".so", ".pyd", "/_internal",
+    ".dylib", ".so", ".pyd", "ffmpeg", "ffprobe",
 )
 
 

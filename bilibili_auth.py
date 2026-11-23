@@ -66,6 +66,44 @@ def _qr_cookie_file() -> Path:
     return SESSION_COOKIE_FILE.with_name("qr-cookies.txt")
 
 
+def _qr_cookie_export_file(context: dict) -> Path:
+    # 2026-11-23 审查(遗留项 20):按上下文版本命名的专属导出文件。
+    # 重登/换代(_write_state_and_commit_locked 同 incarnation 内 generation+1)
+    # 产生新文件——进行中的旧 yt-dlp 初始化所持有的路径永不被新登录覆盖。
+    # incarnation 在 _make_context 已归一为 32 位 hex,这里仍防御性清洗。
+    inc = re.sub(r"[^0-9a-f]", "", str(context.get("incarnation") or ""))[:32]
+    try:
+        gen = max(0, int(context.get("generation", 0) or 0))
+    except (TypeError, ValueError):
+        gen = 0
+    return SESSION_COOKIE_FILE.with_name(f"qr-cookies-{inc or 'unknown'}-{gen}.txt")
+
+
+def _qr_export_files() -> list:
+    # 全部 QR 导出:共享旧名 + 按上下文命名的新文件。logout/save_session/
+    # clear_session 据此整体清理;glob 只匹配 qr-cookies*,绝不碰用户导入
+    # 的 COOKIE_FILE。
+    exports = [SESSION_COOKIE_FILE.with_name("qr-cookies.txt")]
+    try:
+        exports.extend(sorted(SESSION_COOKIE_FILE.parent.glob("qr-cookies-*.txt")))
+    except OSError:
+        pass
+    return exports
+
+
+def _context_is_current_without_relock(context) -> bool:
+    # get_ytdlp_cookie_arg 的当前性检查:get_cookiejar 持 _session_lock 调入
+    # 本函数(不可再 acquire 同一把非重入锁),其余调用方无锁。缓存温热时只做
+    # 内存比较(与 _is_auth_context_current_locked 同语义);冷缓存才走加锁
+    # 正式路径——get_cookiejar 调用前必先经 _is_auth_context_current_locked
+    # 预热缓存,加锁路径不会在持锁状态下触发(否则死锁)。
+    path = _auth_state_file()
+    if (_auth_state_cache["path"] == path
+            and isinstance(_auth_state_cache["context"], dict)):
+        return _same_context(_auth_state_cache["context"], context)
+    return is_auth_context_current(context)
+
+
 def _account_fingerprint(identifier) -> str:
     raw = str(identifier or "").strip()
     if not raw:
@@ -226,7 +264,8 @@ def _get_auth_context_locked() -> dict:
         # 缺失、损坏或不可恢复的状态开启全新 incarnation；旧 generation
         # 不再具有全局意义，不能据此重新认领历史缓存目录。
         context = _legacy_context()
-    if needs_write and not storage.write_json(path, context, indent=1):
+    if needs_write and not storage.write_json(path, context, indent=1,
+                                              mode=0o600):
         raise RuntimeError("认证上下文初始化失败:状态未写入磁盘")
 
     _auth_state_cache.update(path=path, context=context)
@@ -287,7 +326,8 @@ def _write_state_and_commit_locked(current: dict, source: str, *, identifier="")
         candidate = _make_context(
             source, int(live["generation"]) + 1,
             incarnation=live["incarnation"], identifier=identifier)
-        if not storage.write_json(_auth_state_file(), candidate, indent=1):
+        if not storage.write_json(_auth_state_file(), candidate, indent=1,
+                                  mode=0o600):
             return None
         _auth_state_cache.update(path=_auth_state_file(), context=candidate)
         _cj_cache = {"cj": None, "ts": 0.0, "context": None}
@@ -299,13 +339,17 @@ def _reset_identity_data_caches() -> None:
     bilibili_api.reset_data_caches()
 
 
-def _atomic_write_bytes(path: Path, payload: bytes) -> bool:
+def _atomic_write_bytes(path: Path, payload: bytes, mode=None) -> bool:
     # 唯一临时名:固定 .tmp 名在并发写(解析线程写 qr-cookies.txt ×
     # cookiejar 刷新)时会被另一线程的 os.replace 搬走半截文件。
     # uuid candidate 模式与 pagecache.save 同款。
     tmp = path.with_name(f"{path.name}.{uuid.uuid4().hex}.tmp")
     try:
         tmp.write_bytes(payload)
+        # mode:凭据文件在 replace 前收紧临时文件权限(遗留项 23,POSIX only,
+        # 存量文件不追溯)。
+        if mode is not None and os.name == "posix":
+            os.chmod(tmp, int(mode))
         os.replace(tmp, path)
         return True
     except Exception:
@@ -317,8 +361,8 @@ def _atomic_write_bytes(path: Path, payload: bytes) -> bool:
         return False
 
 
-def _atomic_write_text(path: Path, text: str) -> bool:
-    return _atomic_write_bytes(path, text.encode("utf-8"))
+def _atomic_write_text(path: Path, text: str, mode=None) -> bool:
+    return _atomic_write_bytes(path, text.encode("utf-8"), mode=mode)
 
 
 def _restore_file(path: Path, previous: Optional[bytes]) -> None:
@@ -327,7 +371,7 @@ def _restore_file(path: Path, previous: Optional[bytes]) -> None:
             path.unlink(missing_ok=True)
         except OSError:
             log.exception("回滚删除 %s 失败", path)
-    elif not _atomic_write_bytes(path, previous):
+    elif not _atomic_write_bytes(path, previous, mode=0o600):
         log.error("回滚凭据文件 %s 失败", path)
 
 
@@ -407,7 +451,7 @@ def save_session(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> bo
         current = get_auth_context()
         if not storage.write_json(SESSION_COOKIE_FILE, {
                 "SESSDATA": sessdata, "DedeUserID": str(dede_userid or ""),
-                "bili_jct": str(bili_jct or "")}, indent=1):
+                "bili_jct": str(bili_jct or "")}, indent=1, mode=0o600):
             return False
         candidate = _write_state_and_commit_locked(
             current, "qr", identifier=str(dede_userid or ""))
@@ -415,7 +459,8 @@ def save_session(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> bo
             _restore_file(SESSION_COOKIE_FILE, previous)
             return False
         try:
-            _qr_cookie_file().unlink(missing_ok=True)
+            for export in _qr_export_files():
+                export.unlink(missing_ok=True)
         except OSError:
             log.exception("清理旧 QR cookie 导出失败")
     _reset_identity_data_caches()
@@ -435,7 +480,8 @@ def clear_session() -> None:
         old_session = _read_bytes_or_none(SESSION_COOKIE_FILE)
         try:
             SESSION_COOKIE_FILE.unlink(missing_ok=True)
-            _qr_cookie_file().unlink(missing_ok=True)
+            for export in _qr_export_files():
+                export.unlink(missing_ok=True)
         except OSError as exc:
             _restore_file(SESSION_COOKIE_FILE, old_session)
             raise RuntimeError(f"清理扫码凭据失败:{exc}") from exc
@@ -460,7 +506,7 @@ def import_cookies_txt(text: str) -> bool:
     with _switch_lock:
         current = get_auth_context()
         previous = _read_bytes_or_none(COOKIE_FILE)
-        if not _atomic_write_text(COOKIE_FILE, text):
+        if not _atomic_write_text(COOKIE_FILE, text, mode=0o600):
             return False
         identifier = _cookie_value_from_text(text, "DedeUserID")
         if _write_state_and_commit_locked(current, "cookie_file",
@@ -483,7 +529,7 @@ def select_browser() -> bool:
 
 def logout() -> bool:
     """删除 QR/导入/QR 导出凭据并持久化选择 none。"""
-    paths = (SESSION_COOKIE_FILE, COOKIE_FILE, _qr_cookie_file())
+    paths = (SESSION_COOKIE_FILE, COOKIE_FILE, *_qr_export_files())
     with _switch_lock:
         current = get_auth_context()
         previous = {path: _read_bytes_or_none(path) for path in paths}
@@ -503,7 +549,8 @@ def logout() -> bool:
     return True
 
 
-def write_cookies_txt(sessdata: str, dede_userid: str = "", bili_jct: str = "") -> None:
+def write_cookies_txt(sessdata: str, dede_userid: str = "", bili_jct: str = "",
+                      target: Optional[Path] = None) -> None:
     """把 QR 凭据导出到独立 Netscape 文件，供 yt-dlp 使用。"""
     lines = [
         "# Netscape HTTP Cookie File",
@@ -514,7 +561,8 @@ def write_cookies_txt(sessdata: str, dede_userid: str = "", bili_jct: str = "") 
         lines.append(f".bilibili.com\tTRUE\t/\tFALSE\t0\tDedeUserID\t{dede_userid}")
     if bili_jct:
         lines.append(f".bilibili.com\tTRUE\t/\tFALSE\t0\tbili_jct\t{bili_jct}")
-    if not _atomic_write_text(_qr_cookie_file(), "\n".join(lines) + "\n"):
+    if not _atomic_write_text(target or _qr_cookie_file(), "\n".join(lines) + "\n",
+                              mode=0o600):
         raise RuntimeError("QR Cookie 导出失败")
 
 
@@ -523,12 +571,24 @@ def get_ytdlp_cookie_arg(context: Optional[dict] = None) -> dict:
     context = dict(context) if isinstance(context, dict) else get_auth_context()
     source = context.get("source")
     if source == "qr":
+        # 2026-11-23 审查(遗留项 20):按调用方上下文导出,不再无视 context。
+        # 原实现把「当前」session 每次重写进共享固定路径:并发 yt-dlp 初始化
+        # 跨身份互写;重登后旧任务的下一次初始化还会拿到新账号的 Cookie。
+        # 上下文失效(登出/重登/换代)→ 匿名返回,与 get_cookiejar 对 stale
+        # 上下文返回 None 同一语义;当前上下文 → 导出到专属文件。
+        if not _context_is_current_without_relock(context):
+            return {}
         session = load_session()
         if not _valid_session(session):
             return {}
+        target = _qr_cookie_export_file(context)
         write_cookies_txt(session["SESSDATA"], session.get("DedeUserID", ""),
-                          session.get("bili_jct", ""))
-        return {"cookiefile": str(_qr_cookie_file())}
+                          session.get("bili_jct", ""), target=target)
+        if not _context_is_current_without_relock(context):
+            # 导出与返回的间隙发生切换:宁可匿名,也不把旧上下文名下的
+            # 新身份 Cookie 交出去。残留文件由 save_session/logout 清理。
+            return {}
+        return {"cookiefile": str(target)}
     if source == "cookie_file":
         return {"cookiefile": str(COOKIE_FILE)} if _valid_cookie_file(COOKIE_FILE) else {}
     if source == "browser":
@@ -560,7 +620,8 @@ def _upgrade_account_context(context: dict, identifier) -> bool:
             candidate = _make_context(
                 live["source"], int(live["generation"]) + 1,
                 incarnation=live["incarnation"], identifier=identifier)
-            if not storage.write_json(_auth_state_file(), candidate, indent=1):
+            if not storage.write_json(_auth_state_file(), candidate, indent=1,
+                                      mode=0o600):
                 log.error("认证账号 fingerprint 升级未能持久化")
                 return False
             global _cj_cache

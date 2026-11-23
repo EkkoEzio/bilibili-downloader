@@ -22,6 +22,7 @@ import secrets
 import threading
 import time
 from typing import Optional
+from urllib.parse import urlparse
 
 import requests
 
@@ -81,7 +82,35 @@ def _context_key_of(context) -> str:
     return repr(key) if key is not None else "anon"
 
 
+# token 化流代理只回源 B 站自家 CDN(2026-11-23 审查,遗留项 21)。
+# 既有防线是「前端拿不到 CDN URL」,但解析入口的来源判断只是一个子串检查,
+# 而 yt-dlp generic 提取器允许任意站点出 formats——token 代理会退化成
+# 任意 URL 读回(SSRF:回源内网与服务自身)。白名单与 B 站 playurl 实际
+# 下发的主机族对齐:bilivideo.com/.cn(主 CDN 与 PCDN)、akamaized.net
+# (海外回源)、szbdyd.com(网宿)、bilibili.com(少量接口形态)。
+_STREAM_HOST_SUFFIXES = ("bilibili.com", "bilivideo.com", "bilivideo.cn",
+                         "akamaized.net", "szbdyd.com")
+
+
+def stream_url_allowed(url: str) -> bool:
+    """精确判定一条 URL 是否可作为流代理的回源目标(供路由与注册共用)。"""
+    try:
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").lower()
+    except ValueError:
+        return False
+    if parsed.scheme not in ("http", "https"):
+        return False
+    return any(hostname == s or hostname.endswith("." + s)
+               for s in _STREAM_HOST_SUFFIXES)
+
+
 def _register(url: str, headers: dict, context=None) -> str:
+    if not stream_url_allowed(url):
+        # fail-loud:白名单外的 URL 一定不是 B 站 API 给的直链,宁可这一轨
+        # 播不了,也不把代理变成任意 URL 读回。
+        raise ValueError(
+            f"上游 URL 不在 B 站 CDN 白名单内: {urlparse(url).hostname}")
     token = secrets.token_urlsafe(24)
     now = time.time()
     with _lock:

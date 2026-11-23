@@ -18,13 +18,18 @@ log = logging.getLogger("bd.parsing")
 MAX_PLAYLIST_ITEMS = 100
 
 
-def _ydl_opts(extra: Optional[dict] = None) -> dict:
+def _ydl_opts(extra: Optional[dict] = None,
+              context: Optional[dict] = None) -> dict:
     """解析/下载共用的基础 opts:静默 + cookie + 限速(字节/秒,None 表示不限)。
+
+    context:调用方绑定的认证上下文(遗留项 20)。None 走环境当前上下文,
+    与旧行为一致;显式传入时 get_ytdlp_cookie_arg 对失效上下文返回匿名,
+    不再错拿「环境当前」身份的凭据。
 
     名字保持 _ydl_opts:downloader.py 再导出后,测试在 downloader 命名空间
     打补丁(monkeypatch.setattr(downloader, "_ydl_opts", ...))仍生效。"""
     opts = {"quiet": True, "no_warnings": True, "noprogress": True}
-    opts.update(get_ytdlp_cookie_arg())
+    opts.update(get_ytdlp_cookie_arg(context))
     rl = config.get_ratelimit_bytes()
     if rl is not None:
         opts["ratelimit"] = rl
@@ -75,11 +80,11 @@ def _extract_info(url: str, opts: dict, error_prefix: str) -> dict:
     return info
 
 
-def parse_video_with_info(url: str) -> tuple[dict, dict]:
+def parse_video_with_info(url: str, context: Optional[dict] = None) -> tuple[dict, dict]:
     """parse_video 但同时返回底层 yt-dlp info,供需要原始 formats(直链)
     的调用方一次解析两用。同 URL 连跑两遍 yt-dlp 是双倍秒级 CPU 开销,
     曾把同进程的其它接口拖慢(2026-11-17 搜索被预热解析堵 23s)。"""
-    opts = _ydl_opts({"skip_download": True})
+    opts = _ydl_opts({"skip_download": True}, context=context)
     info = _extract_info(url, opts, "解析失败")
 
     if info.get("_type") == "playlist":
@@ -118,29 +123,29 @@ def parse_video_with_info(url: str) -> tuple[dict, dict]:
     return {**summary, "is_multi_part": False, "parts": []}, info
 
 
-def parse_video(url: str) -> dict:
+def parse_video(url: str, context: Optional[dict] = None) -> dict:
     """解析单视频或多 P；坏分 P 被隔离，保留有效条目的原始页码。"""
-    summary, _info = parse_video_with_info(url)
+    summary, _info = parse_video_with_info(url, context=context)
     return summary
 
 
-def parse_part(url: str, page: int) -> dict:
+def parse_part(url: str, page: int, context: Optional[dict] = None) -> dict:
     """多 P 视频:解析指定分 P 的清晰度。"""
     part_url = url.split("?")[0] + f"?p={page}"
-    opts = _ydl_opts({"skip_download": True})
+    opts = _ydl_opts({"skip_download": True}, context=context)
     info = _extract_info(part_url, opts, "解析分 P 失败")
     summary = _summarize(info)
     summary["title"] = info.get("title", "")
     return summary
 
 
-def resolve_playlist(url: str) -> dict:
+def resolve_playlist(url: str, context: Optional[dict] = None) -> dict:
     """解析收藏夹/合集/UP主页；坏 entry 跳过，全部无效时明确失败。"""
     opts = _ydl_opts({
         "skip_download": True,
         "extract_flat": True,
         "playlistend": MAX_PLAYLIST_ITEMS + 1,
-    })
+    }, context=context)
     info = _extract_info(url, opts, "解析失败")
 
     items = []

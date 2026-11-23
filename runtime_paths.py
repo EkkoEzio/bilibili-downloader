@@ -81,7 +81,9 @@ def ensure_data_dir() -> Path:
     """
     target = data_dir()
     try:
-        target.mkdir(parents=True, exist_ok=True)
+        # 0700(2026-11-23 审查,遗留项 23):cookies/任务史/UP 清单全在这目录里,
+        # 新建时不给同机其他用户读权限;已存在目录不追溯(exist_ok 不改 mode)。
+        target.mkdir(parents=True, exist_ok=True, mode=0o700)
     except OSError:
         pass
     return target

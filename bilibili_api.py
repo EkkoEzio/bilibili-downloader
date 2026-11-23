@@ -474,6 +474,12 @@ def fetch_fav_folder_covers(folders, *, context=None) -> list[dict]:
                         covers.append(pic)
                     if len(covers) >= 9:
                         break
+            except UpstreamRateLimitError:
+                # 2026-11-23 审查(遗留项 22):单夹网络失败可以吞(单夹失败
+                # 不影响其他夹),但 412/429 是风控信号,吞掉后空封面会被
+                # 路由当成功写进 10 分钟缓存——限流期内用户只看到
+                # 「收藏夹没有封面」。如实上抛,交给 api_errors 回 429。
+                raise
             except Exception:
                 covers = []
         out.append({"id": fid, "covers": covers})

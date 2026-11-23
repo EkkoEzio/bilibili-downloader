@@ -10,6 +10,25 @@ import json
 import pytest
 
 
+def test_ensure_data_dir_creates_private_dir(tmp_path, monkeypatch):
+    """data 目录新创建时 0700:凭据(cookies/任务史/UP 清单)都在里面。
+
+    回归(2026-11-23 审查,遗留项 23):data/ 曾以默认 umask(0755)落地,
+    同机其他用户可读。只约束「新建」:已存在目录不追溯,不改变用户现有
+    权限(exist_ok 不会改 mode)。
+    """
+    import os as _os
+    import stat as _stat
+    import runtime_paths
+    if _os.name != "posix":
+        pytest.skip("权限收紧仅 POSIX")
+    target = tmp_path / "nested" / "data"
+    monkeypatch.setenv("BD_DATA_DIR", str(target))
+    assert runtime_paths.ensure_data_dir() == target
+    assert target.is_dir()
+    assert _stat.S_IMODE(target.stat().st_mode) == 0o700
+
+
 @pytest.fixture()
 def fresh_config(tmp_path, monkeypatch):
     import config as config_module

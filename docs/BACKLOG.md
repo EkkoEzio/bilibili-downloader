@@ -51,6 +51,24 @@
 
 ---
 
+## 2026-11-23 审查遗留项批次（16-27 全做，26 挂起）
+
+接 2026-11-23 qoder 批次（ad0acaf/73588ee）的遗留清单，12 项复核全部为真、无一撞「明确不做」，按序执行；26 挂起。测试 482 → 505。
+
+- **16 关注缓存跨账号**：follow.js 的关注状态 Map 在 auth:changed 时不清空，换号后旧账号的关注态顶着新账号显示；失败响应还会被整批缓存成「未关注」。补 clearAuthBoundCache() + 成功响应才写缓存的门。
+- **17 桌面退出 drain + 首轮追更**：quit_app 原先直接销毁窗口，运行中/排队任务既没写取消意图也没等静默；自动追更首轮先睡满一个间隔，长间隔配置下「打开应用半天不动」。新增 downloader.drain_for_shutdown()（复用删除路径静默屏障，超时放行不卡退出）+ 轮询改「跑→睡→跑」（启动即追更，预约与间隔语义不变）。
+- **18 打包扫描盲区**：产物扫描按 _internal/ 位置整体豁免，PyInstaller≥6 onedir 把自家代码与静态资源也放 _internal/，扫描层对 bundle 主体失明。豁免收窄为按上游特征（.so/.dylib/.pyd 后缀、frameworks/ 运行时、内置 ffmpeg/ffprobe），自家文件照常过文本层与二进制层。
+- **19 发版对账**：任意 v* tag 都触发构建但从不核对 VERSION，tag 打错会以错误版本号出包发布。release.yml 加第一道闸（tag 触发对 GITHUB_REF_NAME、手动触发对 version 输入——该输入原先从未被读取）；requirements-build.txt 的 >= 无事故证据，保留不收紧。
+- **20+23 QR Cookie 竞态 + 凭据权限**：get_ytdlp_cookie_arg 无视传入上下文，把「当前」session 每次重写进共享固定路径 qr-cookies.txt——并发 yt-dlp 初始化跨身份互写，重登后旧任务吃到新账号凭据；data/ 目录 0755、凭据文件 0644。改为按 (incarnation,generation) 命名的专属导出文件 + 失效上下文匿名返回（与 get_cookiejar 对 stale 的语义一致）+ save_session/logout/clear 整体清理；data/ 新建 0700、全部凭据写入 0600（POSIX，存量不追溯）。
+- **21 SSRF**：在线播放路由用子串判断来源（"bilibili.com" in url 挡不住 evil.com/?x=bilibili.com），yt-dlp generic 提取器又允许任意站点出 formats，token 化代理会退化成任意 URL 读回。改为 urlparse+hostname 白名单（路由与 online._register 双闸，覆盖 bilivideo.com/.cn、akamaized.net、szbdyd.com）。
+- **22 封面拼图吞限流**：fetch_fav_folder_covers 单夹 except Exception 把 412/429 一并吞掉，空封面被路由当成功写进 10 分钟缓存。限流 re-raise（api_errors 回 429 + Retry-After）。
+- **24 player.js 会话竞态**：applyPayload 只守 currentMode 不守会话归属，关掉立刻换视频时旧会话响应落地成新视频的档位与 token；解析请求无 AbortController；playOnlineAt 的 loadedmetadata 监听只增不减、旧 onReady 往新 src 上 seek。会话代号（每次打开递增）+ 会话级 abort + 监听先摘后挂；openOnlinePlayer 的 catch 分支补一次重发（被中止的预热 promise 落在这里）。
+- **25 search.js 跨页竞态**：落地检查只校验顶栏输入框的词不校验发起页，首页搜索响应落地时人已切页，结果铺进别的页（home 的 apply 写全局列表再渲染当前活动页）。轮次代号 + 发起页核对 + exitSearch 中止在途并作废轮次 + goPage 无条件 exitSearch。
+- **27 试点单测**：tests/js_runner/pilot_session_test.mjs（Node 原生 ESM + 手写最小 DOM 桩，零 npm 依赖）真实执行 player/search 模块，锁定两类「延迟响应落地」的会话归属行为；正是这个试点抓到静态断言漏掉的真漏洞——退出搜索态后迟到的结果会把搜索态重新打开（已随 25 修复）。
+- **26 挂起**（与 2026-11-14 批次「SSE 快照共享」同触发条件）：任务史 > 2000 时再做——进度推送改纯 progress patch，跳过 orderedTaskItems 只 updateTaskCard。
+
+---
+
 ## 2026-11-22 全量审查复核（16 条 → 做 14 条，伪需求已排除）
 
 用当日真实规模复核「全量审查代码与页面」产出的 16 条（任务史 ~13 条 / UP 清单 3 个 / 合集 2 个）：

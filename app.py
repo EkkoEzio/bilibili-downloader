@@ -605,7 +605,8 @@ def parse():
     body = _json_object()
     url = _string(body.get("url"), "url", required=True,
                   max_length=_MAX_URL_LENGTH)
-    info = downloader.parse_video(url)
+    ctx = _request_auth_context()
+    info = downloader.parse_video(url, context=ctx)
     status = auth.get_login_status()
     return jsonify({"ok": True, "info": info,
                     "logged_in": status.get("logged_in", False)})
@@ -620,7 +621,9 @@ def parse_part():
                   max_length=_MAX_URL_LENGTH)
     page = _integer(body.get("page"), "page", default=1,
                     minimum=1, maximum=1_000_000)
-    return jsonify({"ok": True, "info": downloader.parse_part(url, page)})
+    return jsonify({"ok": True,
+                    "info": downloader.parse_part(url, page,
+                                                  context=_request_auth_context())})
 
 
 @app.route("/api/download", methods=["POST"])
@@ -698,11 +701,12 @@ def batch_parse():
         urls = _string_list(urls_value, "urls", max_items=_MAX_BATCH_ITEMS,
                             item_max_length=_MAX_URL_LENGTH)
 
+    ctx = _request_auth_context()
     items = []
     if urls:
         for url in urls:
             try:
-                result = downloader.resolve_playlist(url)
+                result = downloader.resolve_playlist(url, context=ctx)
                 additions = result["items"]
             except UpstreamRateLimitError:
                 raise
@@ -718,7 +722,7 @@ def batch_parse():
                     f"累计解析结果超过 {_MAX_BATCH_ITEMS} 项，请分批处理")
             items.extend(additions)
     elif single_url:
-        result = downloader.resolve_playlist(single_url)
+        result = downloader.resolve_playlist(single_url, context=ctx)
         resolved = result.get("items") or []
         if len(resolved) > _MAX_BATCH_ITEMS:
             raise ApiError(400, "too_many_items",
@@ -1405,7 +1409,11 @@ def online_qualities():
     """
     url = _string(request.args.get("url"), "url", required=True,
                   max_length=_MAX_TEXT_LENGTH)
-    if "bilibili.com" not in url:
+    # 2026-11-23 审查(遗留项 21):子串检查挡不住 https://evil.com/?x=
+    # bilibili.com 一类绕过;generic 提取器又允许任意站点出 formats,下游
+    # token 代理会变成任意 URL 读回。改为 urlparse+hostname 白名单
+    # (与 online._register 同一份清单,双保险)。
+    if not online.stream_url_allowed(url):
         raise ApiError(400, "invalid_field", "只支持 B 站视频链接", field="url")
     payload = online.resolve(url)
     if not payload.get("qualities"):

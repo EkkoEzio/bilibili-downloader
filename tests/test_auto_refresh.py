@@ -708,7 +708,7 @@ def _run_poll_loop(monkeypatch, stop_after_sleeps: int):
 
 
 def test_start_loop_polls_periodically_in_daemon_thread(monkeypatch):
-    """后台轮询:守护线程里「睡够间隔 → 跑一轮 → 再睡」地周期触发。
+    """后台轮询:守护线程里「跑一轮 → 睡够间隔 → 再跑」地周期触发。
 
     Property 10: Preservation —— 单轮检查的执行语义(轮询侧)。
 
@@ -716,9 +716,14 @@ def test_start_loop_polls_periodically_in_daemon_thread(monkeypatch):
     「两个调用方都不需要改」(跳过时 refresh_once 仍返回 int 0,`if n:` 不打日志),
     这条就把那个前提钉住:轮询照旧调 refresh_once、照旧不因返回 0 而中断循环。
 
-    停在第 2 次 sleep 而不是第 1 次:第 2 次 sleep 发生只可能是「循环转回了
-    while 顶部」,这才是「周期性」的证据 —— 只验一次 sleep 无法区分
-    「循环」和「睡一次就退出」。
+    2026-11-23 审查(遗留项 17)把次序从「睡→跑→睡」改成「跑→睡→跑」:
+    首轮启动即追更,不再先睡满一个间隔——长间隔配置下,打开应用后最长要等
+    AUTO_REFRESH_MINUTES 分钟才有第一轮检查,像坏了。预约语义不变:仍经
+    run_refresh_with_status 的原子预约,不绕过。
+
+    停在第 2 次 sleep:此时必已经历「跑→睡→跑→睡」一整个周期——两轮
+    refresh 之间恰好隔一个 sleep,这才是「周期性 + 首轮立即」的证据。
+    只看 sleep 数无法区分「先跑后睡」和「先睡后跑」,必须数 refresh。
 
     daemon=True 也一并锁住:非守护线程会让 Ctrl+C 之后进程挂着不退。
 
@@ -728,10 +733,14 @@ def test_start_loop_polls_periodically_in_daemon_thread(monkeypatch):
 
     assert th.daemon is True, "轮询线程必须是守护线程,否则进程退不掉"
     assert th.name == "bd-auto-refresh", "线程名是排查现场的抓手,不要改"
+    assert refresh_calls == [1, 1], \
+        f"启动立即跑第一轮,睡够间隔后跑第二轮(桩逐次记 1),实际 {refresh_calls}"
     assert len(sleeps) == 2, \
-        f"应「睡→跑→睡」地循环,第 2 次 sleep 证明转回了 while 顶部,实际 {sleeps}"
-    assert refresh_calls == [1], \
-        f"每个间隔恰好触发一轮 refresh_once,实际调用 {len(refresh_calls)} 次"
+        f"两轮之间恰好睡一个间隔,不允许多睡少睡,实际 {sleeps}"
+    assert sleeps[0] == max(60, auto_refresh.config.AUTO_REFRESH_MINUTES * 60), \
+        "间隔取 max(60, config.AUTO_REFRESH_MINUTES * 60),运行时读配置(实时可调)"
+    assert auto_refresh.config.AUTO_REFRESH_MIN >= 10, \
+        "轮询间隔的配置下限不得放松(docs/COMPLIANCE.md 的对外承诺)"
     assert sleeps[0] == max(60, auto_refresh.config.AUTO_REFRESH_MINUTES * 60), \
         "间隔取 max(60, config.AUTO_REFRESH_MINUTES * 60),运行时读配置(实时可调)"
     assert auto_refresh.config.AUTO_REFRESH_MIN >= 10, \

@@ -446,6 +446,15 @@ def main() -> int:
             server.shutdown()
         except Exception:
             pass
+        # 2026-11-23 审查(遗留项 17):HTTP 已停、窗口未关,先给运行中/排队
+        # 任务一次有界 drain(写取消意图+等 worker 静默),避免退出把网络写入
+        # /文件重命名拦腰截断。超时或异常都放行——worker 是 daemon 线程,
+        # 遗留活跃态由启动恢复兜底,退出不能被卡住。
+        try:
+            from downloader import drain_for_shutdown
+            drain_for_shutdown()
+        except Exception:
+            pass
         try:
             window.destroy()
         except Exception:

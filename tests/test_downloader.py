@@ -1535,6 +1535,123 @@ def test_delete_running_task_still_waits_for_quiesce(monkeypatch, tmp_path):
         downloader._tasks.pop("r1", None)
 
 
+def test_drain_for_shutdown_finalizes_queued_task(monkeypatch, tmp_path):
+    """退出 drain:排队中(从未开始)的任务同步落成 cancelled 终态。
+
+    回归(2026-11-23 审查,遗留项 17):桌面退出原先在 server.shutdown() 后
+    直接销毁窗口,运行中/排队任务既不写取消意图也不等 worker 静默,网络
+    写入和文件重命名可能被退出拦腰截断。drain_for_shutdown 复用删除路径
+    的静默屏障 _quiesce_task_ids:排队作业按 cancel_active=True 语义在等待
+    之前就落 cancelled——worker 之后取到该作业只会空跑返回,不碰任何文件。
+    """
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    _mk_task("dq1", status="queued", cancel=False)
+    job = downloader._RuntimeJob(("dq1", "u", "l", [], 1))
+    try:
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs["dq1"] = job
+        downloader.drain_for_shutdown(timeout=0.3)
+        assert downloader._tasks["dq1"]["status"] == "cancelled", \
+            "退出 drain 必须把排队任务落成 cancelled 终态,而不是留给启动恢复"
+    finally:
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs.pop("dq1", None)
+        downloader._tasks.pop("dq1", None)
+
+
+def test_drain_for_shutdown_waits_running_task_quiesce(monkeypatch, tmp_path):
+    """退出 drain:运行中任务必须等 worker 静默(取消意图→终态)才放行。
+
+    与删除路径同一条不变量:quiesced 未置位时 drain 不返回。若 drain 提前
+    返回,退出就会把仍在写的文件拦腰截断——这正是 drain 存在的意义。
+    """
+    import concurrent.futures as _cf
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    _mk_task("dr1", status="downloading")
+    job = downloader._RuntimeJob(("dr1", "u", "l", [], 1))
+    job.started.set()  # worker 已进入执行
+    try:
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs["dr1"] = job
+        with _cf.ThreadPoolExecutor(max_workers=1) as pool:
+            fut = pool.submit(downloader.drain_for_shutdown, 5.0)
+            done = _cf.wait([fut], timeout=0.4).done
+            assert not done, "运行中任务的 drain 不允许在 worker 静默前返回"
+            # worker 收尾:落 cancelled 终态并静默
+            downloader._finalize_cancelled("dr1")
+            job.quiesced.set()
+            fut.result(timeout=5)
+        assert downloader._tasks["dr1"]["status"] == "cancelled"
+    finally:
+        job.quiesced.set()
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs.pop("dr1", None)
+        downloader._tasks.pop("dr1", None)
+
+
+def test_drain_for_shutdown_is_bounded(monkeypatch, tmp_path):
+    """退出 drain:预算内等不到静默必须按时放行,绝不卡住退出路径。
+
+    不变量:worker 是 daemon 线程,进程退出时随进程退场,遗留活跃态由
+    启动恢复改标 interrupted;drain 的预算只是给优雅收尾一次机会,超时
+    即放行。任务保持「取消已请求」的活动态原样,不删记录不伪装终态。
+    """
+    import time as _time
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    _mk_task("db1", status="downloading")
+    job = downloader._RuntimeJob(("db1", "u", "l", [], 1))
+    job.started.set()
+    try:
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs["db1"] = job
+        t0 = _time.monotonic()
+        downloader.drain_for_shutdown(timeout=0.2)
+        elapsed = _time.monotonic() - t0
+        assert elapsed < 2.0, f"超时后必须放行退出,实际阻塞 {elapsed:.2f}s"
+        assert downloader._tasks["db1"]["status"] in taskstore.ACTIVE, \
+            "超时未静默的任务保留原状(交启动恢复),不得删记录或伪装终态"
+    finally:
+        job.quiesced.set()
+        with downloader._runtime_jobs_lock:
+            downloader._runtime_jobs.pop("db1", None)
+        downloader._tasks.pop("db1", None)
+
+
+def test_ydl_opts_forwards_context_to_cookie_arg(monkeypatch):
+    """_ydl_opts 把调用方上下文原样交给 get_ytdlp_cookie_arg。
+
+    回归(2026-11-23 审查,遗留项 20):parsing.py 原先无条件
+    get_ytdlp_cookie_arg()——路由/解析线程绑定的上下文传不进来,
+    yt-dlp 初始化永远吃「环境当前」身份。透传后失效上下文才会走
+    匿名分支,而不是错拿新账号凭据。
+    """
+    import parsing
+    captured = []
+    monkeypatch.setattr(parsing, "get_ytdlp_cookie_arg",
+                        lambda ctx=None: captured.append(ctx) or {})
+    parsing._ydl_opts({"skip_download": True}, context={"source": "qr"})
+    parsing._ydl_opts()
+    assert captured == [{"source": "qr"}, None], \
+        "显式 context 必须透传;缺省 None(环境当前)语义保持"
+
+
+def test_parse_video_with_info_passes_context_down(monkeypatch):
+    """parse_video_with_info 接受并下传 context(调用方绑定身份的入口)。"""
+    import parsing
+    seen = []
+    monkeypatch.setattr(parsing, "_ydl_opts",
+                        lambda extra=None, context=None: seen.append(context) or {"quiet": True})
+    monkeypatch.setattr(parsing, "_extract_info",
+                        lambda url, opts, prefix: {"formats": [], "title": "t",
+                                                   "duration": 1, "thumbnail": ""})
+    parsing.parse_video_with_info("https://www.bilibili.com/video/BVx",
+                                  context={"source": "qr"})
+    assert seen == [{"source": "qr"}], "解析入口必须把 context 传到 _ydl_opts"
+
+
 def test_progress_hook_reset_discards_previous_attempt_state(monkeypatch):
     """重试前必须清空上一次尝试的流记账,否则重试会瞬间跳到 100%。
 

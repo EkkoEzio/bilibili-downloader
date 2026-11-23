@@ -55,6 +55,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # 2026-11-23 审查(遗留项 19):任意 v* tag 都会触发构建,但此前从不
+      # 对账 VERSION——tag 打错就会以错误版本号出包并发布。第一道闸:
+      # tag 触发时对 GITHUB_REF_NAME,手动触发时对 version 输入(原先从未
+      # 被读取);不一致直接 fail-fast,不烧三个平台的构建时长。
+      - name: 校验 tag 与 VERSION 一致
+        if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+        shell: bash
+        run: |
+          VER="$(cat VERSION | tr -d '[:space:]')"
+          EXPECTED="v${VER}"
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            ACTUAL="${GITHUB_REF_NAME}"
+          else
+            ACTUAL="${{ github.event.inputs.version }}"
+          fi
+          if [[ -z "${ACTUAL}" ]]; then
+            echo "手动触发未给 version 输入,以 VERSION 为准,跳过对账"
+            exit 0
+          fi
+          if [[ "${ACTUAL}" != "${EXPECTED}" ]]; then
+            echo "::error::版本不一致:触发标识 ${ACTUAL} 与 VERSION(${EXPECTED}) 不符"
+            exit 1
+          fi
+          echo "版本对账通过:${EXPECTED}"
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.13"

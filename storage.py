@@ -29,7 +29,8 @@ class JsonReadLimitError(RuntimeError):
         self.limit = int(limit)
 
 
-def write_json(path: Path, data: Any, *, indent: Optional[int] = None) -> bool:
+def write_json(path: Path, data: Any, *, indent: Optional[int] = None,
+               mode=None) -> bool:
     """原子写 JSON。成功返回 True；失败记日志、清临时文件并返回 False。
 
     allow_nan=False:NaN/Inf 是非法 JSON——Python 自己的 json.loads 虽然容忍,
@@ -42,6 +43,9 @@ def write_json(path: Path, data: Any, *, indent: Optional[int] = None) -> bool:
             tmp.write_text(json.dumps(data, ensure_ascii=False, indent=indent,
                                       allow_nan=False),
                            encoding="utf-8")
+            # mode:凭据文件在 replace 前收紧临时文件权限(遗留项 23,POSIX only)。
+            if mode is not None and os.name == "posix":
+                os.chmod(tmp, int(mode))
             os.replace(tmp, path)
             return True
         except Exception:

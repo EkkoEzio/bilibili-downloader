@@ -879,17 +879,21 @@ def start_loop() -> threading.Thread:
     global _scheduler_thread
 
     def loop():
+        # 2026-11-23 审查(遗留项 17):「跑→睡→跑」取代「睡→跑→睡」——
+        # 首轮启动即追更,不再先睡满一个间隔(长间隔配置下,打开应用后最长
+        # 要等 AUTO_REFRESH_MINUTES 分钟才有第一轮检查)。预约语义不变:
+        # 仍经 run_refresh_with_status 的原子预约;间隔仍在循环体内读 config。
         while True:
-            interval = max(60, config.AUTO_REFRESH_MINUTES * 60)
-            _update_status(next_run_at=int(time.time() + interval))
-            time.sleep(interval)
-            _update_status(next_run_at=None)
             try:
                 n = run_refresh_with_status("scheduled")
                 if n:
                     log.info("自动下载本轮入队 %d 条", n)
             except Exception:
                 log.exception("自动下载轮询异常")
+            interval = max(60, config.AUTO_REFRESH_MINUTES * 60)
+            _update_status(next_run_at=int(time.time() + interval))
+            time.sleep(interval)
+            _update_status(next_run_at=None)
 
     with _scheduler_lock:
         current = _scheduler_thread

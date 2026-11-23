@@ -26,6 +26,23 @@ def test_write_is_atomic_and_locked(tmp_path):
     assert not list(tmp_path.glob("*.tmp")), "不应残留临时文件"
 
 
+def test_write_json_mode_restricts_permissions(tmp_path):
+    """mode=0o600:凭据 JSON 在 replace 前就把临时文件收紧到 0600。
+
+    回归(2026-11-23 审查,遗留项 23):data/ 下 SESSION_COOKIE_FILE 与
+    auth-context.json 曾是 0644——凭据临时文件(os.replace 之前的 .tmp)
+    也在默认 umask 下落地。POSIX only,不给 mode 时行为不变(存量不追溯)。
+    """
+    import os as _os
+    import stat as _stat
+    if _os.name != "posix":
+        pytest.skip("权限收紧仅 POSIX")
+    f = tmp_path / "cred.json"
+    assert storage.write_json(f, {"SESSDATA": "x"}, mode=0o600) is True
+    assert _stat.S_IMODE(f.stat().st_mode) == 0o600
+    assert not list(tmp_path.glob("*.tmp")), "不应残留临时文件"
+
+
 def test_write_failure_logged_not_raised(tmp_path, monkeypatch):
     """写盘失败记日志、不抛——所有调用方都按『尽力写』语义设计。"""
     def boom(self, *a, **k):

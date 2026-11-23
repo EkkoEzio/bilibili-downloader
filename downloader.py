@@ -101,6 +101,9 @@ _workers: list[threading.Thread] = []
 _runtime_jobs_lock = threading.RLock()  # 兼作任务发布/registry 生命周期门
 _runtime_jobs: dict[str, _RuntimeJob] = {}
 DELETE_QUIESCE_TIMEOUT = 10.0
+# 退出 drain 的默认预算(2026-11-23 审查,遗留项 17):比交互式删除略短——
+# 给优雅收尾一次机会,但退出路径绝不能久等。
+SHUTDOWN_DRAIN_TIMEOUT = 8.0
 
 
 def _acquire_download_slot() -> None:
@@ -988,6 +991,40 @@ def clear_tasks(delete_file: bool) -> int:
     latest_ready = [task_id for task_id in ready
                     if (get_task(task_id) or {}).get("status") not in ACTIVE]
     return _store_delete_tasks(latest_ready, delete_file)
+
+
+def drain_for_shutdown(timeout: float | None = None) -> None:
+    """应用退出前对仍活跃的任务做一轮有界 drain(2026-11-23 审查,遗留项 17)。
+
+    桌面 quit_app 原先 server.shutdown() 后直接销毁窗口:运行中/排队任务既
+    不写取消意图也不等 worker 静默,退出瞬间可能把网络写入/文件重命名拦腰
+    截断,「取消中」也没机会落终态。这里复用删除路径的静默屏障
+    _quiesce_task_ids:durable 取消意图 → 排队作业同步落 cancelled →
+    按任务独立预算等静默。超时未静默的记日志放行——worker 是 daemon 线程
+    随进程退场,遗留活跃态由启动恢复改标 interrupted,退出路径绝不能被
+    无界等待卡住。
+    """
+    wait_budget = (SHUTDOWN_DRAIN_TIMEOUT if timeout is None
+                   else max(0.0, float(timeout)))
+    try:
+        ids = [task["task_id"] for task in list_tasks()
+               if task.get("status") in ACTIVE]
+    except Exception:
+        log.exception("退出 drain 收集活跃任务失败,直接放行退出")
+        return
+    if not ids:
+        return
+    try:
+        ready = _quiesce_task_ids(ids, cancel_active=True, timeout=wait_budget)
+    except Exception:
+        log.exception("退出 drain 等待静默失败,直接放行退出")
+        return
+    retained = len(ids) - len(ready)
+    if retained:
+        log.warning("退出 drain:%d 个任务未在 %.1fs 内静默,随进程退出",
+                    retained, wait_budget)
+    else:
+        log.info("退出 drain:%d 个活跃任务已全部静默", len(ids))
 
 
 def clean_invalid_records() -> dict:

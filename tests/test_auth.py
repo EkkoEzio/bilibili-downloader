@@ -127,6 +127,93 @@ def test_save_load_clear_session(tmp_path, monkeypatch):
     assert bilibili_auth.load_session() is None
 
 
+# ---------- 2026-11-23 审查(遗留项 20+23):QR 导出按上下文隔离 + 凭据权限 ----------
+
+def _reset_auth_caches():
+    with bilibili_auth._session_lock:
+        bilibili_auth._auth_state_cache.update(path=None, context=None)
+        bilibili_auth._cj_cache = {"cj": None, "ts": 0.0, "context": None}
+
+
+def test_ytdlp_cookie_arg_exports_per_context_file(tmp_path, monkeypatch):
+    """QR 导出文件按 (incarnation,generation) 命名,权限 0600。
+
+    回归:原实现无视传入 context,把「当前」session 每次重写进共享固定
+    路径 qr-cookies.txt——两个并发 yt-dlp 初始化跨身份互写同一文件,
+    重登后旧任务的下一次初始化还会拿到新账号的 Cookie。修复后每个
+    上下文版本写自己的专属文件;0600 是遗留项 23 的凭据权限要求。
+    """
+    from pathlib import Path as _Path
+    import stat as _stat
+    monkeypatch.setattr(bilibili_auth, "SESSION_COOKIE_FILE", tmp_path / "sess.json")
+    monkeypatch.setattr(bilibili_auth, "COOKIE_FILE", tmp_path / "cookies.txt")
+    _reset_auth_caches()
+    try:
+        assert bilibili_auth.save_session("SDATA", "123", "jct") is True
+        ctx = bilibili_auth.get_auth_context()
+        arg = bilibili_auth.get_ytdlp_cookie_arg(ctx)
+        assert "cookiefile" in arg, "qr 来源必须返回导出文件"
+        export = _Path(arg["cookiefile"])
+        assert export != tmp_path / "qr-cookies.txt", \
+            "不得再写共享固定路径——那正是并发互写的竞态现场"
+        assert export.name == f"qr-cookies-{ctx['incarnation']}-{ctx['generation']}.txt"
+        assert export.exists()
+        assert "SDATA" in export.read_text(encoding="utf-8")
+        assert _stat.S_IMODE(export.stat().st_mode) == 0o600, \
+            "导出文件是凭据,必须 0600(遗留项 23)"
+        arg2 = bilibili_auth.get_ytdlp_cookie_arg(ctx)
+        assert _Path(arg2["cookiefile"]) == export, \
+            "同上下文稳定复用同一路径(内容确定性,原子替换)"
+    finally:
+        _reset_auth_caches()
+
+
+def test_ytdlp_cookie_arg_stale_context_is_anonymous(tmp_path, monkeypatch):
+    """上下文失效(重登/换代/登出后)的调用方必须拿到匿名 {},不导出文件。
+
+    与 get_cookiejar 对 stale 上下文返回 None 同一语义:旧请求可以匿名
+    完成,但绝不能拿到新身份的 Cookie——原实现按「当前 session」导出,
+    旧任务换初始化时机就会吃到重登后的新账号凭据。
+    """
+    monkeypatch.setattr(bilibili_auth, "SESSION_COOKIE_FILE", tmp_path / "sess.json")
+    monkeypatch.setattr(bilibili_auth, "COOKIE_FILE", tmp_path / "cookies.txt")
+    _reset_auth_caches()
+    try:
+        assert bilibili_auth.save_session("SDATA", "123", "jct") is True
+        ctx = bilibili_auth.get_auth_context()
+        stale = dict(ctx)
+        stale["generation"] = int(ctx["generation"]) + 7
+        assert bilibili_auth.get_ytdlp_cookie_arg(stale) == {}
+        stale_target = tmp_path / (
+            f"qr-cookies-{ctx['incarnation']}-{int(ctx['generation']) + 7}.txt")
+        assert not stale_target.exists(), "失效上下文不得触发任何导出"
+        assert not (tmp_path / "qr-cookies.txt").exists(), \
+            "也不得回落写共享固定路径"
+    finally:
+        _reset_auth_caches()
+
+
+def test_save_session_prunes_previous_exports(tmp_path, monkeypatch):
+    """重登/换代时清掉上一代全部 QR 导出文件(生命周期清理)。
+
+    导出文件是凭据副本:上下文换代后旧文件属于死身份,留着只会在磁盘上
+    沉积凭据。save_session 原先只删共享名;按上下文命名后必须整体清理。
+    """
+    monkeypatch.setattr(bilibili_auth, "SESSION_COOKIE_FILE", tmp_path / "sess.json")
+    monkeypatch.setattr(bilibili_auth, "COOKIE_FILE", tmp_path / "cookies.txt")
+    legacy = tmp_path / "qr-cookies.txt"
+    stale_export = tmp_path / "qr-cookies-deadbeef-3.txt"
+    legacy.write_text("# old\n", encoding="utf-8")
+    stale_export.write_text("# old export\n", encoding="utf-8")
+    _reset_auth_caches()
+    try:
+        assert bilibili_auth.save_session("SDATA2", "456", "jct2") is True
+        assert not legacy.exists()
+        assert not stale_export.exists(), "换代必须清掉旧上下文的专属导出"
+    finally:
+        _reset_auth_caches()
+
+
 # ---------- 收藏夹内容(原生 /x/v3/fav/resource/list 接口) ----------
 
 class _Resp:
