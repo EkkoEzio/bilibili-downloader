@@ -10,3 +10,5 @@ dist/
 build/
 packaging/bin/
 .scan_keywords.local
+# 本地交接/笔记类文档:不入库(容易被发版脚本的 git add -A 带进去)
+交接提示词.md
