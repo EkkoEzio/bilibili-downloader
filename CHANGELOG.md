@@ -2,7 +2,7 @@
 
 所有版本的变更记录。版本遵循[语义化版本](https://semver.org/)。
 
-## [未发布]
+## [v2.11.0] - 2026-11-23
 ### ✨ 变更
 
 - **在线播放能自己恢复了（用户报障「播放器没办法播放」）**：B 站直链与签发时的网络出口绑定，换节点或换网络后，解析缓存里的直链会全部作废——表现就是「解析一切正常，点谁都播不了」。现在取流被 CDN 拒绝时，会按当前网络重新签发同一档位的新直链、透明重试一跳，浏览器继续请求同一个地址、无感恢复；重新解析后找不到同一档位就不乱换（换档等于换文件，进度会错位），重试仍失败才提示手动重开。
@@ -1024,6 +1024,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.11.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.11.0
 [v2.10.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.10.0
 [v2.9.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.9.0
 [v2.8.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.8.0
