@@ -147,6 +147,25 @@ def test_to_xml_escapes_and_counts():
     assert "&lt;b&gt;&amp;" in xml          # 转义生效
     assert xml.startswith("<?xml") and xml.rstrip().endswith("</i>")
     assert "普通弹幕" in xml
+    # p 第一位是秒(经典 XML 口径),progress_ms 是毫秒——必须换算,
+    # 否则 69.96s 的弹幕落在 69960s 处、整份弹幕不可见(2026-11-23 审查)。
+    import xml.etree.ElementTree as ET
+    root = ET.fromstring(xml)
+    stamps = [float(d.attrib["p"].split(",")[0]) for d in root.iter("d")]
+    assert stamps == [1.0, 2.0], f"XML 时间必须是秒,实际 {stamps}"
+
+
+def test_to_xml_sub_second_precision():
+    """毫秒级进度换算成秒保留三位小数:69960ms → 69.960s。"""
+    xml = extras.to_xml([
+        {"progress_ms": 69960, "mode": 1, "fontsize": 25, "color": 0xFFFFFF,
+         "ctime": 0, "mid_hash": "h", "text": "x", "id": 1, "weight": 0},
+        {"progress_ms": 95430, "mode": 1, "fontsize": 25, "color": 0xFFFFFF,
+         "ctime": 0, "mid_hash": "h", "text": "y", "id": 2, "weight": 0},
+    ])
+    assert '<d p="69.960,' in xml
+    assert '<d p="95.430,' in xml
+    assert "69960" not in xml and "95430" not in xml, "毫秒值不得原样进入 XML"
 
 
 # ---------- 保存流程(网络层打桩) ----------

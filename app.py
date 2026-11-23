@@ -54,6 +54,39 @@ logging.basicConfig(
 )
 log = logging.getLogger("bd.app")
 
+# 访问日志脱敏:扫码轮询 ?key= 与二维码图片 ?url=…qrcode_key= 会把「可换取
+# 会话的密钥」原样写进 app.log(2026-11-23 审查);/online/stream/<token> 的
+# 内存 token 也同理。werkzeug 访问日志统一在此过滤后,敏感值不再落盘。
+# 查询串在日志里可能是原始或 URL 编码形态(?qrcode_key= / %3Fqrcode_key%3D),
+# 两种都拦;值的边界是裸 &、%26、空白或引号。
+_LOG_SECRET_QUERY = re.compile(
+    r"((?:[?&]|%3[fF])(?:key|qrcode_key|sessdata|bili_jct|csrf|token)"
+    r"(?:=|%3[dD]))([^&\s\"]*?)(?=&|%26|[\s\"]|$)",
+    re.IGNORECASE)
+_LOG_STREAM_TOKEN = re.compile(r"(online/stream/)[A-Za-z0-9_-]+")
+
+
+def _redact_log_secrets(message: str) -> str:
+    message = _LOG_SECRET_QUERY.sub(r"\g<1><redacted>", message)
+    message = _LOG_STREAM_TOKEN.sub(r"\g<1><redacted>", message)
+    return message
+
+
+class _SecretRedactFilter(logging.Filter):
+    def filter(self, record):
+        try:
+            formatted = record.getMessage()
+        except Exception:
+            return True
+        redacted = _redact_log_secrets(formatted)
+        if redacted != formatted:
+            record.msg = redacted
+            record.args = None
+        return True
+
+
+logging.getLogger("werkzeug").addFilter(_SecretRedactFilter())
+
 # 打包后 templates/ 与 static/ 由 PyInstaller --add-data 注入 bundle。
 # Flask 默认按 __file__ 推 root_path,冻结态下 __file__ 落在 bundle 根,
 # 恰好能用——但 onefile(临时解压目录)与 onedir(bundle/_internal)的落点

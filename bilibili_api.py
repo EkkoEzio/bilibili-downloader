@@ -306,7 +306,7 @@ def fetch_watchlater(*, context=None) -> list[dict]:
     return out
 
 
-def fetch_video_view(bvid: str) -> Optional[dict]:
+def fetch_video_view(bvid: str, *, context=None) -> Optional[dict]:
     """view 接口:单视频的标题/时长/分 P cid。任何失败返回 None。
 
     在线播放解析的快速路径第一步:yt-dlp 完整提取一次要 2s+(秒级 CPU 大户),
@@ -314,7 +314,7 @@ def fetch_video_view(bvid: str) -> Optional[dict]:
     回落 yt-dlp,行为与旧路径一致。
     """
     try:
-        context, cookiejar = _auth_session(None)
+        context, cookiejar = _auth_session(context)
     except Exception:
         return None
     if cookiejar is None:
@@ -333,7 +333,7 @@ def fetch_video_view(bvid: str) -> Optional[dict]:
         return None
 
 
-def fetch_playurl(bvid: str, cid: int) -> Optional[dict]:
+def fetch_playurl(bvid: str, cid: int, *, context=None) -> Optional[dict]:
     """playurl 接口:按登录态返回 DASH 直链(与官方网页播放器同源)。
 
     未签名的历史端点对登录 Cookie 仍完整生效(2026-11-20 实测 code=0);
@@ -341,7 +341,7 @@ def fetch_playurl(bvid: str, cid: int) -> Optional[dict]:
     失败返回 None,调用方回落 yt-dlp。
     """
     try:
-        context, cookiejar = _auth_session(None)
+        context, cookiejar = _auth_session(context)
     except Exception:
         return None
     if cookiejar is None:
@@ -725,17 +725,24 @@ def _search_cache_put(key: str, data) -> None:
 
 
 def _search_raw(search_type: str, keyword: str, page: int = 1, *, context=None):
-    """走 WBI 签名的站内搜索。失败抛 UpstreamRateLimitError 或 RuntimeError。"""
-    # 缓存键必须绑定认证上下文:这是全模块「账号数据按 fingerprint +
-    # incarnation + generation 隔离」的最后一块拼图。否则切换账号后
-    # TTL 内会拿到旧账号 Cookie 拉到的搜索结果。
+    """走 WBI 签名的站内搜索。失败抛 UpstreamRateLimitError 或 RuntimeError。
+
+    全程使用调用方传入的同一认证快照:路由层在请求开始时就绑定了账号,
+    这里若自行重取,慢请求期间账号切换后会拿新账号 Cookie 打请求、却把
+    结果写进旧账号(或 anonymous)的缓存键(2026-11-23 审查)。"""
     ctx_key = _context_key(context) if context is not None else "anonymous"
     cache_key = f"{ctx_key}:{search_type}:{keyword}:{page}"
     cached = _search_cache_get(cache_key)
     if cached is not None:
         return cached
-    context, cookiejar = _auth_session()
-    ie = _get_wbi_ie(context)
+    if context is not None:
+        snapshot = dict(context)
+        _ensure_context_current(snapshot)
+        cookiejar = get_cookiejar(snapshot)
+        _ensure_context_current(snapshot)
+    else:
+        snapshot, cookiejar = _auth_session()
+    ie = _get_wbi_ie(snapshot)
     signed = ie._sign_wbi({
         "search_type": search_type,
         "keyword": keyword,
@@ -752,6 +759,9 @@ def _search_raw(search_type: str, keyword: str, page: int = 1, *, context=None):
         raise RuntimeError("搜索接口返回非 JSON 数据")
     if data.get("code") != 0:
         raise RuntimeError(data.get("message") or "搜索失败")
+    # 慢请求期间账号已切换:结果属于旧账号,不写缓存也不交给调用方,
+    # 让上层按 auth_context_changed 报错重试。
+    _ensure_context_current(snapshot)
     result = data.get("data") or {}
     if result:
         # 上游给空 data(疑似风控静默空)不缓存,让它每次都走真实请求。
@@ -766,7 +776,7 @@ def _strip_em(text: str) -> str:
 
 def search_videos(keyword: str, page: int = 1, *, context=None) -> list[dict]:
     """站内搜视频,返回与列表页一致的条目字段,可直接喂给同一套卡片渲染。"""
-    data = _search_raw("video", keyword, page)
+    data = _search_raw("video", keyword, page, context=context)
     items = []
     for raw in data.get("result") or []:
         bvid = raw.get("bvid") or ""
@@ -790,7 +800,7 @@ def search_videos(keyword: str, page: int = 1, *, context=None) -> list[dict]:
 
 def search_users(keyword: str, page: int = 1, *, context=None) -> list[dict]:
     """站内搜 UP 主,字段对齐「关注 UP」页的卡片。"""
-    data = _search_raw("bili_user", keyword, page)
+    data = _search_raw("bili_user", keyword, page, context=context)
     users = []
     for raw in data.get("result") or []:
         mid = _int_or_zero(raw.get("mid"))

@@ -249,7 +249,13 @@ def fetch_new(mid: int, last: Optional[dict] = None):
         first = bapi.fetch_up_videos(mid, ps=ps, pn=1)
         pages_used = 1
         if not first:
-            complete = True
+            # 续扫首页为空是暂时性故障/限流,不是「确认末页」。collected 里
+            # 还带着上一轮的 items,照样产生 newest;若在这里 complete=True,
+            # refresh_once 会提交头部游标并清除续扫状态,把未扫到的深页
+            # 永久漏掉(2026-11-23 审查)。保留续点,本轮不提交、不入队。
+            log.info("自动下载 %s:续扫首页为空(疑似限流),保留续扫点 pn=%s",
+                     mid, deep_next_pn)
+            return [], None
         else:
             observed_head = first[0] if isinstance(first[0], dict) else None
             old_head = (str(scan.get("head_bvid") or ""),
@@ -451,6 +457,34 @@ def _commit_complete_cursor(mid: int, newest: dict, new: list[dict]) -> None:
                           fetched_at=fetched_at)
 
 
+def _manual_active_blocks(fresh_urls: set[tuple[str, int]],
+                          tasks_snapshot: Optional[list[dict]]) -> bool:
+    """新稿 (url, page) 是否被**非自动**来源的活跃任务占用。
+
+    是则本轮暂缓提交游标/已见:非自动任务失败/取消后不进自动恢复集
+    (_retry_items / _collection_retry_items 只认 source=auto_refresh),
+    提交后该稿将永久漏。任务完成或删除后,下一轮 is_downloaded 或
+    让路逻辑自然放行,不会永久卡住。
+
+    占用判定覆盖全部非自动来源(手动、来源缺失的旧任务等);auto_refresh
+    来源的活跃任务不阻塞——它们有 durable outbox 恢复兜底。
+    """
+    if not fresh_urls:
+        return False
+    for task in tasks_snapshot or []:
+        if task.get("source") == "auto_refresh":
+            continue
+        if task.get("status") not in downloader.ACTIVE:
+            continue
+        key = (str(task.get("url") or ""), int(task.get("page") or 1))
+        if key not in fresh_urls:
+            continue
+        # 按 (url, page) 精确匹配,不按 mid:uploader_mid=0 的旧任务同样占位,
+        # 宁可晚一轮提交,不可漏稿(2026-11-23 复核:去掉未使用的 task_mid)。
+        return True
+    return False
+
+
 def is_running() -> bool:
     """是否已有一轮检查在跑。路由据此如实回报「本次未启动新一轮」(需求 2.10)。"""
     return _lock.locked()
@@ -597,7 +631,21 @@ def refresh_once() -> int:
                     for v in candidates
                 }
                 for task in tasks_snapshot or []:
-                    if task.get("status") not in ("failed", "interrupted"):
+                    status = task.get("status")
+                    if status in ("failed", "interrupted"):
+                        # 只有自动来源的失败/中断才占位:防止 fresh 以
+                        # auto_attempt=0 绕过退避(2026-11-22 体检实锤)。
+                        # 手动来源的失败/中断不占位——占位会挡住 fresh,
+                        # 而游标照常提交,该稿永久漏;放行 fresh 以 auto
+                        # 任务重建,由 durable outbox 兜底(2026-11-23 复查)。
+                        if task.get("source") != "auto_refresh":
+                            continue
+                    elif status in downloader.ACTIVE:
+                        # 非自动活跃任务占用同一 (url, page):新稿让路,游标
+                        # 下面也不推进(占用任务失败后不进自动恢复集)。
+                        if task.get("source") == "auto_refresh":
+                            continue
+                    else:
                         continue
                     if int(task.get("uploader_mid") or 0) != int(mid):
                         continue
@@ -622,7 +670,17 @@ def refresh_once() -> int:
                 if newest:
                     if newest.get("_scan_complete", True):
                         # 只有确认越过旧秒边界/到真实末页才推进 committed cursor。
-                        _commit_complete_cursor(mid, newest, new)
+                        # 新稿被非自动活跃任务占用时游标也不得推进:该任务失败/
+                        # 取消后不进自动恢复集,推进游标 = 该稿永久漏
+                        # (2026-11-23 审查)。留给下一轮;若占用任务完成,
+                        # is_downloaded 会放行提交。
+                        fresh_urls = {(str(v.get("url") or ""),
+                                       int(v.get("page") or 1)) for v in fresh}
+                        if _manual_active_blocks(fresh_urls, tasks_snapshot):
+                            log.info("自动下载 %s:新投稿已有手动任务在跑,"
+                                     "本轮暂不推进游标", up.get("uname") or mid)
+                        else:
+                            _commit_complete_cursor(mid, newest, new)
                     else:
                         up_list.save_scan_state(mid, newest["_scan_state"])
                         log.info("自动下载 %s:本轮达到 %d 页预算，已保存续扫点 pn=%s",
@@ -782,6 +840,12 @@ def _refresh_collection(coll: dict,
     pending = _collection_retry_items(items, tasks_snapshot=tasks_snapshot)
     occupied = {(str(v.get("url") or ""), int(v.get("page") or 1))
                 for v in pending}
+    # 全部**活跃**任务占用的条目都让路:重复创建会被任务层拒掉,徒劳一轮;
+    # 已见提交由下面的 _manual_active_blocks 统一暂缓(只对非自动来源)。
+    for task in tasks_snapshot or []:
+        if task.get("status") not in downloader.ACTIVE:
+            continue
+        occupied.add((str(task.get("url") or ""), int(task.get("page") or 1)))
     for video in candidates:
         key = (str(video.get("url") or ""), int(video.get("page") or 1))
         if key not in occupied:
@@ -796,8 +860,17 @@ def _refresh_collection(coll: dict,
     # 提交「本轮新出现的全部条目」而不是只提交入队的那批:已下载的也要标已见,
     # 否则每一轮都要为它们重新查一次是否已下载。无新增时这次提交只更新
     # checked_at,表示「本轮检查过」。
-    up_list.commit_collection_seen(kind, cid,
-                                   [it.get("bvid") for it in new_items])
+    # 例外:新条目被**非自动**活跃任务占用时不提交——合集没有时间游标,
+    # 已见一推进就不再回头,而占用任务失败后不进自动恢复集,提交即永久漏
+    # (2026-11-23 审查)。与 UP 订阅的游标暂缓同一语义。
+    fresh_keys = {(str(it["url"]), max(1, int(page_from_url(it["url"]))))
+                  for it in new_items if it.get("url")}
+    if _manual_active_blocks(fresh_keys, tasks_snapshot):
+        log.info("自动下载 %s:%s 新入库条目已有手动任务在跑,本轮暂不提交已见",
+                 kind, cid)
+    else:
+        up_list.commit_collection_seen(kind, cid,
+                                       [it.get("bvid") for it in new_items])
     return len(tids)
 
 

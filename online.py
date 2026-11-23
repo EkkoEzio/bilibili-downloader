@@ -26,6 +26,7 @@ from typing import Optional
 import requests
 
 import bilibili_api
+import bilibili_auth
 import parsing
 import quality
 from bilibili_auth import BROWSER_HEADERS
@@ -58,14 +59,35 @@ def _cleanup(now: float) -> None:
     for store in (_tokens, _parse_cache):
         for key in [k for k, v in store.items() if v.get("expires", 0) <= now]:
             store.pop(key, None)
+    # 认证已失效的 token 一并淘汰:token 里锁的是解析时的上游直链,切换
+    # 账号/登出后不该再被取用(2026-11-23 审查)。切换期间旧 token 只保留
+    # 到 TTL,不做强制全局清空,避免正在播的会话被硬断。
+    try:
+        current = bilibili_auth.get_auth_context()
+    except Exception:
+        return
+    for token, item in list(_tokens.items()):
+        ctx = item.get("context")
+        if ctx is not None and ctx != _context_key_of(current):
+            _tokens.pop(token, None)
 
 
-def _register(url: str, headers: dict) -> str:
+def _context_key_of(context) -> str:
+    """认证上下文的可比较键;无账号时给 "anon"。"""
+    try:
+        key = bilibili_api._context_key(context)
+    except Exception:
+        key = None
+    return repr(key) if key is not None else "anon"
+
+
+def _register(url: str, headers: dict, context=None) -> str:
     token = secrets.token_urlsafe(24)
     now = time.time()
     with _lock:
         _tokens[token] = {"url": url, "headers": headers, "created": now,
-                          "expires": now + TOKEN_TTL_SECONDS}
+                          "expires": now + TOKEN_TTL_SECONDS,
+                          "context": _context_key_of(context)}
     return token
 
 
@@ -144,7 +166,22 @@ def _resolve_via_api(url: str) -> Optional[dict]:
     yt-dlp 完整提取一次要 2.4-2.6s(2026-11-20 实测)且是进程级 CPU 大户,
     是在线起播等待的主因。这里任何失败(番剧/充电/风控/未登录/结构意外)都
     返回 None,由 resolve 回落到 yt-dlp,行为与旧路径完全一致。
+
+    全程使用同一认证快照:两个接口各取一次快照会在切换期间混合身份,
+    结果也可能属于已过期的旧账号(2026-11-23 审查)。
     """
+    try:
+        context, _cookiejar = bilibili_auth.get_auth_snapshot()
+    except Exception:
+        context = None
+    try:
+        return _resolve_via_api_with_context(url, context)
+    finally:
+        if context is not None:
+            bilibili_api._ensure_context_current(context)
+
+
+def _resolve_via_api_with_context(url: str, context) -> Optional[dict]:
     match = _BV_RE.search(url or "")
     if not match:
         return None
@@ -152,7 +189,7 @@ def _resolve_via_api(url: str) -> Optional[dict]:
     page_match = _PAGE_RE.search(url or "")
     page = int(page_match.group(1)) if page_match else 1
     try:
-        view = bilibili_api.fetch_video_view(bvid)
+        view = bilibili_api.fetch_video_view(bvid, context=context)
         if not view:
             return None
         pages = [p for p in (view.get("pages") or []) if isinstance(p, dict)]
@@ -165,7 +202,7 @@ def _resolve_via_api(url: str) -> Optional[dict]:
         if not cid:
             return None
 
-        playurl = bilibili_api.fetch_playurl(bvid, cid)
+        playurl = bilibili_api.fetch_playurl(bvid, cid, context=context)
         dash = (playurl or {}).get("dash") or {}
         video_entries = [v for v in (dash.get("video") or [])
                          if isinstance(v, dict) and (v.get("baseUrl") or v.get("base_url"))]
@@ -193,7 +230,7 @@ def _resolve_via_api(url: str) -> Optional[dict]:
                 "label": label,
                 "height": entry.get("height") or 0,
                 "token": _register(entry.get("baseUrl") or entry.get("base_url") or "",
-                                   headers),
+                                   headers, context=context),
             })
         qualities.sort(key=lambda q: (-(q["height"] or 0),
                                       0 if "P60" in q["label"] else 1))
@@ -205,7 +242,7 @@ def _resolve_via_api(url: str) -> Optional[dict]:
                 best_audio = entry
         if best_audio:
             audio_token = _register(best_audio.get("baseUrl") or best_audio.get("base_url") or "",
-                                    headers)
+                                    headers, context=context)
 
         return {
             "ok": True,
@@ -220,27 +257,34 @@ def _resolve_via_api(url: str) -> Optional[dict]:
 
 
 def resolve(url: str) -> dict:
-    """解析出各清晰度的视频轨与音频轨 token。结果按 URL 缓存一小段时间。
+    """解析出各清晰度的视频轨与音频轨 token。结果按「URL + 认证上下文」缓存。
 
     先走直连 API 快速路径(约 0.5s),失败回落 yt-dlp(2.5s+,行为不变)。
+    缓存不绑定认证时,A 账号解析后切到 B,B 在 TTL 内会直接拿到 A 的档位与
+    token(2026-11-23 审查)。
     """
+    try:
+        context, _cookiejar = bilibili_auth.get_auth_snapshot()
+    except bilibili_auth.AuthContextChangedError:
+        context = None
+    ctx_key = _context_key_of(context)
     now = time.time()
     with _lock:
-        cached = _parse_cache.get(url)
+        cached = _parse_cache.get((ctx_key, url))
         if cached and cached["expires"] > now:
             return cached["payload"]
 
     payload = _resolve_via_api(url)
     if payload is None:
-        payload = _resolve_via_ytdlp(url)
+        payload = _resolve_via_ytdlp(url, context=context)
 
     with _lock:
         _cleanup(now)
-        _parse_cache[url] = {"payload": payload, "expires": now + PARSE_TTL_SECONDS}
+        _parse_cache[(ctx_key, url)] = {"payload": payload, "expires": now + PARSE_TTL_SECONDS}
     return payload
 
 
-def _resolve_via_ytdlp(url: str) -> dict:
+def _resolve_via_ytdlp(url: str, context=None) -> dict:
     """yt-dlp 路径(旧行为):番剧、直连 API 失败时的回落。"""
     # 一次提取同时拿归一化档位与直链 formats:原先这里连跑两遍 yt-dlp,
     # 每个预热请求双倍秒级 CPU,会拖慢同进程的其它接口(搜索实测被堵 23s)。
@@ -254,7 +298,8 @@ def _resolve_via_ytdlp(url: str) -> dict:
         audio_format = fmts.get(audio_option["format_id"]) or {}
         if audio_format.get("url"):
             audio_token = _register(audio_format["url"],
-                                    audio_format.get("http_headers") or {})
+                                    audio_format.get("http_headers") or {},
+                                    context=context)
 
     qualities = []
     for label, option in _pick_video_quality(formats):
@@ -264,7 +309,8 @@ def _resolve_via_ytdlp(url: str) -> dict:
         qualities.append({
             "label": label,
             "height": raw.get("height") or 0,
-            "token": _register(raw["url"], raw.get("http_headers") or {}),
+            "token": _register(raw["url"], raw.get("http_headers") or {},
+                               context=context),
         })
 
     payload = {

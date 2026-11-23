@@ -640,6 +640,17 @@ def _run_download(task_id: str, url: str, label: str, formats: list[dict], page:
         opts = _ydl_opts(base_opts)
         try:
             governor.wait("media", endpoint=url)
+            # governor 等待可能很久(媒体间隔/冷却);期间用户可能已取消。
+            # 不复查就继续创建 YoutubeDL 并发起请求,取消后仍有网络与落盘
+            # 副作用,还要等 yt-dlp 抛 DownloadCancelled 才停(2026-11-23 审查)。
+            with _tasks_lock:
+                t = _tasks.get(task_id)
+                wait_cancelled = bool(t and t.get("cancel"))
+            if not t:
+                return
+            if wait_cancelled:
+                _finalize_cancelled(task_id)
+                return
             with yt_dlp.YoutubeDL(opts) as ydl:
                 ydl.download([url])
             # 成功：先对齐主媒体。align 会安全刷新一次 manifest。

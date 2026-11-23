@@ -49,6 +49,36 @@ def test_read_missing_returns_default_no_backup(tmp_path):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_read_io_error_propagates_no_corrupt_backup(tmp_path, monkeypatch):
+    """IO 故障(权限/磁盘)不是损坏:原样上抛,不得改名 .corrupt-* 或返回 default。
+
+    回归:旧实现 except Exception 会把暂时性 OSError 当损坏,把正常文件
+    改名 .corrupt-* 并按 default(空数据)处理,下一次写盘即覆盖真实状态
+    (2026-11-23 审查)。
+    """
+    f = tmp_path / "x.json"
+    f.write_text('{"a": 1}', encoding="utf-8")
+
+    real_read_text = __import__("pathlib").Path.read_text
+
+    def boom(self, *a, **k):
+        if self == f:
+            raise PermissionError(13, "Permission denied")
+        return real_read_text(self, *a, **k)
+
+    monkeypatch.setattr("pathlib.Path.read_text", boom)
+    with pytest.raises(PermissionError):
+        storage.read_json(f, default={"fallback": True})
+    assert f.exists(), "IO 故障不得移动或改名原文件"
+    assert not list(tmp_path.glob("x.json.corrupt-*")), "IO 故障不得产生损坏备份"
+
+    # 换词法错误仍走损坏分支
+    monkeypatch.undo()
+    f2 = tmp_path / "y.json"
+    f2.write_text('{"broken":', encoding="utf-8")
+    assert storage.read_json(f2, default={"d": 1}) == {"d": 1}
+
+
 def test_all_persistence_uses_storage():
     """五个模块的 JSON 读写统一走 storage(tasks/config/up_list/sess/pagecache)。"""
     import bilibili_auth

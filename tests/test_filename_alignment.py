@@ -172,6 +172,109 @@ def test_progress_hook_backfills_placeholder_title():
 
 # ---------- A.3 下载完成后强制对齐 ----------
 
+def test_run_download_single_stream_without_pp_succeeds(monkeypatch, tmp_path):
+    """单流下载(无 PostProcessor)落盘成功必须判 done,不得误标 failed。
+
+    回归:新任务从创建起带空 manifest,而 _find_actual_file 见 manifest 就
+    直接返回 → 精确匹配/扫盘兜底全部不可达。无 PostProcessor 时
+    postprocessor_hooks 永不触发、_final_paths 也没有路径 → 媒体明明落盘了,
+    任务却报「无法确认安全落盘媒体」(2026-11-23 审查)。
+    """
+    monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    monkeypatch.setattr(downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
+    _reset_dl_config(monkeypatch)
+
+    def writer(opts):
+        # 不写 _final_paths:模拟无 PostProcessor、pp 钩子永不触发的单流下载,
+        # 文件直接按 outtmpl 的期望名落盘。
+        (tmp_path / "测试视频.mp4").write_bytes(b"x" * 100)
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _mk_ydl(writer))
+    t = _mk_task("sp1", title="测试视频")
+    t["manifest"] = {"version": taskstore.MANIFEST_VERSION, "artifacts": []}
+    t["artifact_root"] = str(tmp_path)
+    try:
+        downloader._run_download("sp1", t["url"], "", _FMTS, 1)
+        assert t["status"] == "done", \
+            f"单流无 PP 下载成功后应为 done,实际 {t['status']} error={t.get('error')}"
+        assert t["progress"] == 100
+        assert (tmp_path / "测试视频.mp4").is_file()
+        assert t["actual_filename"].endswith("测试视频.mp4")
+    finally:
+        downloader._tasks.pop("sp1", None)
+        downloader._final_paths.pop("sp1", None)
+
+
+def test_find_actual_file_empty_manifest_still_scans_disk(monkeypatch, tmp_path):
+    """空 manifest 不得短路定位:精确匹配仍可达。"""
+    _mk_task("em1", title="测试视频")
+    downloader._tasks["em1"]["manifest"] = {
+        "version": taskstore.MANIFEST_VERSION, "artifacts": []}
+    downloader._tasks["em1"]["artifact_root"] = str(tmp_path)
+    try:
+        (tmp_path / "测试视频.mp4").write_bytes(b"x")
+        monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+        assert files._find_actual_file("em1", "测试视频") == tmp_path / "测试视频.mp4"
+    finally:
+        downloader._tasks.pop("em1", None)
+
+
+def test_rename_sidecar_target_conflict_keeps_family(monkeypatch, tmp_path):
+    """目标 stem 下有外来同名副文件:整族保留原名,外来文件不被认领。
+
+    回归:旧实现跳过冲突副件、主媒体照常改名;之后 manifest 按新 stem 扫盘,
+    把预先存在的「标题.jpg」认领进本任务(删除任务+文件时误删它),自己的
+    「旧名.jpg」却成孤儿(2026-11-23 审查)。
+    """
+    monkeypatch.setattr(files.config, "DOWNLOAD_DIR", tmp_path)
+    main = tmp_path / "旧名.mp4"
+    main.write_bytes(b"m" * 10)
+    own_cover = tmp_path / "旧名.jpg"
+    own_cover.write_bytes(b"o")            # 本任务自己的封面
+    foreign = tmp_path / "新名.jpg"
+    foreign.write_bytes(b"F" * 20)         # 同新 stem 的外来旧封面
+
+    with pytest.raises(files.SidecarTargetConflict) as excinfo:
+        files._rename_with_sidecars(main, "新名")
+    assert excinfo.value.existing == foreign
+    # 什么都没动:主媒体与自己的副件都保持原名
+    assert main.is_file() and own_cover.is_file() and foreign.is_file()
+    assert not (tmp_path / "新名.mp4").exists()
+
+
+def test_align_sidecar_conflict_marks_conflict_and_keeps_ownership(monkeypatch, tmp_path):
+    """端到端:副件冲突走 rename_conflict 流程,manifest 不认领外来文件。
+
+    删除记录+文件时只删自己的旧名封面,外来「新名.jpg」必须幸存。
+    """
+    _conflict_env(monkeypatch, tmp_path)
+    mangled = tmp_path / "标题 [下载].mp4"
+
+    def writer(opts):
+        downloader._final_paths["sc1"] = str(mangled)
+        mangled.write_bytes(b"x" * 100)
+        (tmp_path / "标题 [下载].jpg").write_bytes(b"o")     # 自己的封面
+        (tmp_path / "标题.jpg").write_bytes(b"F" * 30)       # 外来旧封面
+
+    monkeypatch.setattr(yt_dlp, "YoutubeDL", _mk_ydl(writer))
+    t = _mk_task("sc1", title="标题")
+    try:
+        downloader._run_download("sc1", t["url"], "", _FMTS, 1)
+        assert t["status"] == "done", f"实际 {t['status']} err={t.get('error')}"
+        assert t.get("rename_conflict"), "副件冲突必须标记 rename_conflict"
+        assert mangled.is_file() and (tmp_path / "标题 [下载].jpg").is_file()
+        # 外来文件不能进本任务 manifest
+        owned = taskstore._files_for_destructive_delete(downloader.get_task("sc1"))
+        owned_names = {p.name for p in owned}
+        assert "标题.jpg" not in owned_names, \
+            f"外来副文件不得被 manifest 认领:{owned_names}"
+        assert "标题 [下载].jpg" in owned_names, "自己的封面必须仍在产物清单"
+    finally:
+        downloader._tasks.pop("sc1", None)
+        downloader._final_paths.pop("sc1", None)
+
+
 def test_run_download_renames_file_to_task_title(monkeypatch, tmp_path):
     """yt-dlp 落盘名与 title 不一致时,完成后强制改名对齐,副文件一起改。"""
     monkeypatch.setattr(taskstore, "TASKS_FILE", tmp_path / "tasks.json")
@@ -968,7 +1071,7 @@ def test_delete_file_keeps_final_files_and_neighbours(monkeypatch, tmp_path):
 
 
 def test_delete_file_part_cleanup_skips_surviving_same_stem(monkeypatch, tmp_path):
-    """同标题的存活任务仍在下载时,其 .part 是进行中状态,不得被清掉。"""
+    """同标题的存活**下载中**任务仍在下载时,其 .part 是进行中状态,不得被清掉。"""
     monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
     (tmp_path / "同名视频.mp4.part").write_bytes(b"downloading")
     victim = _mk_task("pt3", status="cancelled", title="同名视频")
@@ -980,6 +1083,39 @@ def test_delete_file_part_cleanup_skips_surviving_same_stem(monkeypatch, tmp_pat
         downloader._tasks.pop("pt3", None)
     assert (tmp_path / "同名视频.mp4.part").exists(), \
         "存活下载任务的 .part 不得被另一条同标题记录的删除清掉"
+
+
+def test_delete_file_part_cleanup_not_blocked_by_terminal_same_stem(monkeypatch, tmp_path):
+    """同名**终态**任务不得挡住半成品清理。
+
+    回归:旧实现 surviving_stems 收集所有存活任务(含 done)。删 cancelled
+    记录时,同名 done 记录会保护 .part;之后删 done 记录时,其 manifest 已有
+    媒体、不再走半成品分支——最终媒体删掉了,半成品却永久留在磁盘
+    (2026-11-23 审查)。
+    """
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", tmp_path)
+    (tmp_path / "同名视频.mp4.part").write_bytes(b"half")
+
+    victim = _mk_task("pt5", status="cancelled", title="同名视频")
+    victim["manifest"] = {"version": taskstore.MANIFEST_VERSION, "artifacts": []}
+    victim["artifact_root"] = str(tmp_path)
+
+    done_task = _mk_task("pt6", status="done", title="同名视频")
+    done_task["manifest"] = {
+        "version": taskstore.MANIFEST_VERSION,
+        "artifacts": [{"artifact_id": "a", "role": "media",
+                       "relpath": "同名视频.mp4", "size": 3}],
+    }
+    done_task["artifact_root"] = str(tmp_path)
+    (tmp_path / "同名视频.mp4").write_bytes(b"fin")
+    try:
+        taskstore.delete_tasks(["pt5", "pt6"], delete_file=True)
+    finally:
+        downloader._tasks.pop("pt5", None)
+        downloader._tasks.pop("pt6", None)
+    assert not (tmp_path / "同名视频.mp4.part").exists(), \
+        "终态任务的 stem 不得保护半成品文件"
+    assert not (tmp_path / "同名视频.mp4").exists()
 
 
 def test_delete_file_part_cleanup_skips_longer_title_neighbour(monkeypatch, tmp_path):

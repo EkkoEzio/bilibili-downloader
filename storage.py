@@ -75,7 +75,11 @@ def read_json(path: Path, default: Any = None, *, max_bytes: Optional[int] = Non
         return json.loads(text)
     except JsonReadLimitError:
         raise
-    except Exception:
+    except (ValueError, UnicodeDecodeError):
+        # 只有解析/编码损坏才备份改名。OSError(权限/磁盘 IO 暂时故障)绝不能
+        # 走这条分支:把正常文件改名 .corrupt-* 后按 default 处理,下一次写盘
+        # 会用空数据覆盖真实状态(2026-11-23 审查)。IO 故障上抛,由调用方的
+        # 既有失败路径处理。
         backup = path.with_name(f"{path.name}.corrupt-{int(time.time())}")
         try:
             path.rename(backup)

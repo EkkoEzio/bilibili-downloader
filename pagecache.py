@@ -128,7 +128,13 @@ def load(key: str, context=None):
     if context is not None and not is_auth_context_current(context):
         raise AuthContextChangedError("登录状态已变化，请重试")
     with _lock:
-        entry = storage.read_json(path, default=None)
+        try:
+            entry = storage.read_json(path, default=None)
+        except OSError:
+            # 缓存读不动(权限/磁盘暂时故障)只损失首屏提速,不该把 500 甩给
+            # 页面:storage 现在只对解析损坏做备份,IO 故障会上抛(2026-11-23
+            # 审查),这里按 miss 处理,后台拉取路径不受影响。
+            entry = None
     if not isinstance(entry, dict):
         return None
     if context is not None:

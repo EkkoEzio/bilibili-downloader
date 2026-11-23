@@ -1,4 +1,5 @@
 """路由层行为测试:UP 清单自动下载(2026-08-18 改版)与 /api/stats(C3)。"""
+import inspect
 import json
 import threading
 import time
@@ -16,6 +17,51 @@ def client():
 def _vid(bvid, ts, title="视频"):
     return {"bvid": bvid, "title": title, "uploader": "UP", "thumbnail": "",
             "view_at": ts, "url": f"https://www.bilibili.com/video/{bvid}"}
+
+
+# ---------- 访问日志脱敏 ----------
+
+def test_werkzeug_access_log_redacts_login_secrets():
+    """扫码密钥/播放 token 不得原样落访问日志。
+
+    /api/login/qrcode/poll?key=…、/api/login/qrcode-image?url=…qrcode_key=…
+    的查询串会原样进 werkzeug 访问日志(写入轮转 app.log);/online/stream/<token>
+    的内存 token 同理。qr key 可换取 SESSDATA,泄漏 = 会话泄漏(2026-11-23 审查)。
+    """
+    import logging as _logging
+    import app as app_module
+
+    filt = None
+    for f in _logging.getLogger("werkzeug").filters:
+        if isinstance(f, app_module._SecretRedactFilter):
+            filt = f
+            break
+    assert filt is not None, "werkzeug 访问日志必须挂脱敏过滤器"
+
+    record = _logging.LogRecord("werkzeug", _logging.INFO, __file__, 0,
+                                "%s - %s", ("%s",), None)
+    record.args = (
+        'GET /api/login/qrcode/poll?key=abc123_XYZ HTTP/1.1" 200',
+        'GET /api/login/qrcode-image?url=https%3A%2F%2Faccount.bilibili.com%2Fh5-app%2Fpassport%2Flogin%2Fscan%3Fqrcode_key%3Dzz9 HTTP/1.1" 200',
+    )
+    assert filt.filter(record) is True
+    text = record.getMessage()
+    assert "abc123_XYZ" not in text and "zz9" not in text, \
+        f"登录密钥不得出现在日志:{text}"
+    assert "key=<redacted>" in text
+    assert "qrcode_key%3D<redacted>" in text, "URL 编码形态也要脱敏"
+
+    record2 = _logging.LogRecord("werkzeug", _logging.INFO, __file__, 0,
+                                 "GET /online/stream/%s HTTP/1.1", ("tok-abc123xyz",), None)
+    filt.filter(record2)
+    assert "tok-abc123xyz" not in record2.getMessage()
+    assert "/online/stream/<redacted>" in record2.getMessage()
+
+    # 普通请求不受影响
+    record3 = _logging.LogRecord("werkzeug", _logging.INFO, __file__, 0,
+                                 'GET /api/tasks HTTP/1.1" 200', (), None)
+    filt.filter(record3)
+    assert record3.getMessage() == 'GET /api/tasks HTTP/1.1" 200'
 
 
 # ---------- /api/up-list:清单读取 ----------
@@ -3759,11 +3805,11 @@ def test_online_resolve_fast_path_direct_api(monkeypatch):
     import bilibili_api as bapi
     import parsing
 
-    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid: {
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: {
         "bvid": bvid, "cid": 111, "title": "示例视频", "duration": 120,
         "pages": [{"page": 1, "cid": 111, "duration": 120}],
     })
-    monkeypatch.setattr(bapi, "fetch_playurl", lambda bvid, cid: {
+    monkeypatch.setattr(bapi, "fetch_playurl", lambda bvid, cid, *, context=None: {
         "accept_quality": [116, 112, 80, 64, 32, 16],
         "dash": {
             "video": [
@@ -3828,7 +3874,7 @@ def test_online_resolve_api_path_honors_page_param(monkeypatch):
     import parsing
 
     picked = {}
-    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid: {
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: {
         "bvid": bvid, "cid": 1, "title": "多P", "duration": 300,
         "pages": [
             {"page": 1, "cid": 11, "duration": 100},
@@ -3836,7 +3882,7 @@ def test_online_resolve_api_path_honors_page_param(monkeypatch):
         ],
     })
 
-    def fake_playurl(bvid, cid):
+    def fake_playurl(bvid, cid, *, context=None):
         picked["cid"] = cid
         return {"dash": {"video": [{"id": 80, "height": 1080, "bandwidth": 1,
                                     "baseUrl": "https://upos-pg/v.m4s"}],
@@ -3849,6 +3895,68 @@ def test_online_resolve_api_path_honors_page_param(monkeypatch):
     payload = online.resolve("https://www.bilibili.com/video/BV1page2xTst?p=2")
     assert picked["cid"] == 22, "?p=2 必须取第 2 分 P 的 cid"
     assert payload["duration"] == 200
+
+
+def test_online_resolve_cache_isolated_by_auth_context(monkeypatch):
+    """在线解析缓存必须按认证上下文隔离,token 也要记录归属。
+
+    回归:A 账号解析后切到 B(或登出),旧实现按 URL 命中缓存,B 在 TTL 内
+    直接拿到 A 的档位与 token;旧 token 最长可续 105 分钟(2026-11-23 审查)。
+    """
+    import online
+    import bilibili_auth
+
+    ctx_a = {"authenticated": True, "source": "qr",
+             "fingerprint": "a" * 64, "incarnation": "9" * 32, "generation": 1}
+    ctx_b = {"authenticated": True, "source": "qr",
+             "fingerprint": "b" * 64, "incarnation": "9" * 32, "generation": 2}
+
+    current = {"ctx": ctx_a}
+    monkeypatch.setattr(online, "_parse_cache", {})
+    monkeypatch.setattr(online, "_tokens", {})
+    monkeypatch.setattr(online.bilibili_auth, "get_auth_snapshot",
+                        lambda: (dict(current["ctx"]), object()))
+    monkeypatch.setattr(online.bilibili_auth, "get_auth_context",
+                        lambda: dict(current["ctx"]))
+    monkeypatch.setattr(online.bilibili_api, "_ensure_context_current",
+                        lambda ctx: None)
+
+    resolve_calls = []
+
+    def fake_api(url):
+        resolve_calls.append(url)
+        return None
+
+    monkeypatch.setattr(online, "_resolve_via_api", fake_api)
+
+    def fake_ytdlp(url, context=None):
+        return {"ok": True, "title": f"t{len(resolve_calls)}", "duration": 1,
+                "qualities": [{"label": "720P", "height": 720, "token": "tk"}],
+                "audio": ""}
+
+    monkeypatch.setattr(online, "_resolve_via_ytdlp", fake_ytdlp)
+
+    first = online.resolve("https://www.bilibili.com/video/BV1ctx1xTst")
+    assert first["title"] == "t1"
+    # 同账号第二次命中缓存,不再解析
+    online.resolve("https://www.bilibili.com/video/BV1ctx1xTst")
+    assert len(resolve_calls) == 1, "同账号同 URL 应命中缓存"
+
+    # 切到账号 B:缓存键不同,必须重新解析
+    current["ctx"] = ctx_b
+    second = online.resolve("https://www.bilibili.com/video/BV1ctx1xTst")
+    assert len(resolve_calls) == 2, "换账号后不得复用 A 的解析缓存"
+    assert second["title"] == "t2"
+
+    # _register 的 token 记录了归属上下文;切账号后 _cleanup 淘汰旧 token
+    monkeypatch.setattr(online, "_resolve_via_ytdlp", fake_ytdlp)
+    with online._lock:
+        online._tokens["orphan"] = {"url": "u", "headers": {}, "created": 0,
+                                    "expires": time.time() + 999,
+                                    "context": online._context_key_of(ctx_a)}
+    online._cleanup(time.time())
+    assert "orphan" not in online._tokens, \
+        "属于旧账号的 token 在切换后必须被淘汰"
 
 
 # ---------- 卡片封面布局 / 关注 / 滑条 ----------
@@ -4054,6 +4162,18 @@ def test_search_results_not_refiltered_by_raw_query():
     assert "renderFilterQuery()" in _js_func_body(subs_js, "renderUps")
 
 
+def test_search_hint_no_inner_html_with_user_input():
+    """搜索提示条绝不能用 innerHTML 拼用户输入:搜索词和上游错误文案都会进
+    这个汇点,搜 <img src=x onerror=...> 就能在同源上下文执行脚本(2026-11-23)。
+    setHint 必须用 textContent + replaceChildren 组装。"""
+    search_js = (_js_dir() / "search.js").read_text(encoding="utf-8")
+    body = _js_func_body(search_js, "setHint")
+    assert "innerHTML" not in body, \
+        "setHint 不得使用 innerHTML:查询词/上游错误文案原样拼接即 DOM XSS"
+    assert "textContent = text" in body, "文本必须走 textContent"
+    assert "replaceChildren" in body, "结构重建必须走 replaceChildren"
+
+
 def test_search_result_cache_avoids_repeat_upstream_calls(monkeypatch):
     """同词同页的站内搜索在 TTL 内复用缓存,不再打上游(2026-11-17 性能)。
 
@@ -4085,6 +4205,69 @@ def test_search_result_cache_avoids_repeat_upstream_calls(monkeypatch):
     import time as _time
     bapi._SEARCH_CACHE["video:过期:1"] = (_time.time() - 301, {"result": []})
     assert bapi._search_cache_get("video:过期:1") is None, "超 TTL 的缓存必须失效"
+
+
+def test_search_cache_isolated_by_auth_context(monkeypatch):
+    """搜索缓存必须按认证上下文隔离:生产调用链要真的把 context 传进来。
+
+    回归:search_videos/search_users 此前调用 _search_raw 时不传 context,
+    所有生产搜索都用 "anonymous:" 缓存键——A 账号搜过的词,B 账号在 TTL 内
+    会直接拿到 A 的结果(2026-11-23 审查)。
+    """
+    import bilibili_api as bapi
+
+    ctx_a = {"authenticated": True, "source": "qr",
+             "fingerprint": "a" * 64, "incarnation": "i" * 32, "generation": 1}
+    ctx_b = {"authenticated": True, "source": "qr",
+             "fingerprint": "b" * 64, "incarnation": "i" * 32, "generation": 2}
+    # _search_raw 本身:传入 context 时不得在内部重新取快照
+    src = inspect.getsource(bapi._search_raw)
+    assert "_auth_session()" in src  # 无 context 分支保留
+    body = src[src.index("if context is not None"):]
+    assert body.index("_ensure_context_current") < body.index("_get_wbi_ie"), \
+        "传入 context 时必须先 CAS 校验,再用同一快照签名"
+
+    calls = []
+
+    def fake_raw(search_type, keyword, page, *, context=None):
+        calls.append(context)
+        return {"result": []}
+
+    monkeypatch.setattr(bapi, "_search_raw", fake_raw)
+    bapi.search_videos("同词", 1, context=ctx_a)
+    bapi.search_users("同词", 1, context=ctx_b)
+    assert calls == [ctx_a, ctx_b], \
+        "search_videos/search_users 必须把 context 原样透传给 _search_raw"
+
+
+def test_search_raw_rejects_commit_after_auth_switch(monkeypatch):
+    """慢搜索期间账号切换:响应后 CAS 失败必须抛错,不得把旧账号结果写缓存。"""
+    import bilibili_api as bapi
+    import bilibili_auth
+    from request_governor import UpstreamRateLimitError  # noqa: F401
+
+    ctx_old = {"authenticated": True, "source": "qr",
+               "fingerprint": "a" * 64, "incarnation": "i" * 32, "generation": 1}
+
+    checks = {"n": 0}
+
+    def fake_current(context):
+        # 前两次(请求前)通过,第三次(响应后)失败:模拟慢请求期间切换
+        checks["n"] += 1
+        if checks["n"] >= 3:
+            raise bilibili_auth.AuthContextChangedError("登录状态已变化")
+
+    monkeypatch.setattr(bapi, "_ensure_context_current", fake_current)
+    monkeypatch.setattr(bapi, "get_cookiejar", lambda ctx: object())
+    monkeypatch.setattr(bapi, "_get_wbi_ie", lambda ctx=None: _FakeWbiIE())
+    monkeypatch.setattr(bapi, "_get", lambda url, **kw: _FakeResp(
+        {"code": 0, "data": {"result": [{"bvid": "BV1", "title": "t"}]}}))
+    monkeypatch.setattr(bapi, "_SEARCH_CACHE", {})
+
+    with pytest.raises(bilibili_auth.AuthContextChangedError):
+        bapi._search_raw("video", "词", 1, context=ctx_old)
+    assert bapi._SEARCH_CACHE == {}, \
+        "账号已切换的慢请求结果不得写入缓存"
 
 
 def test_search_frontend_session_cache_and_keepalive():

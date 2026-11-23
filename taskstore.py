@@ -1161,11 +1161,16 @@ def delete_tasks_detailed(task_ids: list, delete_file: bool) -> dict:
                     _final_paths.pop(task_id, None)
 
         if delete_file:
-            # 仍存活任务的期望名:同标题任务可能还在下载(其 .part 是进行中
-            # 状态),绝不能因为删除另一条同标题记录而误清。
+            # 仍**活跃**任务的期望名:同标题任务可能还在下载(其 .part 是进行中
+            # 状态),绝不能因为删除另一条同标题记录而误清。终态任务自己的
+            # manifest 已确认产物、没有进行中的 .part,不得挡住清理——否则
+            # 「先删 cancelled 记录、再删同名 done 记录」之后半成品反而永久
+            # 残留(2026-11-23 审查)。
             surviving_stems: set[str] = set()
             with _tasks_lock:
                 for other in _tasks.values():
+                    if other.get("status") not in ACTIVE:
+                        continue
                     stem = _expected_task_stem(other)
                     if stem:
                         surviving_stems.add(stem)

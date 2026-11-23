@@ -73,7 +73,16 @@ function setHint(pageName, text) {
     bar.className = 'search-hint';
     (page.querySelector('.sub-info') || page.querySelector('.page-head')).after(bar);
   }
-  bar.innerHTML = `<span>${text}</span><button class="quiet" type="button" data-search-exit>退出搜索</button>`;
+  // text 是用户输入(搜索词)或上游错误文案,绝不能拼进标记字符串:
+  // 搜 <img src=x onerror=...> 会在同源上下文执行脚本、调用本机 API。
+  const label = document.createElement('span');
+  label.textContent = text;
+  const exit = document.createElement('button');
+  exit.className = 'quiet';
+  exit.type = 'button';
+  exit.setAttribute('data-search-exit', '');
+  exit.textContent = '退出搜索';
+  bar.replaceChildren(label, exit);
 }
 
 async function runSearch(pageName) {

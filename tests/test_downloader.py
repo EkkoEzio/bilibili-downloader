@@ -36,6 +36,51 @@ def test_retry_loop_present():
     assert 't["error"] = str(last_err)' in src, "缺少最终 error 记录"
 
 
+def test_cancel_during_governor_wait_skips_ytdlp(monkeypatch):
+    """governor 等待期间用户取消:等待返回后不得再创建 YoutubeDL 发请求。
+
+    回归:旧实现 governor.wait() 返回后直接进 YoutubeDL,取消的任务仍发起
+    网络请求、产生落盘副作用,要等 progress hook 抛 DownloadCancelled 才停
+    (2026-11-23 审查)。
+    """
+    import threading
+
+    entered_wait = threading.Event()
+    release_wait = threading.Event()
+
+    def fake_wait(kind, endpoint=None):
+        entered_wait.set()
+        release_wait.wait(timeout=5)
+
+    ytdlp_calls = []
+    monkeypatch.setattr(downloader, "governor",
+                        type("G", (), {"wait": staticmethod(fake_wait)})())
+    monkeypatch.setattr(
+        downloader, "_ydl_opts", lambda extra=None: dict(extra or {}))
+    monkeypatch.setattr(
+        yt_dlp, "YoutubeDL",
+        lambda opts: ytdlp_calls.append(opts) or (_ for _ in ()).throw(
+            AssertionError("取消后不得创建 YoutubeDL")))
+    monkeypatch.setattr(downloader, "parse_video",
+                        lambda url: {"title": "t", "formats": [
+                            {"format_id": "1", "label": "720P", "kind": "av"}],
+                            "thumbnail": "", "uploader": "", "uploader_mid": 1,
+                            "duration": 1, "best_label": "720P"})
+    monkeypatch.setattr(downloader.config, "DOWNLOAD_DIR", Path("/tmp/bd-test-dl"))
+
+    t = _mk_task("gw1", status="queued")
+    import concurrent.futures
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        fut = pool.submit(downloader._run_download, "gw1", t["url"], "720P", [], 1)
+        assert entered_wait.wait(2), "应进入 governor 等待"
+        t["cancel"] = True
+        release_wait.set()
+        fut.result(timeout=5)
+    assert ytdlp_calls == [], "取消后不得创建 YoutubeDL"
+    assert t["status"] == "cancelled", f"应为 cancelled,实际 {t['status']}"
+    downloader._tasks.pop("gw1", None)
+
+
 def test_cancel_exits_immediately():
     """验证取消标志在循环开头就检测,确保取消的任务及时退出。"""
     src = inspect.getsource(downloader._run_download)

@@ -71,6 +71,35 @@ def test_all_listed_ups_downloaded(monkeypatch):
     assert all(m[3] for m in marked), "mark_seen 应带拉取时间 fetched_at"
 
 
+def test_manual_active_task_blocks_cursor_commit(monkeypatch):
+    """新投稿已有手动活动任务时游标不得推进。
+
+    回归:start_batch 去重返回空后,旧实现照常提交头部游标;手动任务随后
+    失败/取消时它不进自动恢复集(_retry_items 只认 source=auto_refresh),
+    该稿被时间过滤器永久漏掉(2026-11-23 审查)。
+    """
+    url = "https://www.bilibili.com/video/BVmanual"
+    ups = [{"mid": 1, "uname": "A"}]
+    manual_active = {
+        "task_id": "m1", "url": url, "page": 1, "bvid": "BVmanual",
+        "source": "manual", "status": "downloading",
+        "uploader_mid": 1, "created_at": 1,
+    }
+    batches, marked, _ = _patch_env(
+        monkeypatch, ups, {1: [_vid("BVmanual", 300)]},
+        last_seen={1: {"bvid": "BVold", "ts": 100, "title": ""}})
+    # 不 stub is_downloaded,用真实判定:手动任务未完成 → 未下载
+    monkeypatch.setattr(auto_refresh.downloader, "is_downloaded",
+                        lambda u: False)
+    monkeypatch.setattr(auto_refresh.downloader, "list_tasks",
+                        lambda: [manual_active])
+
+    n = auto_refresh.refresh_once()
+    assert n == 0, "新稿被手动任务占用时不得重复入队"
+    assert batches == []
+    assert marked == [], "游标不得推进:手动任务失败后该稿将永久漏掉"
+
+
 def test_quality_label_passed_to_batch(monkeypatch):
     """每个 UP 的默认清晰度配置要传给下载批次。"""
     ups = [{"mid": 1, "uname": "A", "quality": "1080"}, {"mid": 2, "uname": "B"}]
@@ -345,6 +374,41 @@ def test_fetch_new_rate_limited(monkeypatch):
     calls = _patch_fetch_calls(monkeypatch, {})
     new, newest = auto_refresh.fetch_new(1, {"bvid": "x", "ts": 1, "fetched_at": time.time()})
     assert new == [] and newest is None
+
+
+def test_fetch_new_continuation_empty_head_keeps_scan_state(monkeypatch):
+    """续扫中首页返回空:保留续点,不得把旧 collected 当「已完成」提交游标。
+
+    回归:旧实现在此置 complete=True,refresh_once 随即用 collected[0] 提交
+    头部游标并清除续扫状态——未扫到的深页稿件从此被时间过滤器永久漏掉
+    (2026-11-23 审查)。
+    """
+    ps = auto_refresh.RECENT_PS
+
+    def full_page(prefix, start_ts):
+        return [_vid(f"{prefix}{i}", start_ts - i) for i in range(ps)]
+
+    # 只有首页返回空(限流形态),深页根本没机会被扫到
+    calls = _patch_fetch_calls(monkeypatch, {(1, 1): []})
+    last = {
+        "bvid": "BVold", "ts": 100, "fetched_at": time.time() - 600,
+        "scan": {
+            "base_bvid": "BVold", "base_ts": 100, "ps": ps,
+            "next_pn": 3, "deep_next_pn": 3,
+            "head_next_pn": 3, "head_repair_until_pn": 3,
+            "terminal_pn": None,
+            "head_bvid": "BVdeep", "head_ts": 300,
+            "items": full_page("BVdeep-", 300),
+        },
+    }
+    new, newest = auto_refresh.fetch_new(1, last)
+    assert [pn for _, _, pn in calls] == [1], "首页为空后不得继续打深页"
+    assert new == [], "空响应轮不得入队"
+    assert newest is None, "必须丢弃旧 collected 的头部,防止上游提交游标"
+    assert last["bvid"] == "BVold" and last["ts"] == 100, \
+        "游标与续扫状态都不得被修改"
+    assert isinstance(last["scan"], dict) and last["scan"]["deep_next_pn"] == 3, \
+        "续扫点必须原样保留,下轮从深页继续"
 
 
 # ---------- 名称回填 ----------
@@ -993,6 +1057,58 @@ def test_collection_skips_already_downloaded_new_items(monkeypatch):
     assert n == 0 and batches == [], "已下载的条目不该再入队"
     assert seen_writes == [("season", 6365894, ["BVdl"])], \
         "已下载的条目也要标已见,否则每轮都要重新判定一次"
+
+
+def test_collection_manual_active_task_blocks_seen_commit(monkeypatch):
+    """合集新条目被非自动活跃任务占用:本轮不得提交已见。
+
+    回归:UP 订阅路径修了游标暂缓,合集路径漏修——合集没有时间游标,
+    已见一推进就不再回头,而手动任务失败后不进自动恢复集
+    (_collection_retry_items 只认 source=auto_refresh),提交 = 永久漏
+    (2026-11-23 审查)。
+    """
+    new_url = "https://www.bilibili.com/video/BVhold"
+    items = [{"bvid": "BVhold", "title": "手动在下载", "uploader": "UP",
+              "thumbnail": "", "duration": 0, "url": new_url}]
+    manual_active = {
+        "task_id": "m1", "url": new_url, "page": 1, "bvid": "BVhold",
+        "source": "manual", "status": "downloading",
+        "uploader_mid": 0, "created_at": 1,
+    }
+    batches, seen_writes, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVx"])], lambda cid: items,
+        tasks=[manual_active])
+    monkeypatch.setattr(auto_refresh.downloader, "is_downloaded",
+                        lambda url: False)
+
+    n = auto_refresh.refresh_once()
+
+    assert n == 0 and batches == [], "新条目被手动任务占用时不得重复入队"
+    assert seen_writes == [], "已见不得提交:手动任务失败后该条将永久漏掉"
+
+
+def test_collection_auto_active_task_does_not_block_seen_commit(monkeypatch):
+    """自动来源的活跃任务不阻塞已见提交:它有 durable outbox 恢复兜底,
+    若也暂缓,失败重试与已见提交会互相卡死(重试靠 seen 已含该条目)。"""
+    url = "https://www.bilibili.com/video/BVauto"
+    items = [{"bvid": "BVauto", "title": "自动在下载", "uploader": "UP",
+              "thumbnail": "", "duration": 0, "url": url}]
+    auto_active = {
+        "task_id": "a1", "url": url, "page": 1, "bvid": "BVauto",
+        "source": "auto_refresh", "status": "downloading",
+        "uploader_mid": 0, "created_at": 1,
+    }
+    batches, seen_writes, _ = _patch_collection_env(
+        monkeypatch, [_coll(seen=["BVx"])], lambda cid: items,
+        tasks=[auto_active])
+    monkeypatch.setattr(auto_refresh.downloader, "is_downloaded",
+                        lambda url: False)
+
+    n = auto_refresh.refresh_once()
+
+    assert n == 0 and batches == [], "自动活跃任务占用时也不重复入队"
+    assert seen_writes == [("season", 6365894, ["BVauto"])], \
+        "自动来源不阻塞提交:失败后有 _collection_retry_items 兜底"
 
 
 def test_collection_retries_failed_task_from_task_history(monkeypatch):

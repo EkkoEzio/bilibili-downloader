@@ -62,8 +62,14 @@ def _find_actual_file(task_id: str, expected_stem: str):
             if _final_paths.get(task_id) == captured:
                 _final_paths.pop(task_id, None)
 
+    # manifest 有确认过的主媒体才直接信任。新任务从创建起就带空 manifest:
+    # 若见 manifest 就返回,单流下载(仅音频/单体格式,无 PostProcessor,
+    # postprocessor_hooks 永不触发)落盘成功也会被判「无法确认安全落盘媒体」
+    # 而误标 failed(2026-11-23 审查)。空 manifest 继续走精确匹配/扫盘兜底。
     if task and "manifest" in task:
-        return manifest_media_path(task)
+        confirmed = manifest_media_path(task)
+        if confirmed is not None:
+            return confirmed
 
     exact: list[Path] = []
     belongs: list[Path] = []
@@ -89,8 +95,26 @@ def _find_actual_file(task_id: str, expected_stem: str):
         return None
 
 
+class SidecarTargetConflict(Exception):
+    """目标 stem 下已存在外来同名副文件,整族改名中止。
+
+    比主媒体冲突更隐蔽:主媒体改名成功、副文件被跳过后,manifest 按新 stem
+    扫盘会把**外来**副文件认领进本任务(删除时误删别人的文件),自己的旧
+    副文件反而成孤儿(2026-11-23 审查)。"""
+
+    def __init__(self, existing: Path) -> None:
+        self.existing = existing
+        super().__init__(
+            f"目标名族中已存在同名副文件:{existing.name}")
+
+
 def _rename_with_sidecars(source: Path, new_stem: str, *, root=None) -> Path:
-    """安全、尽量事务化地改名主媒体及白名单封面/字幕/弹幕副件。"""
+    """安全、尽量事务化地改名主媒体及白名单封面/字幕/弹幕副件。
+
+    目标 stem 下若已存在任何外来副文件(同标题旧封面/字幕等),整族改名
+    中止并抛 SidecarTargetConflict:调用方按既有冲突流程处理,媒体保留
+    原名、manifest 继续跟踪源文件族。此处绝不跳过冲突副件继续改名——
+    那会让外来文件被 manifest 认领(误删)、自己的副件成孤儿(2026-11-23)。"""
     source = resolve_download_path(source, must_exist=True, root=root)
     if not source.is_file() or source.suffix.lower() not in MEDIA_EXTS:
         raise FileNotFoundError(source)
@@ -112,16 +136,24 @@ def _rename_with_sidecars(source: Path, new_stem: str, *, root=None) -> Path:
         suffix_chain = safe_side.name[len(source.stem):]
         side_target = resolve_download_path(
             safe_side.with_name(new_stem + suffix_chain), root=root)
-        # 副件目标名已存在(同标题的旧封面/字幕)时,只跳过这个副件,
-        # 不连坐主媒体。此前整体 raise FileExistsError → 主文件也不改名 →
-        # 上层把任务判 failed → manifest 为空 → 文件留在磁盘上,却进不了
-        # UI 的删除列表(2026-11-22 审查)。
-        if side_target.exists() and not _same_file(safe_side, side_target):
-            log.warning("副件改名目标已存在,跳过该副件 %s -> %s",
-                        safe_side.name, side_target.name)
-            continue
         plan.append((safe_side, side_target))
     plan.append((source, target))  # 主文件最后改,减少失败时的可见窗口。
+
+    # 目标 stem 的副文件族预检:任何已存在的 `new_stem.<白名单副件后缀>`
+    # 都会在改名后被 manifest 按新 stem 扫盘认领——不管我们自己有没有对应
+    # 副件,都必须先中止(主媒体冲突由上层单独处理,走到这里 target 不存在)。
+    try:
+        target_family = sorted(
+            source.parent.glob(glob_escape(new_stem) + ".*"))
+    except OSError:
+        target_family = []
+    for candidate in target_family:
+        try:
+            safe = resolve_download_path(candidate, root=root)
+        except (UnsafeDownloadPathError, FileNotFoundError):
+            continue
+        if safe.is_file() and is_owned_sidecar(target, safe):
+            raise SidecarTargetConflict(safe)
 
     # 主文件的目标冲突由上层单独处理(记 rename_conflict 并保留原名),
     # 走到这里还冲突说明状态变了,明确失败而不是默默覆盖。
@@ -228,6 +260,22 @@ def align_task_file(task_id: str) -> Path | None:
                     current.pop("rename_skipped", None)
             _persist_file_state(task_id, "文件改名与清单")
             return new_path
+        except SidecarTargetConflict as exc:
+            # 目标 stem 下有外来副文件:整族保留原名并标记冲突,交用户处理。
+            # manifest 仍跟踪源文件族——外来文件不被认领、自己的副件不孤儿。
+            refresh_task_manifest(task_id, actual)
+            with _tasks_lock:
+                current = _tasks.get(task_id)
+                if current:
+                    current.pop("rename_error", None)
+                    current.pop("rename_skipped", None)
+                    current["rename_conflict"] = {
+                        "source": str(actual),
+                        "expected": str(target),
+                        "existing": str(exc.existing),
+                    }
+            _persist_file_state(task_id, "副件名冲突状态")
+            return actual
         except (OSError, UnsafeDownloadPathError) as exc:
             _record_rename_error(task_id, str(exc))
             return None
@@ -297,6 +345,8 @@ def resolve_rename_conflict(task_id: str, action: str) -> dict:
                 try:
                     new_path = _rename_with_sidecars(
                         source, f"{base} ({index})", root=root)
+                except SidecarTargetConflict:
+                    continue  # (N) 号族也有外来副文件:试下一个序号
                 except (OSError, UnsafeDownloadPathError) as exc:
                     return {"ok": False, "error": f"改名失败:{exc}"}
                 refresh_task_manifest(task_id, new_path)

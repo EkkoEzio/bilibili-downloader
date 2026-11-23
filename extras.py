@@ -181,14 +181,23 @@ def parse_danmaku_proto(data: bytes) -> list[dict]:
 
 
 def to_xml(elems: list[dict]) -> str:
-    """转成经典 B 站弹幕 XML 格式。"""
+    """转成经典 B 站弹幕 XML 格式。
+
+    经典 XML 的 p 第一位是**秒**(浮点),而解析层保存的 progress 是**毫秒**——
+    直接写毫秒会让 69.96s 的弹幕落在 69960s 处,整份弹幕实际不可见
+    (2026-11-23 审查)。这里换算为秒并保留三位小数。"""
     parts = ['<?xml version="1.0" encoding="UTF-8"?>',
              "<i>", "<chatserver>chat.bilibili.com</chatserver>",
              "<mission>0</mission>", "<source>k-v</source>"]
     for e in elems:
-        p = (f"{e['progress_ms']},{e['mode']},{e['fontsize']},{e['color']},"
-             f"{e['ctime']},0,{e['mid_hash']},{e['id']}")
-        parts.append(f'<d p="{p}">{escape(e["text"])}</d>')
+        try:
+            progress_s = int(e.get("progress_ms") or 0) / 1000
+        except (TypeError, ValueError):
+            progress_s = 0.0
+        p = (f"{progress_s:.3f},{e.get('mode', 1)},{e.get('fontsize', 25)},"
+             f"{e.get('color', 0xFFFFFF)},{e.get('ctime', 0)},0,"
+             f"{e.get('mid_hash', '')},{e.get('id', 0)}")
+        parts.append(f'<d p="{p}">{escape(str(e.get("text") or ""))}</d>')
     parts.append("</i>")
     return "".join(parts)
 
