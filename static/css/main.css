@@ -512,6 +512,12 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 /* 档位沙发压在封面左下角(复用 UP 卡 .uc-actions 暗渐变条):右侧给「n 个视频」
    角标留白,窄卡时沙发横向滚动兜底 */
 .fc-cover .uc-actions{padding-right:96px;padding-left:4px}
+/* 收藏/合集卡的档位沙发不许把封面撑出卡:容器可收缩、超出横向滚动。
+   回归:.fc-cover 是 aspect-ratio 盒,分段链总宽超过卡宽时会把 .fav-card
+   撑破出网格列(2026-11-23 审查)。 */
+.fc-cover .uc-actions{min-width:0;max-width:100%}
+.fc-cover .uc-auto-row{min-width:0;max-width:100%}
+.fc-cover .uc-auto-pill{flex:0 0 auto;white-space:nowrap}
 /* 封面里的分段沙发:分段再收紧一档(11px 字号/6px 内距),7 档在 320px 最窄卡
    减去右侧「n 个视频」避让后仍单行放下,不靠横向滚动 */
 .fc-cover .uc-auto-pill{height:22px;padding:0 6px;font-size:11px}
@@ -809,6 +815,11 @@ body.drawer-open{overflow:hidden}
    档位有限,平铺出来比滑条好——想回到 1× 只需点一下,不用把滑块挪回去。 */
 .pl-segs{display:flex;align-items:center;gap:0;flex-wrap:nowrap;overflow-x:auto;scrollbar-width:none;max-width:100%;border-radius:999px}
 .pl-segs::-webkit-scrollbar{display:none}
+/* 窄屏兜底:分段容器不许把控制条第二行撑出播放器视口——
+   超出即整段横向滚动,圆角与行高保持不变(2026-11-23 审查)。 */
+.pl-segs{min-width:0}
+#pl-quality-wrap{min-width:0;max-width:min(320px,60vw)}
+#pl-quality-wrap .pl-segs{max-width:100%}
 /* 播放器分段同款:首尾自圆,容器更宽时右端不出现方角 */
 .pl-segs .pl-seg:first-child{border-radius:999px 0 0 999px}
 .pl-segs .pl-seg:last-child{border-radius:0 999px 999px 0}

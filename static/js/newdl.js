@@ -136,6 +136,25 @@ function renderParseResult(info, url, loggedIn) {
       </div>`;
     const sel = document.getElementById('part-select');
     sel.innerHTML = partOptions;
+    // 超长标题会把 <option> 撑到数百 px 宽,整个下拉框在窄抽屉里横向溢出
+    // (2026-11-23 审查)。渲染后按可见宽度截断长项,保留完整文本在
+    // dataset 里;换解析结果时随新 select 重建,窗口变化时重算。
+    // 中文选项按 ~12px/字估宽(7px 是英文口径,会把中文标题截得过短)。
+    const clampPartOptions = () => {
+      const max = Math.max(16, Math.floor(sel.clientWidth / 12));
+      for (const opt of sel.options) {
+        const full = opt.dataset.fullText || opt.textContent;
+        opt.dataset.fullText = full;
+        opt.textContent = full.length > max ? full.slice(0, max - 1) + '…' : full;
+      }
+    };
+    clampPartOptions();
+    // 每次解析都会重建 select;select 脱离文档后自动摘除监听,不累积闭包。
+    const onResize = () => {
+      if (!sel.isConnected) { window.removeEventListener('resize', onResize); return; }
+      clampPartOptions();
+    };
+    window.addEventListener('resize', onResize);
     sel.dataset.url = url;
     sel.addEventListener('change', loadPartFormats);
     loadPartFormats();
