@@ -2,7 +2,7 @@
 
 所有版本的变更记录。版本遵循[语义化版本](https://semver.org/)。
 
-## [未发布]
+## [v2.12.0] - 2026-11-24
 ### ✨ 变更
 
 - **播放卡顿时会留下「病历」了**：在线播放的缓冲断流（waiting/stalled/恢复）现在会连同发生时刻、当时缓冲余量、音画偏差上报进本地日志。B 站下发的 CDN 节点存在间歇性停顿且服务端零日志，以前只能开浏览器开发者工具蹲点才能抓到，现在出问题直接看日志就能定位是哪条轨、缓冲还剩几秒时断的。
@@ -1034,6 +1034,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.12.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.12.0
 [v2.11.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.11.0
 [v2.10.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.10.0
 [v2.9.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.9.0
