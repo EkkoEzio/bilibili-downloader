@@ -6,6 +6,14 @@
 
 ## S1 架构与链路（解析、播放 token、直连 API）
 
+### b站下载:播放「莫名卡顿」定案=CDN节点间歇停顿+前端硬seek放大,已落软纠偏+埋点(2026-11-24)
+
+- 规则:B 站 playurl v3 下发的 CDN/PCDN 节点(upos-sz-estgoss、mcdn.bilivideo.cn 家用节点族)存在 0.6-2s 的**流中停顿**,长读探针(连续读 16MB 记逐 64KB 间隔)6/6 轮复现于 17:35-37 窗口,17:40 同主机转净、停顿漂到 mirrorcoso1——停顿随时间/节点漂移,是节点自身负载抖动,非本地中继(同窗内 estgoss 两轮全净即为主机特异性证据)。瞬时吞吐探测(单次 curl 计速)抓不到这种抖动,均速 600KB/s+ 看着健康照样卡;日志零 403/零异常≠链路干净。
+- 排除项都有实测:mihomo 实时连接表(connections API,unix-socket)确认 api.bilibili.com/bilivideo.com/mcdn 全 DIRECT(11-23 的 403 是当时全局模式,规则文件 10-27 起就有 DIRECT);当天无下载任务;取流路由(Range 透传/断连关流/连接池)与 werkzeug threaded 无问题。
+- 卡顿机制:停顿撞上浏览器缓冲低位→视频 underrun→音画偏差超阈值→前端硬 seek 音轨→「画面停+声音跳」双重观感。前端放大器已改(player.js syncAudioToVideo):0.25s 内不动、0.25-0.6s 用 1±0.15 倍速微调追平(基准读 SPEED_KEY,不覆盖用户档位)、>0.6s 才硬 seek。
+- 新增埋点闭环:player.js 把 video/audio 的 waiting/stalled(2s 节流)与 resume(绕节流,带 stallMs)POST /api/client-log(app.py 新路由,bd.client logger,≤8 条/次越界 400),落 app.log 后可与取流访问日志按时刻对上——下次报障直接看「播放诊断 kind=waiting ... ahead=...s」。
+- 契约测试:test_player_audio_drift_soft_correction / test_player_buffering_diagnostics_reported / test_client_log_endpoint_validation(test_app.py 末尾区);全量 521 passed。遗留项:后端读缓存(每 token 常驻预读连接+环形缓存,浏览器 Range 全部命中缓存)是治本方向,若软纠偏后观感仍卡再评估;埋点数据显示 ahead 低企+waiting 密集即坐实缓冲击穿,可反向指导要不要降档。
+
 ### b站下载:在线播放解析已切直连 API 快速路径(2026-11-20)
 
 - 未签名 x/player/playurl 带应用登录 Cookie 完整生效(qn=127&fnval=4048&fourk=1,实测 1080P 档位齐全,与 yt-dlp 路径一致);view(0.26s)+playurl(0.28s)≈0.55s,稳态含开销 0.76s;yt-dlp 路径 2.4-2.6s。多 P 用 view.pages[p-1].cid 取 cid 与时长;失败(番剧/-404/风控/未登录)一律回落 yt-dlp;resolve 按 URL 缓存 10min、只缓存成功结果。

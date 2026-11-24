@@ -53,6 +53,7 @@ logging.basicConfig(
     ],
 )
 log = logging.getLogger("bd.app")
+_diag_log = logging.getLogger("bd.client")   # 播放器诊断埋点,独立 logger 便于过滤
 
 # 访问日志脱敏:扫码轮询 ?key= 与二维码图片 ?url=…qrcode_key= 会把「可换取
 # 会话的密钥」原样写进 app.log(2026-11-23 审查);/online/stream/<token> 的
@@ -672,6 +673,58 @@ def task_delete():
         raise ApiError(400, "missing_field", "未选择任务", field="ids")
     result = downloader.delete_tasks_detailed(task_ids, delete_file)
     return jsonify({"ok": True, **result})
+
+
+@app.route("/api/client-log", methods=["POST"])
+@api_errors
+def client_log():
+    """播放器诊断埋点:收缓冲事件写进 app.log(2026-11-24 卡顿排查)。
+
+    CDN 节点的间歇停顿在服务端零日志,前端把 waiting/stalled/resume 连同
+    时刻、缓冲余量、音画偏差报上来,才能和取流访问日志按时刻对上。
+    只收有界事件数组(≤8 条、字段限长),越界 400;前端节流 + 失败静默。
+    """
+    body = _json_object()
+    events = body.get("events")
+    if not isinstance(events, list) or not events:
+        raise ApiError(400, "invalid_field", "缺少 events", field="events")
+    if len(events) > 8:
+        raise ApiError(400, "invalid_field", "单次至多 8 条事件", field="events")
+    for event in events:
+        if not isinstance(event, dict):
+            raise ApiError(400, "invalid_field", "events 元素必须是对象",
+                           field="events")
+        kind = _string(event.get("kind"), "kind", required=True, max_length=24)
+        mode = _string(event.get("mode"), "mode", max_length=16)
+        track = _string(event.get("track"), "track", max_length=8) or "video"
+        quality = _string(event.get("quality"), "quality", max_length=32)
+
+        def _num(field_name):
+            value = event.get(field_name)
+            if value is None:
+                return None
+            try:
+                return round(float(value), 2)
+            except (TypeError, ValueError):
+                raise ApiError(400, "invalid_field",
+                               f"{field_name} 必须是数字", field=field_name)
+
+        t = _num("t")
+        ahead = _num("ahead")
+        drift = _num("drift")
+        stall_ms = event.get("stallMs")
+        if stall_ms is not None:
+            try:
+                stall_ms = int(stall_ms)
+            except (TypeError, ValueError):
+                raise ApiError(400, "invalid_field", "stallMs 必须是整数",
+                               field="stallMs")
+        _diag_log.info(
+            "播放诊断 kind=%s mode=%s track=%s t=%ss ahead=%ss drift=%ss "
+            "quality=%s stallMs=%s",
+            kind, mode or "-", track, t, ahead, drift, quality or "-",
+            stall_ms)
+    return jsonify({"ok": True, "received": len(events)})
 
 
 @app.route("/api/tasks/clear", methods=["POST"])

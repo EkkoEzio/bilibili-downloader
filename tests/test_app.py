@@ -5413,3 +5413,66 @@ def test_online_qualities_route_rejects_offsite_url(monkeypatch):
         "/api/online/qualities?url=https%3A%2F%2Fwww.bilibili.com%2Fvideo%2FBVxx")
     assert r2.status_code == 200
     assert called.get("url") == "https://www.bilibili.com/video/BVxx"
+
+
+# ---------- 2026-11-24 播放卡顿排查的回归锁定 ----------
+
+def test_player_audio_drift_soft_correction():
+    """音画同步要软纠偏:小偏差用倍速微调追,超阈值才硬 seek。
+
+    背景(2026-11-24 播放卡顿复盘):实测 B 站下发 CDN 节点有 0.6-2s 的流中
+    停顿,撞上浏览器缓冲低位就视频 underrun;原实现偏差超 0.25s 就硬 seek
+    音轨,每次 underrun 都放大成「画面停 + 声音跳」的双重卡顿感。改为
+    0.25-0.6s 用 1±0.15 的倍速微调悄悄追平,0.6s 以上才硬 seek。
+    """
+    player_js = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    assert "DRIFT_SOFT = 0.25" in player_js, "软纠偏下限 0.25s(区间内不动)"
+    assert "DRIFT_TOLERANCE = 0.6" in player_js, "硬 seek 阈值放宽到 0.6s"
+    body = _js_func_body(player_js, "syncAudioToVideo")
+    assert "DRIFT_SOFT" in body and "DRIFT_TOLERANCE" in body, \
+        "纠偏逻辑要区分软区间与硬 seek"
+    assert "playbackRate" in body, \
+        "软区间要用倍速微调追平,不再直接跳变"
+    assert body.count("currentTime = v.currentTime") == 1, \
+        "硬 seek 只留在超阈值分支"
+    # 倍速微调必须以用户倍速为基准,不能覆盖用户档位
+    assert "SPEED_KEY" in body, "微调基准要读用户倍速档位"
+
+
+def test_player_buffering_diagnostics_reported():
+    """播放器要把 waiting/stalled 上报服务端,断卡顿能按时刻对日志。
+
+    CDN 节点的间歇停顿不产生任何服务端日志;不上报就只能开 devtools 蹲点。
+    上报走 /api/client-log,失败静默,节流防刷屏。
+    """
+    player_js = (_js_dir() / "player.js").read_text(encoding="utf-8")
+    assert "/api/client-log" in player_js, "埋点要落到 /api/client-log"
+    diag = _js_func_body(player_js, "reportPlaybackEvent")
+    assert "catch" in diag, "上报失败必须静默,不能影响播放"
+    wire_body = _js_func_body(player_js, "wireVideoEvents")
+    assert "'waiting'" in wire_body and "'stalled'" in wire_body, \
+        "video 的 waiting/stalled 要挂上报"
+    assert "'playing'" in wire_body, "恢复播放要报一条带卡顿时长的 resume"
+
+
+def test_client_log_endpoint_validation():
+    """/api/client-log 只收有界的事件数组:格式/条数越界都 400。"""
+    import app as app_module
+    client = app_module.app.test_client()
+
+    r = client.post("/api/client-log", json={
+        "events": [{"kind": "waiting", "mode": "online", "t": 12.3,
+                    "ahead": 4.5, "drift": 0.31, "quality": "1080P"}]})
+    assert r.status_code == 200
+    assert r.get_json()["ok"] is True
+
+    r = client.post("/api/client-log", json={"events": []})
+    assert r.status_code == 400, "空事件数组要拒绝"
+
+    r = client.post("/api/client-log", json={"events": [
+        {"kind": "waiting"}] * 9})
+    assert r.status_code == 400, "单次至多 8 条,防刷屏"
+
+    r = client.post("/api/client-log", json={"events": ["waiting"]})
+    assert r.status_code == 400, "事件必须是对象"
+

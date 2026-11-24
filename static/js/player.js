@@ -21,7 +21,15 @@ const SAVE_INTERVAL_MS = 5000;
 const RESUME_MIN_SECONDS = 15;
 // 倍速档位:平铺成胶囊,点一下就切(不用滑条来回挪)
 const SPEEDS = { steps: [0.5, 0.75, 1, 1.25, 1.5, 2], fallback: 1 };
-const DRIFT_TOLERANCE = 0.25;   // 秒;超过就纠正音轨,再大就听得出不同步
+/* 音画偏差纠偏分两档(2026-11-24 播放卡顿复盘):
+     · ≤DRIFT_SOFT:不动,观感无差异;
+     · (DRIFT_SOFT, DRIFT_TOLERANCE]:软区间,用 1±0.15 的倍速微调悄悄追平——
+       CDN 节点的间歇停顿会让视频短暂落后,硬 seek 一次就是一次可听见的
+       音频跳变,倍速微调无感;
+     · >DRIFT_TOLERANCE:硬 seek,只发生在长时间停顿后,跳变可接受。 */
+const DRIFT_TOLERANCE = 0.6;    // 秒;超过才硬 seek 音轨
+const DRIFT_SOFT = 0.25;        // 秒;软纠偏下限,区间内不动
+const DRIFT_NUDGE_MAX = 0.15;   // 软纠偏的最大倍速偏移(1±0.15)
 const VOLUME_ICON = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3z"/><path d="M14 8.5a4 4 0 0 1 0 7" fill="none" stroke="currentColor" stroke-width="2"/></svg>';
 const MUTE_ICON = '<svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M3 10v4h4l5 5V5L7 10H3z"/><path d="M16 9l5 5M21 9l-5 5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>';
 
@@ -272,9 +280,78 @@ function syncAudioToVideo() {
   const v = video();
   const a = audio();
   if (!v || !a || a.hidden || !a.src) return;
-  if (Math.abs(a.currentTime - v.currentTime) > DRIFT_TOLERANCE) {
-    try { a.currentTime = v.currentTime; } catch (error) { /* 忽略 */ }
+  const drift = a.currentTime - v.currentTime;
+  const absDrift = Math.abs(drift);
+  // 微调基准是用户倍速档位: nudged = base × (1±offset),不覆盖用户档位
+  const base = readNumber(SPEED_KEY, 1);
+  if (absDrift <= DRIFT_SOFT) {
+    a.playbackRate = base;           // 追平了,倍速回正
+    return;
   }
+  if (absDrift > DRIFT_TOLERANCE) {
+    a.playbackRate = base;
+    try { a.currentTime = v.currentTime; } catch (error) { /* 忽略 */ }
+    return;
+  }
+  // 软区间:音频落后(drift<0)就加速追,超前就减速让视频追上来。
+  // offset 随偏差线性放大,0.25s→1±0.075,0.6s→顶到 1±0.15,几秒内无感追平。
+  const offset = Math.min(DRIFT_NUDGE_MAX, absDrift * 0.3);
+  const nudged = base * (1 + (drift < 0 ? offset : -offset));
+  a.playbackRate = Math.max(0.0625, Math.min(16, nudged));
+}
+
+/* ---------- 播放诊断上报(2026-11-24 卡顿排查) ----------
+
+   CDN 节点的间歇停顿在服务端零日志,浏览器侧也只有 devtools 能看到
+   waiting/stalled。把缓冲事件连同时刻、缓冲余量、音画偏差上报进 app.log,
+   下次报障就能和取流访问日志按时刻对上:哪条轨、缓冲还剩几秒时断的。
+   2 秒节流防刷屏;resume 绕过节流(它带卡顿时长,一条会话只出现在卡顿后)。
+   上报失败静默——诊断不能影响播放。 */
+let lastDiagAt = 0;
+let lastWaitAt = 0;            // 最近一次 waiting 时刻,playing 时算卡顿时长
+
+function bufferedAheadSeconds(el) {
+  if (!el) return -1;
+  try {
+    const ranges = el.buffered;
+    for (let i = 0; i < ranges.length; i += 1) {
+      if (el.currentTime >= ranges.start(i) && el.currentTime <= ranges.end(i)) {
+        return Math.max(0, Math.round((ranges.end(i) - el.currentTime) * 10) / 10);
+      }
+    }
+    return 0;
+  } catch (error) { return -1; }
+}
+
+function reportPlaybackEvent(kind, el, extra = {}) {
+  const now = Date.now();
+  if (!extra.force && now - lastDiagAt < 2000) return;
+  lastDiagAt = now;
+  const v = video();
+  const a = audio();
+  const isAudio = el === a;
+  const drift = (v && a && !a.hidden && a.src && !isAudio)
+    ? Math.round((a.currentTime - v.currentTime) * 100) / 100 : null;
+  const payload = {
+    events: [{
+      kind: String(kind || ''),
+      mode: currentMode || '',
+      track: isAudio ? 'audio' : 'video',
+      t: Math.round(((el && el.currentTime) || 0) * 10) / 10,
+      ahead: bufferedAheadSeconds(el),
+      drift,
+      quality: (onlineState.qualities[onlineState.index] || {}).label || '',
+      stallMs: extra.stallMs != null ? Math.round(extra.stallMs) : null,
+    }],
+  };
+  try {
+    fetch('/api/client-log', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+      keepalive: true,
+    }).catch(() => {});
+  } catch (error) { /* 忽略 */ }
 }
 
 function wireVideoEvents() {
@@ -318,6 +395,26 @@ function wireVideoEvents() {
     syncSeekBar(v.currentTime, v.duration);
   };
   v.ondurationchange = () => setTimeLabel(v.currentTime, v.duration);
+  // 诊断埋点:缓冲断流的三种形态。waiting=缓冲耗尽暂停,stalled=网络停滞,
+  // playing(此前 waiting 过)=恢复,带卡顿时长。音频轨的 waiting 单独挂:
+  // 长视频的音轨也会 underrun,只盯 video 会漏掉「声音没了画面还在」那类卡。
+  v.addEventListener('waiting', () => {
+    lastWaitAt = Date.now();
+    reportPlaybackEvent('waiting', v);
+  });
+  v.addEventListener('stalled', () => reportPlaybackEvent('stalled', v));
+  v.addEventListener('playing', () => {
+    if (lastWaitAt && Date.now() - lastWaitAt >= 1000) {
+      const stallMs = Date.now() - lastWaitAt;
+      lastWaitAt = 0;
+      reportPlaybackEvent('resume', v, { stallMs, force: true });
+    }
+  });
+  const a0 = audio();
+  if (a0) a0.addEventListener('waiting', () => {
+    lastWaitAt = lastWaitAt || Date.now();
+    reportPlaybackEvent('waiting', a0, { force: true });
+  });
 }
 
 /* ---------- 本地播放 ---------- */
