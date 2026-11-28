@@ -127,7 +127,7 @@ body.action-bar-open .content{padding-bottom:150px}
 .tb-search .search-input{width:100%}
 .tb-ic{width:32px;height:32px;border:1px solid var(--line);border-radius:6px;display:grid;place-items:center;color:var(--text-soft)}
 .tb-ic:hover{color:var(--text-main);border-color:var(--text-mute)}
-.tb-acct{width:32px;height:32px;padding:0;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;
+.tb-acct{width:32px;height:32px;padding:0;border:1px solid var(--line);display:grid;place-items:center;
   border-radius:6px;color:var(--text-soft);font-size:12.5px;max-width:180px}
 .tb-acct:hover{border-color:var(--accent-bright)}
 /* 顶栏头像钮(2026-11-18 用户要求:不展示用户名,直接展示头像):
@@ -407,6 +407,8 @@ select{padding-right:26px;border-radius:6px;appearance:none;
 .dp-err{margin-top:6px;font-size:11.5px;color:var(--red);background:var(--red-soft);border-radius:6px;padding:5px 9px;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .dp-meta button{margin-left:auto}
+/* 卡内紧凑档 28px:任务卡元信息行的按钮与「取消」钮同档,不用页面级 32px */
+.dp-meta .ghost{height:28px;font-size:12px;padding:0 10px}
 /* 名称冲突的处理按钮收进错误条:用卡内紧凑档 28px,错误条允许换行;
    3 个 32px 描边按钮在 nowrap 小条里会溢出/撑高 */
 .dp-err.dp-err-actions{white-space:normal;overflow:visible;text-overflow:clip}

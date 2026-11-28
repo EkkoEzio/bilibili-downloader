@@ -443,6 +443,26 @@ export async function cancelTask(taskId, button = null) {
   }
 }
 
+/* 失败 / 中断 / 已取消的任务：给一条「重新下载」。
+   任务内部的自动重试只有 2 次退避机会（downloader.max_retries）；耗尽之后，
+   或应用重启把活跃任务改标 interrupted 之后，用户手上只剩一条死记录——
+   只能把链接重新粘一遍。这里沿用原 URL 与原档位重建一条新任务：
+   旧记录保留（历史不丢），新任务另起一条，不覆盖旧任务的产物。 */
+export async function redownloadTask(taskId, button = null) {
+  try {
+    await withPending(button, '重新排队中…', async () => {
+      const response = await postEmpty(
+        '/api/task/' + encodeURIComponent(String(taskId ?? '')) + '/redownload');
+      if (response.ok === false) throw new Error(response.error || '重新下载失败');
+    });
+    announce('已重新加入下载队列');
+    await loadDownloads();
+  } catch (error) {
+    announce(error.message || '重新下载失败', true);
+    toast(error.message || '重新下载失败');
+  }
+}
+
 /* ---------- 任务卡渲染 ---------- */
 function taskWarnHtml(it) {
   const taskArg = inlineStringArg(it.task_id);
@@ -486,6 +506,9 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
   const taskArg = inlineStringArg(it.task_id);
   const cancelBtn = active
     ? `<button class="danger" onclick="cancelTask(${taskArg},this)">取消</button>` : '';
+  // 失败/中断/已取消：给一条「重新下载」（卡内紧凑档 28px，与取消钮同档）
+  const retryBtn = ['failed', 'interrupted', 'cancelled'].includes(status)
+    ? `<button class="ghost dp-retry" onclick="redownloadTask(${taskArg},this)">重新下载</button>` : '';
   const targetUrl = safeHttpUrl(it.url);
   // 已下载的任务:标题点一下就本地播放(player.js 接管),不用再开浏览器新窗口。
   const playId = status === 'done' ? String(it.task_id || '') : '';
@@ -544,7 +567,7 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
         <div class="vi-title" title="${escapeAttr(it.title || '')}">${titleHtml}</div>
         <div class="vi-meta">${metaHtml}</div>
         ${bar}
-        <div class="dp-meta" aria-live="polite">${metaInner}${cancelBtn}</div>
+        <div class="dp-meta" aria-live="polite">${metaInner}${cancelBtn}${retryBtn}</div>
         ${err}${warn}
       </div>
     </div>`;
@@ -555,7 +578,7 @@ function taskCardHtml(it, isGrid, checkHtml, checkedCls) {
     <div class="vi-title" title="${escapeAttr(it.title || '')}">${titleHtml}</div>
     <div class="vi-meta">${metaHtml}</div>
     ${bar}
-    <div class="dp-meta">${metaInner}${cancelBtn}</div>
+    <div class="dp-meta">${metaInner}${cancelBtn}${retryBtn}</div>
     ${err}${warn}
   </div>`;
 }

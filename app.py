@@ -1468,11 +1468,17 @@ def online_qualities():
                   max_length=_MAX_TEXT_LENGTH)
     # 2026-11-23 审查(遗留项 21):子串检查挡不住 https://evil.com/?x=
     # bilibili.com 一类绕过;generic 提取器又允许任意站点出 formats,下游
-    # token 代理会变成任意 URL 读回。改为 urlparse+hostname 白名单
-    # (与 online._register 同一份清单,双保险)。
-    if not online.stream_url_allowed(url):
+    # token 代理会变成任意 URL 读回。改为 urlparse+hostname 白名单。
+    # 2026-11-28:输入闸门与回源闸门拆成两份清单——回源清单会随 B 站换
+    # CDN 供应商增补,若与输入闸门共用一份,每补一个 CDN 域就等于对用户
+    # 开放一个可被 generic 提取器解析的站点,SSRF 面跟着一起变大。
+    if not online.input_url_allowed(url):
         raise ApiError(400, "invalid_field", "只支持 B 站视频链接", field="url")
-    payload = online.resolve(url)
+    try:
+        payload = online.resolve(url)
+    except online.StreamHostNotAllowedError as exc:
+        # 白名单没跟上 B 站 CDN 变更:如实说,别退化成 500 + traceback。
+        return _json_error(str(exc), 502, "stream_host_not_allowed")
     if not payload.get("qualities"):
         return _json_error("没有解析到可播放的清晰度", 502, "no_stream")
     return jsonify(payload)
@@ -1541,6 +1547,42 @@ def task_stream(task_id):
     response.headers["Cache-Control"] = "no-store"
     response.headers["Accept-Ranges"] = "bytes"
     return response
+
+
+@app.route("/api/task/<task_id>/redownload", methods=["POST"])
+@api_errors
+def task_redownload(task_id):
+    """失败 / 中断 / 已取消的任务重新下载：用原 URL、原清晰度、原分 P 重建一条新任务。
+
+    为什么要有这条：任务内部的自动重试只有 2 次退避机会，耗尽之后、或应用
+    重启把活跃任务改标 interrupted 之后，用户手上只剩一条死记录，没有一条
+    「再来一次」的路——只能把链接重新粘一遍。重新下载沿用原 URL 与原档位，
+    旧记录保留（历史不丢），新任务另起一条，不覆盖旧任务的产物。
+    """
+    task_id = _string(task_id, "task_id", required=True, max_length=_MAX_TEXT_LENGTH)
+    task = downloader.get_task(task_id)
+    if not task:
+        raise ApiError(404, "not_found", "任务不存在")
+    status = str(task.get("status") or "")
+    if status not in ("failed", "interrupted", "cancelled"):
+        raise ApiError(400, "invalid_state",
+                       "只有失败、中断或已取消的任务可以重新下载",
+                       field="status")
+    url = str(task.get("url") or "")
+    if not url:
+        raise ApiError(400, "invalid_state", "这条任务没有可用的链接")
+    try:
+        new_id = downloader.start_download(
+            url, str(task.get("label") or ""), int(task.get("page") or 1),
+            uploader_mid=task.get("uploader_mid") or 0)
+    except downloader.DuplicateActiveTask as exc:
+        return _json_error("该视频相同清晰度正在下载中", 409,
+                           "duplicate_task", task_id=exc.task_id)
+    except RuntimeError as exc:
+        # 重新解析失败（稿件被删、链接失效、上游风控）不是服务端故障，
+        # 如实回 502 + 原因，不甩 500 + traceback。
+        return _json_error(f"重新解析失败：{exc}", 502, "parse_failed")
+    return jsonify({"ok": True, "task_id": new_id, "previous_task_id": task_id})
 
 
 @app.route("/api/task/<task_id>/resolve-conflict", methods=["POST"])

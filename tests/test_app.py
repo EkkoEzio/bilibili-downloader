@@ -5348,6 +5348,198 @@ def test_online_register_rejects_offsite_upstream():
                 online._tokens.pop(t, None)
 
 
+def test_online_stream_whitelist_covers_pcdn_families():
+    """回源白名单必须覆盖 B 站实际下发的新 PCDN 节点域族(2026-11-28)。
+
+    回归:B 站新增 mountaintoys.cn 节点(xy<ip>xy.edge.mountaintoys.cn),
+    旧白名单不含它 → 直链注册被拒 → 直连路径白跑一次 yt-dlp 回落、
+    yt-dlp 路径再撞同一堵墙 → 整次解析 500(2026-11-25/26 应用日志实测
+    4 次 500,该视频完全播不了)。
+
+    同时钉住另一件事:输入闸门不能跟着一起放宽。回源清单会随 B 站换
+    CDN 供应商而增补,若输入闸门共用同一份,每补一个 CDN 域就等于对
+    用户开放一个能被 yt-dlp generic 提取器解析的站点(SSRF 面变大)。
+    """
+    import online
+
+    assert online.stream_url_allowed(
+        "https://xy120x222x159x48xy.edge.mountaintoys.cn/v.m4s"), \
+        "B 站 PCDN 节点域必须在回源白名单内"
+    assert not online.input_url_allowed(
+        "https://xy120x222x159x48xy.edge.mountaintoys.cn/v.m4s"), \
+        "CDN 域不得作为用户输入"
+    assert online.input_url_allowed("https://www.bilibili.com/video/BV1x")
+    assert not online.input_url_allowed("https://upos-cd.bilivideo.com/v.m4s")
+
+
+def test_online_register_track_skips_offsite_host_instead_of_crashing():
+    """一条轨的主机族在白名单外时只跳过这一条,其余轨照常注册。
+
+    回归(2026-11-28):_register 对白名单外主机抛 ValueError,直连路径的
+    except Exception 把它吞掉、白跑一次 2.5s 的 yt-dlp 回落,yt-dlp
+    路径再撞同一堵墙 → 整个视频 500。改成逐轨降级后:坏的跳过、好的留下。
+    """
+    import online
+
+    made = []
+    try:
+        bad = online._register_track(
+            "https://evil.com/v.m4s", {},
+            source="https://www.bilibili.com/video/BV1x")
+        assert bad == "", "白名单外的主机必须被跳过(返回空串)"
+        good = online._register_track(
+            "https://upos-cd.bilivideo.com/v.m4s", {},
+            source="https://www.bilibili.com/video/BV1x")
+        assert good, "白名单内的主机必须照常注册"
+        made.append(good)
+    finally:
+        with online._lock:
+            for t in made:
+                online._tokens.pop(t, None)
+
+
+def test_online_resolve_reports_whitelist_lag_instead_of_500(monkeypatch):
+    """上游直链全落在回源白名单外时,如实报「白名单滞后」而不是 500。"""
+    import online
+    import bilibili_api as bapi
+    import parsing
+
+    bad_host = "https://xy120x222x159x48xy.edge.notbilibili-cdn.net"
+    monkeypatch.setattr(bapi, "fetch_video_view", lambda bvid, *, context=None: {
+        "bvid": bvid, "cid": 111, "title": "白名单外节点", "duration": 60,
+        "pages": [{"page": 1, "cid": 111, "duration": 60}],
+    })
+    monkeypatch.setattr(bapi, "fetch_playurl", lambda bvid, cid, *, context=None: {
+        "dash": {
+            "video": [{"id": 80, "height": 1080, "bandwidth": 2000000,
+                       "baseUrl": bad_host + "/v80.m4s"}],
+            "audio": [{"id": 30280, "bandwidth": 320000,
+                       "baseUrl": bad_host + "/a80.m4s"}],
+        },
+    })
+    summary = {"title": "白名单外节点", "duration": 60, "formats": [
+        {"kind": "video", "label": "1080P", "format_id": "30080",
+         "height": 1080, "tbr": 2000}]}
+    info = {"duration": 60, "formats": [
+        {"format_id": "30080", "url": bad_host + "/v80.m4s",
+         "height": 1080, "http_headers": {}}]}
+    monkeypatch.setattr(parsing, "parse_video_with_info",
+                        lambda url: (summary, info))
+    with pytest.raises(online.StreamHostNotAllowedError):
+        online.resolve("https://www.bilibili.com/video/BV1wlLagTst")
+
+
+def test_online_qualities_route_reports_whitelist_lag(monkeypatch):
+    """路由把白名单滞后翻译成 502 + 稳定错误码,不再 500 + traceback。"""
+    import app as app_module
+
+    def boom(url):
+        raise app_module.online.StreamHostNotAllowedError(
+            "上游下发的播放地址不在允许的 CDN 域内，请稍后重试或改用下载")
+
+    monkeypatch.setattr(app_module.online, "resolve", boom)
+    client = app_module.app.test_client()
+    r = client.get(
+        "/api/online/qualities?url=https%3A%2F%2Fwww.bilibili.com%2Fvideo%2FBV1wl")
+    assert r.status_code == 502, f"白名单滞后应回 502,实际 {r.status_code}"
+    body = r.get_json()
+    assert body.get("code") == "stream_host_not_allowed", body
+    assert body.get("ok") is False
+
+
+def test_online_qualities_route_rejects_cdn_host_as_input(monkeypatch):
+    """CDN 主机族不能当用户输入的地址(输入闸门比回源闸门窄)。"""
+    import app as app_module
+
+    called = {}
+
+    def fake_resolve(url):
+        called["url"] = url
+        return {"qualities": [{"label": "1080P", "token": "t"}], "audio": "a"}
+
+    monkeypatch.setattr(app_module.online, "resolve", fake_resolve)
+    client = app_module.app.test_client()
+    r = client.get(
+        "/api/online/qualities?url=https%3A%2F%2Fupos-cd.bilivideo.com%2Fv.m4s")
+    assert r.status_code == 400, "CDN 主机族不是可解析的用户输入"
+    assert called == {}, "被拒 URL 不得触发解析"
+
+
+def test_task_redownload_recreates_failed_task(monkeypatch):
+    """失败/中断/已取消的任务能一键重新下载:沿用原 URL 与原档位,新任务另起一条。
+
+    回归(2026-11-28 新增):自动重试只有 2 次退避机会,耗尽之后或应用重启
+    把活跃任务改标 interrupted 之后,用户手上只剩一条死记录,没有「再来
+    一次」的路,只能把链接重新粘一遍。
+    """
+    import app as app_module
+
+    tasks = {
+        "task-failed": {"task_id": "task-failed", "status": "failed",
+                        "url": "https://www.bilibili.com/video/BV1retryTst",
+                        "label": "1080P", "page": 2, "uploader_mid": 123},
+    }
+    monkeypatch.setattr(app_module.downloader, "get_task",
+                        lambda task_id: tasks.get(task_id))
+    captured = {}
+
+    def fake_start(url, label, page=1, uploader_mid=0):
+        captured.update({"url": url, "label": label, "page": page,
+                         "uploader_mid": uploader_mid})
+        return "task-new"
+
+    monkeypatch.setattr(app_module.downloader, "start_download", fake_start)
+    client = app_module.app.test_client()
+    r = client.post("/api/task/task-failed/redownload")
+    assert r.status_code == 200, r.get_data(as_text=True)
+    body = r.get_json()
+    assert body.get("ok") is True
+    assert body.get("task_id") == "task-new"
+    assert body.get("previous_task_id") == "task-failed"
+    assert captured == {"url": "https://www.bilibili.com/video/BV1retryTst",
+                        "label": "1080P", "page": 2, "uploader_mid": 123}, \
+        "重新下载必须沿用原 URL、原档位与原分 P"
+
+
+def test_task_redownload_rejects_non_terminal_task(monkeypatch):
+    """进行中的任务不给「重新下载」:同 URL 同档位重复下载没有意义。"""
+    import app as app_module
+
+    monkeypatch.setattr(app_module.downloader, "get_task", lambda task_id: {
+        "task_id": task_id, "status": "downloading",
+        "url": "https://www.bilibili.com/video/BV1x",
+        "label": "1080P", "page": 1})
+    monkeypatch.setattr(
+        app_module.downloader, "start_download",
+        lambda *a, **k: pytest.fail("进行中的任务不得触发重新下载"))
+    client = app_module.app.test_client()
+    r = client.post("/api/task/task-active/redownload")
+    assert r.status_code == 400, r.get_data(as_text=True)
+    assert r.get_json().get("code") == "invalid_state"
+
+
+def test_task_redownload_unknown_task_404(monkeypatch):
+    """任务不存在时如实 404,不留 500。"""
+    import app as app_module
+
+    monkeypatch.setattr(app_module.downloader, "get_task", lambda task_id: None)
+    client = app_module.app.test_client()
+    r = client.post("/api/task/nope/redownload")
+    assert r.status_code == 404, r.get_data(as_text=True)
+
+
+def test_downloads_card_offers_redownload_for_failed_task():
+    """失败/中断的任务卡上要有一枚「重新下载」钮,并挂到全局桥。"""
+    html = _tpl()
+    assert "redownloadTask" in html, "重新下载函数必须存在"
+    assert "重新下载" in html, "失败任务卡必须有「重新下载」入口"
+    assert "redownloadTask: downloads.redownloadTask" in html, \
+        "内联 onclick 需要全局桥挂载"
+    assert "'failed', 'interrupted', 'cancelled'" in html, \
+        "只有终态失败类任务才给重新下载"
+
+
+
 def test_fetch_fav_folder_covers_reraises_rate_limit(monkeypatch):
     """单夹网络失败可以吞(单夹失败不影响其他夹),412/429 必须上抛(遗留项 22)。
 

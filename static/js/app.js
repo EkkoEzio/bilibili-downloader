@@ -89,6 +89,7 @@ Object.assign(window, {
   clearAllRecords: downloads.clearAllRecords,
   clearInvalidRecords: downloads.clearInvalidRecords,
   cancelTask: downloads.cancelTask,
+  redownloadTask: downloads.redownloadTask,
   revealTask: downloads.revealTask,
   resolveTaskConflict: downloads.resolveTaskConflict,
 });

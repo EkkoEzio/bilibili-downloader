@@ -67,6 +67,14 @@ class VideoUnavailableError(RuntimeError):
     """视频本身不可播(已删除/所在地区受限),不是服务端故障。"""
 
 
+class StreamHostNotAllowedError(RuntimeError):
+    """上游下发的直链主机族不在回源白名单内(白名单滞后于 B 站 CDN 变更)。
+
+    不是「视频不可播」,也不是服务端故障,是白名单没跟上上游换 CDN 供应商。
+    对外要说清楚,不能退化成 500 + traceback(2026-11-28)。
+    """
+
+
 # yt-dlp 的 B 站提取器对「已删除」与「地区限制」给的是同一句话;BV 号本身
 # 不存在(稿件被删后卡片还在列表里)则是提取器内部报错 KeyError('bvid')。
 _UNAVAILABLE_RE = re.compile(
@@ -111,12 +119,24 @@ def _context_key_of(context) -> str:
 # 任意 URL 读回(SSRF:回源内网与服务自身)。白名单与 B 站 playurl 实际
 # 下发的主机族对齐:bilivideo.com/.cn(主 CDN 与 PCDN)、akamaized.net
 # (海外回源)、szbdyd.com(网宿)、bilibili.com(少量接口形态)。
+#
+# 2026-11-28 补 mountaintoys.cn:B 站新增的 PCDN 节点域
+# (xy<ip>xy.edge.mountaintoys.cn)。旧清单漏了它 → 直链注册被拒 →
+# 直连路径回落 yt-dlp、yt-dlp 路径又撞同一堵墙 → 整次解析 500,
+# 该视频完全播不了(2026-11-25/26 应用日志实测 4 次 500)。
 _STREAM_HOST_SUFFIXES = ("bilibili.com", "bilivideo.com", "bilivideo.cn",
-                         "akamaized.net", "szbdyd.com")
+                         "akamaized.net", "szbdyd.com", "mountaintoys.cn")
+
+# 输入闸门与回源闸门是两份清单(2026-11-28 拆分):
+#   输入闸门 = 用户能喂进来的地址,只接受 B 站视频页;
+#   回源闸门 = 上游可以下发的媒体主机族,会随 B 站换 CDN 供应商而增补。
+# 过去两者共用一份清单,于是每补一个 CDN 域,就等于对用户开放一个
+# 能被 generic 提取器解析的站点——SSRF 面跟着白名单一起变大。
+_INPUT_HOST_SUFFIXES = ("bilibili.com",)
 
 
-def stream_url_allowed(url: str) -> bool:
-    """精确判定一条 URL 是否可作为流代理的回源目标(供路由与注册共用)。"""
+def _host_allowed(url: str, suffixes: tuple) -> bool:
+    """hostname 精确匹配或子域匹配白名单;非 HTTP(S) 一律拒绝。"""
     try:
         parsed = urlparse(url)
         hostname = (parsed.hostname or "").lower()
@@ -125,7 +145,17 @@ def stream_url_allowed(url: str) -> bool:
     if parsed.scheme not in ("http", "https"):
         return False
     return any(hostname == s or hostname.endswith("." + s)
-               for s in _STREAM_HOST_SUFFIXES)
+               for s in suffixes)
+
+
+def input_url_allowed(url: str) -> bool:
+    """用户输入闸门:只接受 B 站视频页地址(qualities 路由入口用)。"""
+    return _host_allowed(url, _INPUT_HOST_SUFFIXES)
+
+
+def stream_url_allowed(url: str) -> bool:
+    """回源闸门:只接受 B 站自家 CDN 主机族(直链注册用)。"""
+    return _host_allowed(url, _STREAM_HOST_SUFFIXES)
 
 
 def _register(url: str, headers: dict, context=None, source: str = "",
@@ -148,6 +178,30 @@ def _register(url: str, headers: dict, context=None, source: str = "",
                           "context": _context_key_of(context),
                           "source": source, "track": dict(track or {})}
     return token
+
+
+def _register_track(url: str, headers: dict, context=None, source: str = "",
+                    track: Optional[dict] = None) -> str:
+    """登记一条轨;主机族不在回源白名单内时跳过这一条,返回空串。
+
+    不抛异常:一条轨被拒不该让整次解析崩掉。旧实现直接抛 ValueError,
+    直连路径被自己的 except 吞掉、白跑一次 yt-dlp 回落,yt-dlp 路径再撞
+    同一堵墙 → 整个视频 500(2026-11-25/26 实测)。这里逐轨降级,
+    被拒的主机名写进日志——B 站再换 CDN 域时,日志直接告诉你该补哪条。
+    """
+    if not url:
+        return ""
+    try:
+        return _register(url, headers, context=context, source=source,
+                         track=track)
+    except ValueError:
+        host = ""
+        try:
+            host = urlparse(url).hostname or ""
+        except ValueError:
+            host = "<无法解析>"
+        log.warning("跳过白名单外的直链主机 %s(该视频这一档不可用)", host)
+        return ""
 
 
 def lookup(token: str) -> Optional[dict]:
@@ -284,14 +338,28 @@ def _resolve_via_api_with_context(url: str, context) -> Optional[dict]:
                 by_label[label] = (bandwidth, entry)
 
         qualities = []
+        rejected = 0
         for label, (_bandwidth, entry) in by_label.items():
+            token = _register_track(
+                entry.get("baseUrl") or entry.get("base_url") or "",
+                headers, context=context, source=url,
+                track={"kind": "video", "label": label})
+            if not token:
+                rejected += 1
+                continue
             qualities.append({
                 "label": label,
                 "height": entry.get("height") or 0,
-                "token": _register(entry.get("baseUrl") or entry.get("base_url") or "",
-                                   headers, context=context, source=url,
-                                   track={"kind": "video", "label": label}),
+                "token": token,
             })
+        if not qualities:
+            # 一条视频轨都没注册成功:要么上游没给视频轨,要么直链主机族
+            # 全在回源白名单外。后者要如实报,别当成普通解析失败去回落
+            # yt-dlp(回落会再撞同一堵墙,白烧一次 2.5s CPU 提取)。
+            if rejected:
+                raise StreamHostNotAllowedError(
+                    "上游下发的播放地址不在允许的 CDN 域内，请稍后重试或改用下载")
+            return None
         qualities.sort(key=lambda q: (-(q["height"] or 0),
                                       0 if "P60" in q["label"] else 1))
 
@@ -301,8 +369,9 @@ def _resolve_via_api_with_context(url: str, context) -> Optional[dict]:
             if best_audio is None or (entry.get("bandwidth") or 0) > (best_audio.get("bandwidth") or 0):
                 best_audio = entry
         if best_audio:
-            audio_token = _register(best_audio.get("baseUrl") or best_audio.get("base_url") or "",
-                                    headers, context=context, source=url, track={"kind": "audio"})
+            audio_token = _register_track(
+                best_audio.get("baseUrl") or best_audio.get("base_url") or "",
+                headers, context=context, source=url, track={"kind": "audio"})
 
         return {
             "ok": True,
@@ -311,6 +380,8 @@ def _resolve_via_api_with_context(url: str, context) -> Optional[dict]:
             "qualities": qualities,
             "audio": audio_token,
         }
+    except StreamHostNotAllowedError:
+        raise
     except Exception:
         log.warning("在线播放直连解析异常,回落 yt-dlp", exc_info=True)
         return None
@@ -334,7 +405,12 @@ def resolve(url: str) -> dict:
         if cached and cached["expires"] > now:
             return cached["payload"]
 
-    payload = _resolve_via_api(url)
+    try:
+        payload = _resolve_via_api(url)
+    except StreamHostNotAllowedError:
+        # 直连路径拿到的直链全在回源白名单外。换 yt-dlp 再试一次:两条路径
+        # 可能落到不同的 CDN 族;仍然不行就如实报白名单滞后,不再 500。
+        payload = None
     if payload is None:
         payload = _resolve_via_ytdlp(url, context=context)
 
@@ -359,6 +435,9 @@ def _resolve_uncached(url: str) -> Optional[dict]:
         payload = _resolve_via_api(url)
         if payload is None:
             payload = _resolve_via_ytdlp(url, context=context)
+    except StreamHostNotAllowedError:
+        log.warning("在线播放重新签发直链失败:上游直链主机族不在回源白名单内")
+        return None
     except Exception as exc:
         log.warning("在线播放重新签发直链失败: %s", type(exc).__name__)
         return None
@@ -389,22 +468,31 @@ def _resolve_via_ytdlp(url: str, context=None) -> dict:
     if audio_option:
         audio_format = fmts.get(audio_option["format_id"]) or {}
         if audio_format.get("url"):
-            audio_token = _register(audio_format["url"],
-                                    audio_format.get("http_headers") or {},
-                                    context=context, source=url, track={"kind": "audio"})
+            audio_token = _register_track(audio_format["url"],
+                                         audio_format.get("http_headers") or {},
+                                         context=context, source=url,
+                                         track={"kind": "audio"})
 
     qualities = []
+    rejected = 0
     for label, option in _pick_video_quality(formats):
         raw = fmts.get(option["format_id"]) or {}
         if not raw.get("url"):
             continue
+        token = _register_track(raw["url"], raw.get("http_headers") or {},
+                                context=context, source=url,
+                                track={"kind": "video", "label": label})
+        if not token:
+            rejected += 1
+            continue
         qualities.append({
             "label": label,
             "height": raw.get("height") or 0,
-            "token": _register(raw["url"], raw.get("http_headers") or {},
-                               context=context, source=url,
-                               track={"kind": "video", "label": label}),
+            "token": token,
         })
+    if not qualities and rejected:
+        raise StreamHostNotAllowedError(
+            "上游下发的播放地址不在允许的 CDN 域内，请稍后重试或改用下载")
 
     payload = {
         "ok": True,
