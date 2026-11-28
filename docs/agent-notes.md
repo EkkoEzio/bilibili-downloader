@@ -141,7 +141,7 @@ Apply when: 写/改任何拼段式 HTML 模板串后,逐段核对引号闭合;�
 ### b站下载发版流程(2026-11-17 v2.6.0 实跑)
 
 - 用户说「打个包发一版」= 全套:①CHANGELOG 定版(## [vX.Y.Z] - 日期,补漏条目)→ ②README 首页版本行(> **vX.Y.Z**:一句话亮点)→ ③CHANGELOG 底部链接引用 [vX.Y.Z]: releases/tag/…(test_docs.py 契约,漏了必红)→ ④全量 pytest → ⑤git add -A && commit "release: vX.Y.Z"(带中文要点 body)→ ⑥git tag → ⑦git push origin main vX.Y.Z → ⑧nohup ./启动.command > log 2>&1 & disown 重启并 curl 探针验证。
-- GitHub Release 对象自 v2.4.1 起停建(gh release list 最新=v2.4.0),发版只推 tag,不建 Release 页。
+- GitHub Release 页**现在会建**:workflow 里的「发布到 Releases」作业用 softprops/action-gh-release 把 tag 推上去并生成 Release(v2.11.0/v2.12.0/v2.13.0 都有页)。但它生成的标题只是 tag 名、正文只有一行 Full Changelog 链接——**发布物料要人写**:发版后用 `gh release edit <tag> --title "vX.Y.Z · 一句话亮点" --notes-file` 补成人读的标题与正文(正文直接从 CHANGELOG 对应版本段取)。这一步目前不在发版脚本里,别忘了。
 - 版本号口径:未发布段有新功能/交互改版 → minor bump;CHANGELOG 的 v2.5.2~v2.5.5 曾长期只写不发,一次 commit 收口时 tag 只打最终号,中间段保留在 CHANGELOG 里作记录。
 - 档位契约(2026-11-17 二轮改版后):UP/合集/收藏三处「自动下载」分段共用同一字典 quality.js AUTO_QUALITY_SEGMENTS ↔ up_list.QUALITY_CHOICES(订阅走 import 别名 UP_QUALITY_SEGMENTS;旧精确标签在 up_list._norm_quality/前端 normAutoQuality 读写归一,COLLECTION_QUALITY_CHOICES 双轨表已删除);手动下载独留旧精确标签下拉 quality.js QUALITY_OPTIONS ↔ index.html ab-quality(test_quality_choices_single_source 绑定)。改档位先看这套绑定,新档值别只加进一处。
 
