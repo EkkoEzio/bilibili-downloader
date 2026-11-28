@@ -2,8 +2,7 @@
 
 所有版本的变更记录。版本遵循[语义化版本](https://semver.org/)。
 
-## [未发布]
-
+## [v2.13.0] - 2026-11-28
 ### ✨ 变更
 
 - **下载失败的记录可以一键重来了**：任务内部的自动重试只有两次机会，用完之后（或应用重启把进行中的任务标成「已中断」之后），下载记录里只剩一条死记录——想重试只能把链接重新粘一遍。现在失败、中断、已取消的任务卡上多一枚「重新下载」，沿用原来的链接、清晰度和分 P 重新排队；旧记录保留，不会被覆盖。
@@ -1045,6 +1044,7 @@
 详见 `docs/BACKLOG.md` 与 git 历史。本版本之前的项目使用「订阅追更 + 待确认」
 的旧交互范式。
 
+[v2.13.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.13.0
 [v2.12.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.12.0
 [v2.11.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.11.0
 [v2.10.0]: https://github.com/EkkoEzio/bilibili-downloader/releases/tag/v2.10.0

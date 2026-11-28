@@ -3,7 +3,7 @@
 ;
 ; 注意:开发者姓名/邮箱不写进这里——安装包元数据同样不能带个人信息。
 #define AppName "B站下载"
-#define AppVersion "2.12.0"
+#define AppVersion "2.13.0"
 #define AppPublisher "bilibili download"
 #define AppExeName "BiliDownloader.exe"
 
